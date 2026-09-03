@@ -19,13 +19,19 @@ export interface PackAttribution {
   readonly license: string;
 }
 
-/** Everything about a pack that is not colour: identity, grouping and provenance. */
+/**
+ * Everything about a pack that is not colour: identity, grouping and
+ * provenance. Attribution is optional because it names an *upstream*
+ * source — every bundled pack has one (see PackAttribution above), but a
+ * pack a user drops into their own theme directory adapts a scheme of
+ * their own choosing and owes no attribution to Chameleon.
+ */
 export interface ThemePackManifest {
   readonly slug: string;
   readonly name: string;
   readonly family: string;
   readonly appearance: Appearance;
-  readonly attribution: PackAttribution;
+  readonly attribution?: PackAttribution | undefined;
 }
 
 /**
@@ -95,10 +101,23 @@ function assertRoleClearsFloor(role: Role, hex: string, groundHex: string, schem
  * Runs a scheme through the full contrast engine — assign, then repair —
  * and packages the result as a shippable pack: a manifest carrying identity
  * and attribution, plus every target's payload. Pure: no file I/O, so the
- * build tool that generates the bundled packs and any future test can call
- * it directly against a scheme literal.
+ * build tool that generates the bundled packs, the loader that reads a
+ * user's dropped-in pack, and any test can all call it directly against a
+ * scheme literal. `attribution` is omitted for a user pack, which has no
+ * upstream to credit — see ThemePackManifest.
+ *
+ * `explicitSlug`, when given, is used verbatim instead of the slug derived
+ * from `family` and the measured appearance. This is what lets a dropped-in
+ * pack's declared slug collide with a bundled pack's on purpose, so it can
+ * override it — see CLAUDE.md: "A manifest's declared slug is what the pack
+ * loads as. Never derive it from name when one is declared."
  */
-export function buildThemePack(scheme: Scheme, family: string, attribution: PackAttribution): ThemePack {
+export function buildThemePack(
+  scheme: Scheme,
+  family: string,
+  attribution?: PackAttribution,
+  explicitSlug?: string,
+): ThemePack {
   const measured = toPalette(scheme);
   const { palette: resolvedPalette } = repairFailingRoles(assignRolesByContrast(measured));
 
@@ -110,11 +129,11 @@ export function buildThemePack(scheme: Scheme, family: string, attribution: Pack
 
   return {
     manifest: {
-      slug: toSlug(family, measured.appearance),
+      slug: explicitSlug ?? toSlug(family, measured.appearance),
       name: scheme.name,
       family,
       appearance: measured.appearance,
-      attribution,
+      ...(attribution !== undefined ? { attribution } : {}),
     },
     payloads: {
       "windows-terminal": scheme,
@@ -148,12 +167,14 @@ export const ThemePackSchema = z.object({
     name: z.string().min(1),
     family: z.string().min(1),
     appearance: z.enum(["light", "dark"]),
-    attribution: z.object({
-      source: z.string().min(1),
-      sourceUrl: z.string().min(1),
-      commit: z.string().min(1),
-      license: z.string().min(1),
-    }),
+    attribution: z
+      .object({
+        source: z.string().min(1),
+        sourceUrl: z.string().min(1),
+        commit: z.string().min(1),
+        license: z.string().min(1),
+      })
+      .optional(),
   }),
   payloads: z.object({
     "windows-terminal": SchemeSchema,
@@ -167,6 +188,42 @@ export function parseThemePack(input: unknown, fileName: string): ThemePack {
   const result = ThemePackSchema.safeParse(input);
   if (!result.success) {
     throw new Error(`theme pack "${fileName}" is malformed: ${result.error.message}`);
+  }
+  return result.data;
+}
+
+/**
+ * What a user hand-writes in a dropped-in pack's pack.json: the one scheme
+ * it adapts, plus an optional family for grouping it with a light/dark
+ * sibling of its own, and an optional slug.
+ *
+ * `slug` is optional in the *file*, but never silently defaulted past this
+ * point — a manifest that omits it must still get one, and the caller that
+ * derives it is responsible for warning that it did (see
+ * adapters/user-theme-packs.ts). When a manifest does declare a slug, it is
+ * load-bearing: it is what a user pack collides on to override a bundled
+ * pack of the same slug, and CHM-12 shipped a version of this loader that
+ * silently discarded a declared slug in favour of one derived from `family`,
+ * which made overriding a bundled pack impossible by construction.
+ */
+export const UserPackManifestSchema = z.object({
+  slug: z.string().min(1).optional(),
+  family: z.string().min(1).optional(),
+  scheme: SchemeSchema,
+});
+
+export type UserPackManifest = z.infer<typeof UserPackManifestSchema>;
+
+/**
+ * Parses a dropped-in pack's pack.json, naming the pack directory whose
+ * shape is wrong rather than throwing a bare ZodError — the same
+ * name-the-source contract as parseThemePack, but keyed by directory name
+ * rather than file name since a user pack is a directory of its own.
+ */
+export function parseUserPackManifest(input: unknown, packDirName: string): UserPackManifest {
+  const result = UserPackManifestSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(`user pack "${packDirName}" is malformed: ${result.error.message}`);
   }
   return result.data;
 }
