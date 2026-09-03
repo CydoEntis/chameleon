@@ -3,3 +3,11 @@
 # That only proves anything if the checked-in bytes are LF on every
 # platform — core.autocrlf must not get a vote.
 test/adapters/fixtures/settings.jsonc text eol=lf
+
+# Same reasoning as settings.jsonc above, for the Oh My Posh adapter's own
+# fixtures (see test/adapters/oh-my-posh.test.ts) — CHM-4 shipped broken
+# because a fixture just like these was left unpinned: it passed in the
+# worktree that wrote it and failed on a clean clone, where autocrlf gets a
+# vote it must never have.
+test/adapters/fixtures/oh-my-posh-config.omp.json text eol=lf
+test/adapters/fixtures/profile.ps1 text eol=lf
