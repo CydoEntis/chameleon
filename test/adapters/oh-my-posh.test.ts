@@ -1,3 +1,5 @@
+import type { SpawnSyncReturns } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +9,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOhMyPoshAdapter, undoOhMyPosh } from "../../src/adapters/oh-my-posh.js";
 import { ROLES } from "../../src/constants.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
+
+vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
+
+function makeSpawnResult(overrides: Partial<SpawnSyncReturns<string>> = {}): SpawnSyncReturns<string> {
+  return {
+    pid: 1234,
+    output: [null, "", ""],
+    stdout: "",
+    stderr: "",
+    status: 0,
+    signal: null,
+    ...overrides,
+  };
+}
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FIXTURE_PATH = path.join(currentDir, "fixtures", "oh-my-posh-config.omp.json");
@@ -152,10 +168,16 @@ describe.each([
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("detects Oh My Posh by an existing config at the given path", () => {
-    expect(createOhMyPoshAdapter(configPath, profilePath, pointerPath).detect()).toBe(true);
-    expect(createOhMyPoshAdapter(undefined, profilePath, pointerPath).detect()).toBe(false);
-    expect(createOhMyPoshAdapter(path.join(stateDir, "missing.omp.json"), profilePath, pointerPath).detect()).toBe(false);
+  it("detects Oh My Posh by its own installed binary, never by POSH_THEME or an active config", () => {
+    // The regression this ticket exists to fix: a shell that never ran
+    // `oh-my-posh init` has no POSH_THEME set, and CHM-7 reported that shell
+    // as "not found" even with Oh My Posh fully installed and configured
+    // elsewhere. Detection must succeed here regardless of configPath.
+    vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ status: 0, stdout: "v3.100.0" }));
+    expect(createOhMyPoshAdapter(undefined, profilePath, pointerPath).detect()).toBe(true);
+
+    vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ error: new Error("ENOENT"), status: null }));
+    expect(createOhMyPoshAdapter(configPath, profilePath, pointerPath).detect()).toBe(false);
   });
 
   it("reads a hostile config — comments and trailing commas included", () => {

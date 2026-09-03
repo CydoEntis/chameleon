@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
@@ -16,6 +17,12 @@ import {
 
 /** Suffix for the pre-apply copy of a config or profile file that `undoOhMyPosh` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
+
+/** Oh My Posh's own CLI binary name, resolved via PATH — see detectOhMyPosh. */
+const OH_MY_POSH_BINARY_NAME = "oh-my-posh";
+
+/** winget's package identifier for Oh My Posh, used to build the one-line install command `ch doctor` offers. */
+export const OH_MY_POSH_WINGET_PACKAGE_ID = "JanDeDobbeleer.OhMyPosh";
 
 /** Chameleon's own state directory, under the user's local app data — currently home to only the pointer file below. */
 const STATE_DIR_NAME = "chameleon";
@@ -98,8 +105,17 @@ function backupPathFor(targetPath: string): string {
   return `${targetPath}${BACKUP_FILE_SUFFIX}`;
 }
 
-function detectOhMyPosh(configPath: string | undefined): boolean {
-  return configPath !== undefined && existsSync(configPath);
+/**
+ * Oh My Posh is detected by its own installed binary, never by POSH_THEME.
+ * POSH_THEME is set per-shell by `oh-my-posh init`, so a shell that has
+ * never run init — a fresh git-bash, cmd, or a pwsh before its profile loads
+ * — would otherwise report Oh My Posh as missing even when it is on PATH and
+ * fully configured elsewhere. See CHM-15, which supersedes CHM-7 for
+ * exactly this false negative.
+ */
+function detectOhMyPosh(): boolean {
+  const result = spawnSync(OH_MY_POSH_BINARY_NAME, ["--version"], { encoding: "utf8" });
+  return !result.error && result.status === 0;
 }
 
 /**
@@ -297,7 +313,7 @@ export function createOhMyPoshAdapter(
   pointerPath: string = defaultPointerPath(),
 ): OhMyPoshAdapter {
   return {
-    detect: () => detectOhMyPosh(configPath),
+    detect: () => detectOhMyPosh(),
     read: () => readOhMyPoshConfig(requireConfigPath(configPath)),
     apply: (scheme) => applyOhMyPoshScheme(configPath, profilePath, pointerPath, scheme),
     reload: () => reloadOhMyPosh(),

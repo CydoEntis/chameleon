@@ -4,7 +4,15 @@
  * tested without spawning a process.
  */
 
+import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
+import { createHerdrAdapter } from "./adapters/herdr.js";
+import { createOhMyPoshAdapter, OH_MY_POSH_WINGET_PACKAGE_ID } from "./adapters/oh-my-posh.js";
 import { loadUserThemePacks } from "./adapters/user-theme-packs.js";
+import {
+  createWindowsTerminalAdapter,
+  selectedFontFace,
+  WINDOWS_TERMINAL_WINGET_PACKAGE_ID,
+} from "./adapters/windows-terminal.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug, type LoadedThemePack } from "./palette/theme-pack-library.js";
 
 export const VERSION = "0.0.0";
@@ -66,4 +74,98 @@ export function loadAllThemePacks(userThemeDir?: string): {
   const bundledPacks = loadCuratedThemePacks();
   const { packs: userPacks, warnings } = loadUserThemePacks(userThemeDir);
   return { packs: mergeThemePacksBySlug(bundledPacks, userPacks), warnings };
+}
+
+/** One target's `ch doctor` row: whether it is installed, and the one-line command to fix it when it is not. */
+export interface DoctorTargetCheck {
+  readonly target: Target;
+  readonly isInstalled: boolean;
+  readonly installCommand: string | undefined;
+}
+
+/** `ch doctor`'s Nerd Font row — installed and selected are different questions, see CLAUDE.md. */
+export interface DoctorNerdFontCheck {
+  readonly isInstalled: boolean;
+  readonly isSelected: boolean;
+  readonly selectedFontFace: string | undefined;
+  readonly installCommand: string | undefined;
+}
+
+export interface DoctorReport {
+  readonly targets: readonly DoctorTargetCheck[];
+  readonly nerdFont: DoctorNerdFontCheck;
+}
+
+/**
+ * `ch doctor` never hard-fails on a missing target: a detector that throws —
+ * an unset LOCALAPPDATA, a settings.json it cannot parse — is reported as
+ * not installed rather than raised, so one broken target never stops the
+ * rest of the report from printing.
+ */
+function detectSafely(detect: () => boolean): boolean {
+  try {
+    return detect();
+  } catch {
+    return false;
+  }
+}
+
+/** The one-line `winget` command `ch doctor` offers for a missing target — see CLAUDE.md, "Delegating installs to winget ... rather than reimplementing an installer." */
+function wingetInstallCommand(packageId: string): string {
+  return `winget install --id ${packageId} -e`;
+}
+
+function checkTarget(target: Target, isInstalled: boolean, wingetPackageId: string | undefined): DoctorTargetCheck {
+  return {
+    target,
+    isInstalled,
+    installCommand: isInstalled || !wingetPackageId ? undefined : wingetInstallCommand(wingetPackageId),
+  };
+}
+
+/**
+ * The font Windows Terminal has actually selected, or undefined when
+ * Windows Terminal is not installed or its settings.json cannot be read —
+ * either way, "not selected" rather than a thrown error.
+ */
+function currentlySelectedFontFace(): string | undefined {
+  try {
+    const windowsTerminalAdapter = createWindowsTerminalAdapter();
+    return windowsTerminalAdapter.detect() ? selectedFontFace(windowsTerminalAdapter.read()) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function checkNerdFont(): DoctorNerdFontCheck {
+  const isInstalled = detectSafely(detectNerdFontInstalled);
+  const selectedFace = currentlySelectedFontFace();
+
+  return {
+    isInstalled,
+    // "Selected" means the font Windows Terminal is actually rendering with
+    // is itself a Nerd Font — not merely that some font is configured. A
+    // plain font selected while a Nerd Font sits installed but unused is
+    // exactly the distinct case CLAUDE.md calls out.
+    isSelected: selectedFace !== undefined && isNerdFontFamilyName(selectedFace),
+    selectedFontFace: selectedFace,
+    installCommand: isInstalled ? undefined : nerdFontInstallCommand(),
+  };
+}
+
+/**
+ * Runs every check `ch doctor` reports: whether each themeable target is
+ * installed, and whether a Nerd Font is installed and actually selected in
+ * Windows Terminal. Herdr is detect-only and never offered an install
+ * command — see CLAUDE.md, "Herdr stays detect-only, never installed."
+ */
+export function runDoctorChecks(): DoctorReport {
+  return {
+    targets: [
+      checkTarget("windows-terminal", detectSafely(() => createWindowsTerminalAdapter().detect()), WINDOWS_TERMINAL_WINGET_PACKAGE_ID),
+      checkTarget("oh-my-posh", detectSafely(() => createOhMyPoshAdapter().detect()), OH_MY_POSH_WINGET_PACKAGE_ID),
+      checkTarget("herdr", detectSafely(() => createHerdrAdapter().detect()), undefined),
+    ],
+    nerdFont: checkNerdFont(),
+  };
 }

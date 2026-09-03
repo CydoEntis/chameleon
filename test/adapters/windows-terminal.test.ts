@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWindowsTerminalAdapter, undoWindowsTerminal } from "../../src/adapters/windows-terminal.js";
+import { createWindowsTerminalAdapter, selectedFontFace, selectWindowsTerminalFont, undoWindowsTerminal } from "../../src/adapters/windows-terminal.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -287,5 +287,127 @@ describe("windows terminal adapter — edge cases", () => {
 
     createWindowsTerminalAdapter(settingsPath).reload();
     expect(readFileSync(settingsPath, "utf8")).toBe(LF_FIXTURE);
+  });
+});
+
+describe("selectedFontFace", () => {
+  it("prefers the nested font.face over the legacy flat fontFace when both are present — the shape Windows Terminal itself honours", () => {
+    const settingsPath = path.join(mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-font-")), "settings.json");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ profiles: { defaults: { font: { face: "CaskaydiaCove NF" }, fontFace: "Cascadia Mono" } } }),
+      "utf8",
+    );
+    expect(selectedFontFace(createWindowsTerminalAdapter(settingsPath).read())).toBe("CaskaydiaCove NF");
+  });
+
+  it("falls back to the legacy flat fontFace when there is no nested font.face", () => {
+    // The hostile fixture used throughout this file carries only the flat shape.
+    const settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-font-"));
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, LF_FIXTURE, "utf8");
+    expect(selectedFontFace(createWindowsTerminalAdapter(settingsPath).read())).toBe("Cascadia Mono");
+  });
+
+  it("is undefined when neither shape is present", () => {
+    const settingsPath = path.join(mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-font-")), "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ profiles: { defaults: {} } }), "utf8");
+    expect(selectedFontFace(createWindowsTerminalAdapter(settingsPath).read())).toBeUndefined();
+  });
+});
+
+describe("selectWindowsTerminalFont", () => {
+  let settingsDir: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-select-font-"));
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("updates the nested font.face in place, preserving sibling keys like size — never a second, competing flat fontFace", () => {
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ profiles: { defaults: { font: { face: "Cascadia Mono", size: 11 } } } }, null, 2),
+      "utf8",
+    );
+
+    selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
+
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as {
+      profiles: { defaults: { font?: { face?: unknown; size?: unknown }; fontFace?: unknown } };
+    };
+    expect(parsed.profiles.defaults.font?.face).toBe("CaskaydiaCove NF");
+    expect(parsed.profiles.defaults.font?.size).toBe(11);
+    expect(parsed.profiles.defaults.fontFace).toBeUndefined();
+  });
+
+  it("updates the legacy flat fontFace in place when that is the shape already on disk", () => {
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ profiles: { defaults: { fontFace: "Cascadia Mono" } } }, null, 2), "utf8");
+
+    selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    const parsed = parseWritten(resultText) as { profiles: { defaults: { font?: unknown; fontFace?: unknown } } };
+    expect(parsed.profiles.defaults.fontFace).toBe("CaskaydiaCove NF");
+    expect(parsed.profiles.defaults.font).toBeUndefined();
+    expect(countOccurrences(resultText, '"fontFace"')).toBe(1);
+  });
+
+  it("defaults to the nested shape when neither is present yet — what a fresh Windows Terminal install writes", () => {
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ profiles: { defaults: {} } }, null, 2), "utf8");
+
+    selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
+
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as {
+      profiles: { defaults: { font?: { face?: unknown }; fontFace?: unknown } };
+    };
+    expect(parsed.profiles.defaults.font?.face).toBe("CaskaydiaCove NF");
+    expect(parsed.profiles.defaults.fontFace).toBeUndefined();
+  });
+
+  it("preserves unrelated settings, comments and key order untouched by a font selection", () => {
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, LF_FIXTURE, "utf8");
+
+    selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(resultText).toContain("// Windows Terminal user configuration");
+    expect(resultText).toContain('"colorScheme": "Campbell"');
+    expect(resultText).toContain("// keep the tab bar out of the way");
+    const parsed = parseWritten(resultText) as { profiles: { defaults: { fontFace?: unknown } } };
+    expect(parsed.profiles.defaults.fontFace).toBe("CaskaydiaCove NF");
+  });
+
+  it("is idempotent — selecting the same font twice produces the same file, one marked block, never accumulating", () => {
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ profiles: { defaults: { fontFace: "Cascadia Mono" } } }, null, 2), "utf8");
+
+    selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
+    const afterFirstSelect = readFileSync(settingsPath, "utf8");
+    selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
+    const afterSecondSelect = readFileSync(settingsPath, "utf8");
+
+    expect(afterSecondSelect).toBe(afterFirstSelect);
+    expect(countOccurrences(afterSecondSelect, "// ch:begin")).toBe(1);
+  });
+
+  it("backs up before writing, and undo restores the pre-selection font", () => {
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ profiles: { defaults: { fontFace: "Cascadia Mono" } } }, null, 2), "utf8");
+    const originalText = readFileSync(settingsPath, "utf8");
+
+    selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
+    expect(readFileSync(settingsPath, "utf8")).not.toBe(originalText);
+    expect(readFileSync(`${settingsPath}.chameleon-backup`, "utf8")).toBe(originalText);
+
+    undoWindowsTerminal(settingsPath);
+    expect(readFileSync(settingsPath, "utf8")).toBe(originalText);
   });
 });
