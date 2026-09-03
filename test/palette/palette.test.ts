@@ -89,4 +89,27 @@ describe("toPalette", () => {
     // proves the freeze at runtime even though the type is already readonly.
     expect(() => Object.assign(palette, { appearance: "light" })).toThrow();
   });
+
+  it("deep-freezes the slots record and every MeasuredColor within it", () => {
+    const palette = toPalette(parseScheme(catppuccinMocha));
+
+    expect(Object.isFrozen(palette.slots)).toBe(true);
+    for (const measuredColor of Object.values(palette.slots)) {
+      expect(Object.isFrozen(measuredColor)).toBe(true);
+    }
+  });
+
+  it("leaves a nested slot's hex unchanged after a mutation attempt", () => {
+    const palette = toPalette(parseScheme(catppuccinMocha));
+    // Cast away the readonly modifier so this proves the runtime freeze
+    // rather than being caught by the type system before it runs. Test
+    // modules run in strict mode, so the assignment throws instead of
+    // silently no-oping — either way, the value must survive it.
+    const mutate = () => {
+      (palette.slots.red as { hex: string }).hex = "#000000";
+    };
+
+    expect(mutate).toThrow();
+    expect(palette.slots.red.hex).toBe("#f38ba8");
+  });
 });
