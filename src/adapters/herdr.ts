@@ -1,0 +1,352 @@
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import { ROLES, type Role } from "../constants.js";
+import { resolveRoleHexes } from "../palette/repair.js";
+import type { Scheme } from "../palette/scheme.js";
+import { detectLineEnding } from "./marked-json-edit.js";
+
+/** Suffix for the pre-apply copy of config.toml that `undoHerdr` restores from. */
+const BACKUP_FILE_SUFFIX = ".chameleon-backup";
+
+/**
+ * Every edit this adapter makes inside [theme.custom] is wrapped in this
+ * pair, so a rerun can find and replace its own entries without disturbing
+ * any override the user wrote there themselves. TOML's comment syntax is
+ * `#`, same as the marker this project already uses for the PowerShell
+ * profile — see oh-my-posh.ts.
+ */
+const MARKER_BEGIN = "# ch:begin";
+const MARKER_END = "# ch:end";
+
+/** The binary and subcommand Herdr's own docs give for a live reload — a call over Herdr's control socket, never a relaunch. See reloadHerdr. */
+const HERDR_BINARY_NAME = "herdr";
+const RELOAD_CONFIG_ARGS = ["server", "reload-config"] as const;
+
+/**
+ * The slice of Herdr's config.toml this adapter actually depends on.
+ * Everything else in a real config.toml ([ui], status-bar settings, …) is
+ * never parsed and never touched — this schema exists only to describe the
+ * shape this adapter reads back out, never to police the rest of a user's
+ * config.
+ */
+const HerdrConfigSchema = z.object({
+  theme: z.object({
+    name: z.string().optional(),
+    custom: z.record(z.string(), z.string()),
+  }),
+});
+
+export type HerdrConfig = z.infer<typeof HerdrConfigSchema>;
+
+export interface HerdrAdapter {
+  detect(): boolean;
+  read(): HerdrConfig;
+  apply(scheme: Scheme): void;
+  reload(): void;
+}
+
+/** Where Herdr keeps config.toml, under the user's roaming app data. */
+function defaultConfigPath(): string | undefined {
+  const appData = process.env["APPDATA"];
+  if (!appData) return undefined;
+  return path.join(appData, "herdr", "config.toml");
+}
+
+function requireConfigPath(configPath: string | undefined): string {
+  if (!configPath) {
+    throw new Error("APPDATA is not set — cannot locate Herdr's config.toml");
+  }
+  return configPath;
+}
+
+function backupPathFor(configPath: string): string {
+  return `${configPath}${BACKUP_FILE_SUFFIX}`;
+}
+
+function detectHerdr(configPath: string | undefined): boolean {
+  return configPath !== undefined && existsSync(configPath);
+}
+
+// --- Minimal TOML table/line scanning -------------------------------------
+//
+// Herdr's config.toml is never fully parsed: this adapter depends on
+// exactly two tables ([theme] and [theme.custom]), both flat string maps,
+// so a hand-rolled line scan is enough to find and edit them without
+// dragging in a general-purpose TOML parser this project has no other use
+// for. See code-standards.md, "Dependencies".
+
+const TABLE_HEADER_REGEX = /^\s*\[([^[\]]+)\]\s*(#.*)?$/;
+const STRING_KEY_VALUE_REGEX = /^\s*([A-Za-z0-9_.-]+)\s*=\s*"((?:[^"\\]|\\.)*)"\s*(#.*)?$/;
+
+interface TomlTableRange {
+  readonly bodyStartLineIndex: number;
+  readonly bodyEndLineIndex: number;
+}
+
+function tableHeaderName(line: string): string | undefined {
+  return TABLE_HEADER_REGEX.exec(line)?.[1]?.trim();
+}
+
+/** The line range of `tableName`'s own body — everything after its header, up to the next table header or end of file. */
+function findTable(lines: readonly string[], tableName: string): TomlTableRange | undefined {
+  const headerLineIndex = lines.findIndex((line) => tableHeaderName(line) === tableName);
+  if (headerLineIndex === -1) return undefined;
+
+  const bodyStartLineIndex = headerLineIndex + 1;
+  const nextHeaderOffset = lines.slice(bodyStartLineIndex).findIndex((line) => tableHeaderName(line) !== undefined);
+  const bodyEndLineIndex = nextHeaderOffset === -1 ? lines.length : bodyStartLineIndex + nextHeaderOffset;
+
+  return { bodyStartLineIndex, bodyEndLineIndex };
+}
+
+function unescapeBasicString(value: string): string {
+  return value.replace(/\\(.)/g, "$1");
+}
+
+/** The value of `key = "…"` among `bodyLines`, tolerating only the double-quoted basic strings this adapter ever reads or writes. */
+function extractStringValue(bodyLines: readonly string[], key: string): string | undefined {
+  for (const line of bodyLines) {
+    const match = STRING_KEY_VALUE_REGEX.exec(line);
+    if (match?.[1] === key) {
+      return unescapeBasicString(match[2] ?? "");
+    }
+  }
+  return undefined;
+}
+
+/** Every `key = "…"` pair among `bodyLines`, skipping Chameleon's own marker comments. */
+function extractStringKeyValues(bodyLines: readonly string[]): Record<string, string> {
+  const entries: Record<string, string> = {};
+  for (const line of bodyLines) {
+    const trimmedLine = line.trim();
+    if (trimmedLine === MARKER_BEGIN || trimmedLine === MARKER_END) continue;
+
+    const match = STRING_KEY_VALUE_REGEX.exec(line);
+    const key = match?.[1];
+    const value = match?.[2];
+    if (key === undefined || value === undefined) continue;
+    entries[key] = unescapeBasicString(value);
+  }
+  return entries;
+}
+
+/**
+ * Parses config.toml down to the [theme] table this adapter depends on. A
+ * config missing that table entirely must say so by name, never crash and
+ * never be silently overwritten.
+ */
+function readHerdrConfig(configPath: string): HerdrConfig {
+  const rawText = readFileSync(configPath, "utf8");
+  const lines = rawText.split(/\r\n|\n/);
+
+  const themeTable = findTable(lines, "theme");
+  if (!themeTable) {
+    throw new Error(`${configPath} is not a Herdr config Chameleon understands: missing a [theme] table`);
+  }
+  const themeBodyLines = lines.slice(themeTable.bodyStartLineIndex, themeTable.bodyEndLineIndex);
+
+  const customTable = findTable(lines, "theme.custom");
+  const customBodyLines = customTable ? lines.slice(customTable.bodyStartLineIndex, customTable.bodyEndLineIndex) : [];
+
+  const shape = {
+    theme: {
+      name: extractStringValue(themeBodyLines, "name"),
+      custom: extractStringKeyValues(customBodyLines),
+    },
+  };
+  const validated = HerdrConfigSchema.safeParse(shape);
+  if (!validated.success) {
+    throw new Error(`${configPath} is not a Herdr config Chameleon understands: ${validated.error.message}`);
+  }
+  return validated.data;
+}
+
+function spliceTableBody(lines: readonly string[], table: TomlTableRange, updatedBodyLines: readonly string[], eol: string): string {
+  return [...lines.slice(0, table.bodyStartLineIndex), ...updatedBodyLines, ...lines.slice(table.bodyEndLineIndex)].join(eol);
+}
+
+/** Appends a fresh `[tableName]` table at the end of `text`, for the config that does not have one yet. */
+function appendTable(text: string, eol: string, tableName: string, bodyLines: readonly string[]): string {
+  const tableText = `[${tableName}]${eol}${bodyLines.join(eol)}${eol}`;
+  if (text.length === 0) return tableText;
+  const separator = text.endsWith(eol) ? eol : eol + eol;
+  return `${text}${separator}${tableText}`;
+}
+
+const NAME_LINE_REGEX = /^\s*name\s*=.*$/;
+
+function buildNameLine(themeName: string): string {
+  return `name = ${JSON.stringify(themeName)}`;
+}
+
+/**
+ * Sets [theme]'s own `name` to `themeName`, replacing a pre-existing value
+ * in place — never marker-scoped, since a table can hold only one `name`
+ * key and there is nothing else of Chameleon's to track there.
+ */
+function upsertThemeName(text: string, eol: string, themeName: string): string {
+  const lines = text.split(eol);
+  const themeTable = findTable(lines, "theme");
+  if (!themeTable) {
+    return appendTable(text, eol, "theme", [buildNameLine(themeName)]);
+  }
+
+  const bodyLines = lines.slice(themeTable.bodyStartLineIndex, themeTable.bodyEndLineIndex);
+  const existingIndex = bodyLines.findIndex((line) => NAME_LINE_REGEX.test(line));
+  const updatedBodyLines =
+    existingIndex === -1
+      ? [buildNameLine(themeName), ...bodyLines]
+      : bodyLines.map((line, index) => (index === existingIndex ? buildNameLine(themeName) : line));
+
+  return spliceTableBody(lines, themeTable, updatedBodyLines, eol);
+}
+
+function buildCustomBlockLines(colorTable: Readonly<Record<Role, string>>): string[] {
+  return ROLES.map((role) => `${role} = ${JSON.stringify(colorTable[role])}`);
+}
+
+/**
+ * Upserts Chameleon's own colour tokens into [theme.custom], scoped between
+ * ch:begin/ch:end. A user's own overrides in the same table — outside the
+ * marker — are never touched, so a config that already carries hand-picked
+ * [theme.custom] entries keeps them across every apply.
+ */
+function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Record<Role, string>>): string {
+  const lines = text.split(eol);
+  const customTable = findTable(lines, "theme.custom");
+  const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(colorTable), MARKER_END];
+
+  if (!customTable) {
+    return appendTable(text, eol, "theme.custom", markedLines);
+  }
+
+  const bodyLines = lines.slice(customTable.bodyStartLineIndex, customTable.bodyEndLineIndex);
+  const beginIndex = bodyLines.findIndex((line) => line.trim() === MARKER_BEGIN);
+  if (beginIndex === -1) {
+    return spliceTableBody(lines, customTable, [...markedLines, ...bodyLines], eol);
+  }
+
+  const endIndex = bodyLines.findIndex((line, index) => index > beginIndex && line.trim() === MARKER_END);
+  if (endIndex === -1) {
+    throw new Error(
+      "config.toml has a ch:begin marker in [theme.custom] with no matching ch:end — refusing to guess where Chameleon's block ends",
+    );
+  }
+
+  const updatedBodyLines = [...bodyLines.slice(0, beginIndex), ...markedLines, ...bodyLines.slice(endIndex + 1)];
+  return spliceTableBody(lines, customTable, updatedBodyLines, eol);
+}
+
+/**
+ * Backs up config.toml, then sets [theme].name and upserts the
+ * [theme.custom] colour tokens for `scheme`'s resolved roles — both edits
+ * leaving everything else in the file, [ui] and its comments included,
+ * untouched.
+ */
+function applyHerdrScheme(configPath: string | undefined, scheme: Scheme): void {
+  const resolvedConfigPath = requireConfigPath(configPath);
+  if (!existsSync(resolvedConfigPath)) {
+    throw new Error(`no Herdr config found at ${resolvedConfigPath}`);
+  }
+
+  copyFileSync(resolvedConfigPath, backupPathFor(resolvedConfigPath));
+
+  const originalText = readFileSync(resolvedConfigPath, "utf8");
+  const eol = detectLineEnding(originalText);
+  const colorTable = resolveRoleHexes(scheme);
+
+  const withName = upsertThemeName(originalText, eol, scheme.name);
+  const withCustom = upsertCustomBlock(withName, eol, colorTable);
+
+  writeFileSync(resolvedConfigPath, withCustom, "utf8");
+}
+
+const HerdrCliErrorSchema = z.object({ code: z.string(), message: z.string().optional() }).catchall(z.unknown());
+
+type HerdrCliError = z.infer<typeof HerdrCliErrorSchema>;
+
+/**
+ * Herdr's own CLI prints a JSON object on stderr when a command fails — for
+ * example `{"code":"server_not_running"}` when there is no running server
+ * left to reach over the socket. Extracted so a failed reload can surface
+ * Herdr's own reason instead of a generic "it didn't work".
+ */
+function parseHerdrCliError(stderr: string): HerdrCliError | undefined {
+  const jsonMatch = /\{[\s\S]*\}/.exec(stderr);
+  if (!jsonMatch) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(jsonMatch[0]);
+    const validated = HerdrCliErrorSchema.safeParse(parsed);
+    return validated.success ? validated.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function describeReloadFailure(result: SpawnSyncReturns<string>): string {
+  if (result.error) {
+    return `could not run "${HERDR_BINARY_NAME} ${RELOAD_CONFIG_ARGS.join(" ")}": ${result.error.message}`;
+  }
+
+  const herdrError = parseHerdrCliError(result.stderr);
+  if (herdrError) {
+    const detail = herdrError.message ? `: ${herdrError.message}` : "";
+    return `herdr reported "${herdrError.code}"${detail}`;
+  }
+
+  return `"${HERDR_BINARY_NAME} ${RELOAD_CONFIG_ARGS.join(" ")}" exited with status ${String(result.status)}`;
+}
+
+/**
+ * Reloads every pane from the config.toml already on disk — a call over
+ * Herdr's own control socket, not a relaunch, which is what makes this safe
+ * to run from inside a Herdr-managed pane: launching a *new* `herdr` from
+ * inside one is exactly what Herdr's own CLI refuses to do, and
+ * `server reload-config` is never that. It inherits the calling process's
+ * environment — HERDR_ENV included — the same as any other spawned process;
+ * nothing here needs to special-case it.
+ *
+ * spawnSync reports a failed reload two different ways and both must be
+ * checked: `result.error` when the binary could not even be started, and a
+ * non-zero `result.status` when it ran and Herdr's own CLI reported failure
+ * — most commonly `server_not_running`, a stale environment pointed at a
+ * server that is no longer listening. Checking only `error` would call that
+ * second case a success and claim every pane repainted when none did.
+ */
+function reloadHerdr(): void {
+  const result = spawnSync(HERDR_BINARY_NAME, [...RELOAD_CONFIG_ARGS], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw new Error(`Herdr did not reload: ${describeReloadFailure(result)}`);
+  }
+}
+
+/**
+ * Builds the Herdr adapter. `configPath` defaults to the real config.toml
+ * location and is only ever overridden by tests, which point it at a
+ * fixture copy so nothing here touches a real config.
+ */
+export function createHerdrAdapter(configPath: string | undefined = defaultConfigPath()): HerdrAdapter {
+  return {
+    detect: () => detectHerdr(configPath),
+    read: () => readHerdrConfig(requireConfigPath(configPath)),
+    apply: (scheme) => applyHerdrScheme(configPath, scheme),
+    reload: () => reloadHerdr(),
+  };
+}
+
+/**
+ * Restores config.toml from the backup written by the most recent `apply`.
+ * Not part of the adapter interface — undo is a user command, not a step in
+ * the theming pipeline — but it lives beside the adapter because the backup
+ * file's location and format are this file's business.
+ */
+export function undoHerdr(configPath: string | undefined = defaultConfigPath()): void {
+  const resolvedConfigPath = requireConfigPath(configPath);
+  const backupPath = backupPathFor(resolvedConfigPath);
+  if (!existsSync(backupPath)) {
+    throw new Error(`no backup found at ${backupPath} — nothing to undo`);
+  }
+  copyFileSync(backupPath, resolvedConfigPath);
+}

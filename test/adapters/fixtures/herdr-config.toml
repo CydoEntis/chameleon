@@ -1,0 +1,17 @@
+# Herdr configuration — hand edited, please don't nuke my comments.
+
+[ui]
+# status bar lives here, out of scope for Chameleon
+show_status_bar = true
+pane_border_style = "rounded" # I like rounded borders
+
+[theme]
+name = "legacy-theme" # picked from the built-in list
+
+[theme.custom]
+# my own overrides, do not remove
+banner = "#112233"
+accent_override = "#445566"
+
+[server]
+socket_path = "/tmp/herdr.sock"
