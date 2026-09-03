@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "slug": "gruvbox-dark",
+    "name": "Gruvbox Dark",
+    "family": "Gruvbox",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Gruvbox Dark",
+      "black": "#282828",
+      "red": "#cc241d",
+      "green": "#98971a",
+      "yellow": "#d79921",
+      "blue": "#458588",
+      "purple": "#b16286",
+      "cyan": "#689d6a",
+      "white": "#a89984",
+      "brightBlack": "#928374",
+      "brightRed": "#fb4934",
+      "brightGreen": "#b8bb26",
+      "brightYellow": "#fabd2f",
+      "brightBlue": "#83a598",
+      "brightPurple": "#d3869b",
+      "brightCyan": "#8ec07c",
+      "brightWhite": "#ebdbb2",
+      "background": "#282828",
+      "foreground": "#ebdbb2",
+      "cursorColor": "#ebdbb2",
+      "selectionBackground": "#665c54"
+    },
+    "oh-my-posh": {
+      "ground": "#282828",
+      "body": "#ebdbb2",
+      "accent": "#529da1",
+      "muted": "#928374",
+      "success": "#689d6a",
+      "error": "#e96a65"
+    },
+    "herdr": {
+      "ground": "#282828",
+      "body": "#ebdbb2",
+      "accent": "#529da1",
+      "muted": "#928374",
+      "success": "#689d6a",
+      "error": "#e96a65"
+    }
+  }
+}

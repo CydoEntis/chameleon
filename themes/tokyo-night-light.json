@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "slug": "tokyo-night-light",
+    "name": "TokyoNight Day",
+    "family": "Tokyo Night",
+    "appearance": "light",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "TokyoNight Day",
+      "black": "#e9e9ed",
+      "red": "#f52a65",
+      "green": "#587539",
+      "yellow": "#8c6c3e",
+      "blue": "#2e7de9",
+      "purple": "#9854f1",
+      "cyan": "#007197",
+      "white": "#6172b0",
+      "brightBlack": "#a1a6c5",
+      "brightRed": "#f52a65",
+      "brightGreen": "#587539",
+      "brightYellow": "#8c6c3e",
+      "brightBlue": "#2e7de9",
+      "brightPurple": "#9854f1",
+      "brightCyan": "#007197",
+      "brightWhite": "#3760bf",
+      "background": "#e1e2e7",
+      "foreground": "#3760bf",
+      "cursorColor": "#3760bf",
+      "selectionBackground": "#99a7df"
+    },
+    "oh-my-posh": {
+      "ground": "#e1e2e7",
+      "body": "#3760bf",
+      "accent": "#006a8d",
+      "muted": "#747ba9",
+      "success": "#4f6933",
+      "error": "#616161"
+    },
+    "herdr": {
+      "ground": "#e1e2e7",
+      "body": "#3760bf",
+      "accent": "#006a8d",
+      "muted": "#747ba9",
+      "success": "#4f6933",
+      "error": "#616161"
+    }
+  }
+}

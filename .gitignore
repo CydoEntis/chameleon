@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.theme-pack-build/
 *.tsbuildinfo
 .env
 .DS_Store
