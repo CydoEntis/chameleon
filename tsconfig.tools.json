@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": ".theme-pack-build",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["tools/**/*.ts", "src/**/*.ts"]
+}

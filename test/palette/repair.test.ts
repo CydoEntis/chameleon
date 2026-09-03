@@ -4,7 +4,7 @@ import { toHsl } from "../../src/palette/color.js";
 import type { Palette } from "../../src/palette/palette.js";
 import { repairFailingRoles } from "../../src/palette/repair.js";
 import { assignRolesByContrast } from "../../src/palette/roles.js";
-import { loadVendoredSchemes } from "../../src/palette/scheme-library.js";
+import { loadVendoredSchemes } from "../../tools/vendor-scheme-library.js";
 
 // Real vendored schemes only — see roles.test.ts and
 // vendor/iterm2-color-schemes/windows-terminal/<name>.json.
