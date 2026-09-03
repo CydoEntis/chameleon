@@ -11,12 +11,15 @@
   "bin": { "ch": "dist/cli.js", "chameleon": "dist/cli.js" },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "themes"],
+  "files": ["dist", "themes", "vendor"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
