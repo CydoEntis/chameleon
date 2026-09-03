@@ -11,3 +11,48 @@
  * vendored scheme's background falls cleanly on one side of.
  */
 export const APPEARANCE_LUMINANCE_THRESHOLD = 0.5;
+
+/**
+ * The offset in the WCAG contrast-ratio formula: (lighter + K) / (darker +
+ * K). It keeps the ratio finite when either colour is pure black (relative
+ * luminance 0) and is fixed by the WCAG 2.x spec, not a tuning knob.
+ */
+export const WCAG_CONTRAST_OFFSET = 0.05;
+
+/**
+ * Chameleon's six roles, resolved from a scheme's slots by measured
+ * contrast rather than by trusting a slot's name. See the three-word model
+ * in CLAUDE.md: a "palette" is these roles, not the raw scheme slots.
+ */
+export const ROLES = ["ground", "body", "accent", "muted", "success", "error"] as const;
+
+export type Role = (typeof ROLES)[number];
+
+/**
+ * Minimum contrast, against ground, that body text and the accent colour
+ * must clear to be legible. Reused for success and error, which are also
+ * rendered as text. WCAG 2.x AA for normal-size text.
+ */
+export const TEXT_MIN_RATIO = 4.5;
+
+/**
+ * Minimum contrast muted text must clear against ground. Lower than
+ * TEXT_MIN_RATIO because muted text is deliberately de-emphasised — but it
+ * must also stay below body's ratio (see repairFailingRoles), or it reads
+ * as more prominent than the text it is meant to recede behind.
+ */
+export const MUTED_MIN_RATIO = 3.0;
+
+/**
+ * Hue boundaries, in degrees, used to classify an ANSI slot's *measured*
+ * hue rather than trust its name — Rosé Pine Dawn's `green` slot holds a
+ * blue (hue ~197°) and its `cyan` slot holds a pink (hue ~3°). A slot's
+ * hue falling below RED_HUE_MAX_DEGREES or at/above RED_HUE_WRAP_MIN_DEGREES
+ * reads as red; between GREEN_HUE_MIN_DEGREES and GREEN_HUE_MAX_DEGREES it
+ * reads as green; the remainder, up to the red wrap, reads as the cool
+ * (blue/cyan/purple) family accent is drawn from.
+ */
+export const RED_HUE_MAX_DEGREES = 20;
+export const RED_HUE_WRAP_MIN_DEGREES = 345;
+export const GREEN_HUE_MIN_DEGREES = 60;
+export const GREEN_HUE_MAX_DEGREES = 170;
