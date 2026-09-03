@@ -11,3 +11,7 @@ test/adapters/fixtures/settings.jsonc text eol=lf
 # vote it must never have.
 test/adapters/fixtures/oh-my-posh-config.omp.json text eol=lf
 test/adapters/fixtures/profile.ps1 text eol=lf
+
+# Same reasoning again, for the Herdr adapter's own fixture (see
+# test/adapters/herdr.test.ts).
+test/adapters/fixtures/herdr-config.toml text eol=lf

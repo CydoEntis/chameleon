@@ -26,3 +26,6 @@ export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/wi
 
 export type { OhMyPoshAdapter, OhMyPoshConfig } from "./adapters/oh-my-posh.js";
 export { createOhMyPoshAdapter, undoOhMyPosh } from "./adapters/oh-my-posh.js";
+
+export type { HerdrAdapter, HerdrConfig } from "./adapters/herdr.js";
+export { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
