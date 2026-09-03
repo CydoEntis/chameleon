@@ -1,6 +1,8 @@
 import { MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET, type Role } from "../constants.js";
 import { contrastRatio, fromHsl, relativeLuminance, toHsl } from "./color.js";
-import type { RoleAssignment, RoleColor } from "./roles.js";
+import { toPalette } from "./palette.js";
+import { assignRolesByContrast, type RoleAssignment, type RoleColor } from "./roles.js";
+import type { Scheme } from "./scheme.js";
 
 export interface RepairedRoleColor extends RoleColor {
   readonly wasRepaired: boolean;
@@ -205,5 +207,23 @@ export function repairFailingRoles(assignment: RoleAssignment): ContrastReport {
     palette: resolvedPalette,
     repairedRoles: Object.freeze(repairedRoles),
     fallbackRoles: Object.freeze(fallbackRoles),
+  };
+}
+
+/**
+ * Runs the full pipeline — parse, assign, repair — and reduces it to the
+ * flat role-to-hex table every colour-consuming adapter needs. Oh My
+ * Posh's palette block and Herdr's [theme.custom] block both key off
+ * exactly this shape, so it is computed once here rather than twice.
+ */
+export function resolveRoleHexes(scheme: Scheme): Record<Role, string> {
+  const { palette } = repairFailingRoles(assignRolesByContrast(toPalette(scheme)));
+  return {
+    ground: palette.ground.hex,
+    body: palette.body.hex,
+    accent: palette.accent.hex,
+    muted: palette.muted.hex,
+    success: palette.success.hex,
+    error: palette.error.hex,
   };
 }

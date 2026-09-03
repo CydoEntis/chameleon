@@ -3,9 +3,7 @@ import path from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
 import type { Role } from "../constants.js";
-import { toPalette } from "../palette/palette.js";
-import { repairFailingRoles } from "../palette/repair.js";
-import { assignRolesByContrast } from "../palette/roles.js";
+import { resolveRoleHexes } from "../palette/repair.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
   buildPropertyBlockContent,
@@ -98,24 +96,6 @@ function defaultPointerPath(): string {
 
 function backupPathFor(targetPath: string): string {
   return `${targetPath}${BACKUP_FILE_SUFFIX}`;
-}
-
-/**
- * Chameleon's six roles, resolved from `scheme` and reduced to the flat
- * name-to-hex table Oh My Posh's own `palette` block expects. Segments
- * reference these by name — `p:accent`, `p:muted` — so this table is the
- * only thing that ever needs to change when the active theme changes.
- */
-function paletteTableFor(scheme: Scheme): Record<Role, string> {
-  const { ground, body, accent, muted, success, error } = repairFailingRoles(assignRolesByContrast(toPalette(scheme))).palette;
-  return {
-    ground: ground.hex,
-    body: body.hex,
-    accent: accent.hex,
-    muted: muted.hex,
-    success: success.hex,
-    error: error.hex,
-  };
 }
 
 function detectOhMyPosh(configPath: string | undefined): boolean {
@@ -286,7 +266,7 @@ function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string
 
   copyFileSync(configPath, backupPathFor(configPath));
   const originalText = readFileSync(configPath, "utf8");
-  const updatedConfigText = upsertPaletteTable(configPath, originalText, paletteTableFor(scheme));
+  const updatedConfigText = upsertPaletteTable(configPath, originalText, resolveRoleHexes(scheme));
   writeFileSync(configPath, updatedConfigText, "utf8");
 
   upsertSetPoshContext(profilePath, pointerPath);
