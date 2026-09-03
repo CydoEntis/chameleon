@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Palette } from "../../src/palette/palette.js";
 import { assignRolesByContrast } from "../../src/palette/roles.js";
-import { loadVendoredSchemes } from "../../src/palette/scheme-library.js";
+import { loadVendoredSchemes } from "../../tools/vendor-scheme-library.js";
 
 // Every fixture below is a real vendored Windows Terminal scheme, loaded
 // through the same loader the shipped themes go through — never invented

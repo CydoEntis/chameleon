@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "slug": "github-light",
+    "name": "GitHub Light Default",
+    "family": "GitHub",
+    "appearance": "light",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "GitHub Light Default",
+      "black": "#24292f",
+      "red": "#cf222e",
+      "green": "#116329",
+      "yellow": "#4d2d00",
+      "blue": "#0969da",
+      "purple": "#8250df",
+      "cyan": "#1b7c83",
+      "white": "#6e7781",
+      "brightBlack": "#57606a",
+      "brightRed": "#a40e26",
+      "brightGreen": "#1a7f37",
+      "brightYellow": "#633c01",
+      "brightBlue": "#218bff",
+      "brightPurple": "#a475f9",
+      "brightCyan": "#3192aa",
+      "brightWhite": "#8c959f",
+      "background": "#ffffff",
+      "foreground": "#1f2328",
+      "cursorColor": "#0969da",
+      "selectionBackground": "#1f2328"
+    },
+    "oh-my-posh": {
+      "ground": "#ffffff",
+      "body": "#1f2328",
+      "accent": "#0969da",
+      "muted": "#57606a",
+      "success": "#116329",
+      "error": "#cf222e"
+    },
+    "herdr": {
+      "ground": "#ffffff",
+      "body": "#1f2328",
+      "accent": "#0969da",
+      "muted": "#57606a",
+      "success": "#116329",
+      "error": "#cf222e"
+    }
+  }
+}

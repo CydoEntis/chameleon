@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "slug": "everforest-light",
+    "name": "Everforest Light Med",
+    "family": "Everforest",
+    "appearance": "light",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Everforest Light Med",
+      "black": "#7a8478",
+      "red": "#e67e80",
+      "green": "#9ab373",
+      "yellow": "#c1a266",
+      "blue": "#7fbbb3",
+      "purple": "#d699b6",
+      "cyan": "#83c092",
+      "white": "#b2af9f",
+      "brightBlack": "#a6b0a0",
+      "brightRed": "#f85552",
+      "brightGreen": "#8da101",
+      "brightYellow": "#dfa000",
+      "brightBlue": "#3a94c5",
+      "brightPurple": "#df69ba",
+      "brightCyan": "#35a77c",
+      "brightWhite": "#fffbef",
+      "background": "#efebd4",
+      "foreground": "#5c6a72",
+      "cursorColor": "#f57d26",
+      "selectionBackground": "#eaedc8"
+    },
+    "oh-my-posh": {
+      "ground": "#efebd4",
+      "body": "#5c6a72",
+      "accent": "#a84373",
+      "muted": "#798871",
+      "success": "#5a6d3b",
+      "error": "#c62629"
+    },
+    "herdr": {
+      "ground": "#efebd4",
+      "body": "#5c6a72",
+      "accent": "#a84373",
+      "muted": "#798871",
+      "success": "#5a6d3b",
+      "error": "#c62629"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Palette } from "../../src/palette/palette.js";
-import { loadVendoredSchemes } from "../../src/palette/scheme-library.js";
+import { loadVendoredSchemes, readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 describe("loadVendoredSchemes", () => {
   let palettes: Palette[];
@@ -34,5 +34,18 @@ describe("loadVendoredSchemes", () => {
     );
 
     expect(gruvboxLight?.appearance).toBe("light");
+  });
+});
+
+describe("readVendoredScheme", () => {
+  it("reads a single vendored scheme file by name", () => {
+    const dracula = readVendoredScheme("Dracula.json");
+
+    expect(dracula.name).toBe("Dracula");
+    expect(dracula.background).toBe("#282a36");
+  });
+
+  it("names the file when a scheme fails to parse", () => {
+    expect(() => readVendoredScheme("does-not-exist.json")).toThrow();
   });
 });
