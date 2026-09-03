@@ -1,0 +1,158 @@
+[
+  {
+    "slug": "github-dark",
+    "name": "GitHub Dark Default",
+    "family": "GitHub",
+    "appearance": "dark"
+  },
+  {
+    "slug": "github-light",
+    "name": "GitHub Light Default",
+    "family": "GitHub",
+    "appearance": "light"
+  },
+  {
+    "slug": "one-half-dark",
+    "name": "One Half Dark",
+    "family": "One Half",
+    "appearance": "dark"
+  },
+  {
+    "slug": "one-half-light",
+    "name": "One Half Light",
+    "family": "One Half",
+    "appearance": "light"
+  },
+  {
+    "slug": "ayu-dark",
+    "name": "Ayu Mirage",
+    "family": "Ayu",
+    "appearance": "dark"
+  },
+  {
+    "slug": "ayu-light",
+    "name": "Ayu Light",
+    "family": "Ayu",
+    "appearance": "light"
+  },
+  {
+    "slug": "night-owl-dark",
+    "name": "Night Owl",
+    "family": "Night Owl",
+    "appearance": "dark"
+  },
+  {
+    "slug": "night-owl-light",
+    "name": "Night Owlish Light",
+    "family": "Night Owl",
+    "appearance": "light"
+  },
+  {
+    "slug": "tokyo-night-dark",
+    "name": "TokyoNight Night",
+    "family": "Tokyo Night",
+    "appearance": "dark"
+  },
+  {
+    "slug": "tokyo-night-light",
+    "name": "TokyoNight Day",
+    "family": "Tokyo Night",
+    "appearance": "light"
+  },
+  {
+    "slug": "catppuccin-dark",
+    "name": "Catppuccin Mocha",
+    "family": "Catppuccin",
+    "appearance": "dark"
+  },
+  {
+    "slug": "catppuccin-light",
+    "name": "Catppuccin Latte",
+    "family": "Catppuccin",
+    "appearance": "light"
+  },
+  {
+    "slug": "nord-dark",
+    "name": "Nord",
+    "family": "Nord",
+    "appearance": "dark"
+  },
+  {
+    "slug": "nord-light",
+    "name": "Nord Light",
+    "family": "Nord",
+    "appearance": "light"
+  },
+  {
+    "slug": "gruvbox-dark",
+    "name": "Gruvbox Dark",
+    "family": "Gruvbox",
+    "appearance": "dark"
+  },
+  {
+    "slug": "gruvbox-light",
+    "name": "Gruvbox Light",
+    "family": "Gruvbox",
+    "appearance": "light"
+  },
+  {
+    "slug": "rose-pine-dark",
+    "name": "Rose Pine",
+    "family": "Rosé Pine",
+    "appearance": "dark"
+  },
+  {
+    "slug": "rose-pine-light",
+    "name": "Rose Pine Dawn",
+    "family": "Rosé Pine",
+    "appearance": "light"
+  },
+  {
+    "slug": "solarized-dark",
+    "name": "iTerm2 Solarized Dark",
+    "family": "Solarized",
+    "appearance": "dark"
+  },
+  {
+    "slug": "solarized-light",
+    "name": "iTerm2 Solarized Light",
+    "family": "Solarized",
+    "appearance": "light"
+  },
+  {
+    "slug": "kanagawa-dark",
+    "name": "Kanagawa Wave",
+    "family": "Kanagawa",
+    "appearance": "dark"
+  },
+  {
+    "slug": "kanagawa-light",
+    "name": "Kanagawa Lotus",
+    "family": "Kanagawa",
+    "appearance": "light"
+  },
+  {
+    "slug": "everforest-dark",
+    "name": "Everforest Dark Med",
+    "family": "Everforest",
+    "appearance": "dark"
+  },
+  {
+    "slug": "everforest-light",
+    "name": "Everforest Light Med",
+    "family": "Everforest",
+    "appearance": "light"
+  },
+  {
+    "slug": "dracula-dark",
+    "name": "Dracula",
+    "family": "Dracula",
+    "appearance": "dark"
+  },
+  {
+    "slug": "monokai-dark",
+    "name": "Monokai Classic",
+    "family": "Monokai",
+    "appearance": "dark"
+  }
+]

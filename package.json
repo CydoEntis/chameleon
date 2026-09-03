@@ -11,12 +11,13 @@
   "bin": { "ch": "dist/cli.js", "chameleon": "dist/cli.js" },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "themes", "vendor"],
+  "files": ["dist", "themes"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "generate:themes": "tsc -p tsconfig.tools.json && node .theme-pack-build/tools/build-theme-packs.js"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1",

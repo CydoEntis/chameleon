@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "slug": "nord-dark",
+    "name": "Nord",
+    "family": "Nord",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Nord",
+      "black": "#3b4252",
+      "red": "#bf616a",
+      "green": "#a3be8c",
+      "yellow": "#ebcb8b",
+      "blue": "#81a1c1",
+      "purple": "#b48ead",
+      "cyan": "#88c0d0",
+      "white": "#e5e9f0",
+      "brightBlack": "#596377",
+      "brightRed": "#bf616a",
+      "brightGreen": "#a3be8c",
+      "brightYellow": "#ebcb8b",
+      "brightBlue": "#81a1c1",
+      "brightPurple": "#b48ead",
+      "brightCyan": "#8fbcbb",
+      "brightWhite": "#eceff4",
+      "background": "#2e3440",
+      "foreground": "#d8dee9",
+      "cursorColor": "#eceff4",
+      "selectionBackground": "#eceff4"
+    },
+    "oh-my-posh": {
+      "ground": "#2e3440",
+      "body": "#d8dee9",
+      "accent": "#88c0d0",
+      "muted": "#758097",
+      "success": "#a3be8c",
+      "error": "#d18d94"
+    },
+    "herdr": {
+      "ground": "#2e3440",
+      "body": "#d8dee9",
+      "accent": "#88c0d0",
+      "muted": "#758097",
+      "success": "#a3be8c",
+      "error": "#d18d94"
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "slug": "rose-pine-dark",
+    "name": "Rose Pine",
+    "family": "Rosé Pine",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Rose Pine",
+      "black": "#26233a",
+      "red": "#eb6f92",
+      "green": "#31748f",
+      "yellow": "#f6c177",
+      "blue": "#9ccfd8",
+      "purple": "#c4a7e7",
+      "cyan": "#ebbcba",
+      "white": "#e0def4",
+      "brightBlack": "#6e6a86",
+      "brightRed": "#eb6f92",
+      "brightGreen": "#31748f",
+      "brightYellow": "#f6c177",
+      "brightBlue": "#9ccfd8",
+      "brightPurple": "#c4a7e7",
+      "brightCyan": "#ebbcba",
+      "brightWhite": "#e0def4",
+      "background": "#191724",
+      "foreground": "#e0def4",
+      "cursorColor": "#e0def4",
+      "selectionBackground": "#403d52"
+    },
+    "oh-my-posh": {
+      "ground": "#191724",
+      "body": "#e0def4",
+      "accent": "#9ccfd8",
+      "muted": "#6e6a86",
+      "success": "#f6c177",
+      "error": "#ebbcba"
+    },
+    "herdr": {
+      "ground": "#191724",
+      "body": "#e0def4",
+      "accent": "#9ccfd8",
+      "muted": "#6e6a86",
+      "success": "#f6c177",
+      "error": "#ebbcba"
+    }
+  }
+}

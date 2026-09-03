@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "slug": "night-owl-light",
+    "name": "Night Owlish Light",
+    "family": "Night Owl",
+    "appearance": "light",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Night Owlish Light",
+      "black": "#011627",
+      "red": "#d3423e",
+      "green": "#2aa298",
+      "yellow": "#daaa01",
+      "blue": "#4876d6",
+      "purple": "#403f53",
+      "cyan": "#08916a",
+      "white": "#7a8181",
+      "brightBlack": "#7a8181",
+      "brightRed": "#f76e6e",
+      "brightGreen": "#49d0c5",
+      "brightYellow": "#dac26b",
+      "brightBlue": "#5ca7e4",
+      "brightPurple": "#697098",
+      "brightCyan": "#00c990",
+      "brightWhite": "#989fb1",
+      "background": "#ffffff",
+      "foreground": "#403f53",
+      "cursorColor": "#403f53",
+      "selectionBackground": "#f2f2f2"
+    },
+    "oh-my-posh": {
+      "ground": "#ffffff",
+      "body": "#403f53",
+      "accent": "#373648",
+      "muted": "#7a8181",
+      "success": "#078460",
+      "error": "#d3423e"
+    },
+    "herdr": {
+      "ground": "#ffffff",
+      "body": "#403f53",
+      "accent": "#373648",
+      "muted": "#7a8181",
+      "success": "#078460",
+      "error": "#d3423e"
+    }
+  }
+}
