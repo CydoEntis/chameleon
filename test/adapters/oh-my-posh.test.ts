@@ -6,7 +6,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createOhMyPoshAdapter, undoOhMyPosh } from "../../src/adapters/oh-my-posh.js";
+import {
+  addSegment,
+  buildLayoutSegment,
+  createOhMyPoshAdapter,
+  moveSegmentBetweenBlocks,
+  readOhMyPoshLayout,
+  removeSegment,
+  reorderSegment,
+  undoOhMyPosh,
+  writeOhMyPoshLayout,
+  type Layout,
+  type LayoutSegment,
+} from "../../src/adapters/oh-my-posh.js";
 import { ROLES } from "../../src/constants.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
@@ -319,6 +331,173 @@ describe.each([
       expect(secondPointer.updatedAtMs).toBe(2_000);
       expect(secondPointer.updatedAtMs).toBeGreaterThan(firstPointer.updatedAtMs);
     });
+  });
+
+  describe("layout — ch edit's segment editor", () => {
+    it("reads the fixture's existing left block, and no right block yet", () => {
+      const layout = readOhMyPoshLayout(configPath);
+      expect(layout.left).toEqual([
+        { type: "path", style: "plain", foreground: "p:accent", properties: { style: "full" } },
+        { type: "text", style: "plain", foreground: "p:muted" },
+      ]);
+      expect(layout.right).toEqual([]);
+    });
+
+    it("adds a segment to the right-hand status line, and it round-trips through a write and a read", () => {
+      const layout = readOhMyPoshLayout(configPath);
+      const withStatus = addSegment(layout, "right", buildLayoutSegment("battery", "muted"));
+      writeOhMyPoshLayout(withStatus, configPath);
+
+      expect(readOhMyPoshLayout(configPath).right).toEqual([{ type: "battery", foreground: "p:muted" }]);
+    });
+
+    it("adds, reorders, moves between blocks and removes — the full life cycle survives a read back", () => {
+      const initial = readOhMyPoshLayout(configPath);
+      const withTime = addSegment(initial, "right", buildLayoutSegment("time", "accent"));
+      const withBattery = addSegment(withTime, "right", buildLayoutSegment("battery", "muted"), 0);
+      const reordered = reorderSegment(withBattery, "right", 0, 1);
+      const moved = moveSegmentBetweenBlocks(reordered, "right", 0, "left");
+      const final = removeSegment(moved, "left", 0);
+      writeOhMyPoshLayout(final, configPath);
+
+      const readBack = readOhMyPoshLayout(configPath);
+      // The original path segment was removed at index 0, leaving only the
+      // original text segment plus the moved-in time segment.
+      expect(readBack.left).toEqual([{ type: "text", style: "plain", foreground: "p:muted" }, { type: "time", foreground: "p:accent" }]);
+      expect(readBack.right).toEqual([{ type: "battery", foreground: "p:muted" }]);
+    });
+
+    it("leaves the palette untouched — ch edit operates on the layout file only", () => {
+      const layout = readOhMyPoshLayout(configPath);
+      writeOhMyPoshLayout(addSegment(layout, "right", buildLayoutSegment("os", "accent")), configPath);
+
+      const resultText = readFileSync(configPath, "utf8");
+      const parsed = parseWritten(resultText) as { palette: Record<string, string> };
+      expect(parsed.palette["accent"]).toBe("#89b4fa");
+      expect(parsed.palette["muted"]).toBe("#6c7086");
+      // The palette's own hand-written comment survives — this edit never
+      // touched that region at all.
+      expect(resultText).toContain("picked this from the theme picker ages ago");
+    });
+
+    it("is marker-scoped, backed up, and idempotent — writing the same layout twice leaves one blocks marker", () => {
+      const layout = addSegment(readOhMyPoshLayout(configPath), "right", buildLayoutSegment("time", "accent"));
+
+      writeOhMyPoshLayout(layout, configPath);
+      expect(readFileSync(`${configPath}.chameleon-backup`, "utf8")).toBe(configFixture);
+      const afterFirstWrite = readFileSync(configPath, "utf8");
+
+      writeOhMyPoshLayout(layout, configPath);
+      const afterSecondWrite = readFileSync(configPath, "utf8");
+
+      expect(afterSecondWrite).toBe(afterFirstWrite);
+      expect(countOccurrences(afterSecondWrite, "// ch:begin blocks")).toBe(1);
+      expect(usesOnlyLineEnding(afterSecondWrite, eol)).toBe(true);
+    });
+
+    it("survives a theme swap — a layout edit made before applying a theme is still there after", () => {
+      const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+      const layout = addSegment(readOhMyPoshLayout(configPath), "right", buildLayoutSegment("battery", "success"));
+      writeOhMyPoshLayout(layout, configPath);
+
+      adapter.apply(ZEROX96F_SCHEME);
+
+      const afterApply = readOhMyPoshLayout(configPath);
+      expect(afterApply.right).toEqual([{ type: "battery", foreground: "p:success" }]);
+      const parsed = parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> };
+      expect(parsed.palette["success"]).toMatch(/^#[0-9a-f]{6}$/i);
+    });
+
+    it("a theme swap survives a later layout edit — apply first, then edit, and the palette holds", () => {
+      const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+      adapter.apply(ZEROX96F_SCHEME);
+      const appliedPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+
+      const layout = addSegment(readOhMyPoshLayout(configPath), "right", buildLayoutSegment("battery", "success"));
+      writeOhMyPoshLayout(layout, configPath);
+
+      const resultText = readFileSync(configPath, "utf8");
+      expect((parseWritten(resultText) as { palette: Record<string, string> }).palette).toEqual(appliedPalette);
+      expect(readOhMyPoshLayout(configPath).right).toEqual([{ type: "battery", foreground: "p:success" }]);
+    });
+
+    it("rejects reading a layout that already references an undefined role, naming the role", () => {
+      const configWithBadRole = configFixture.replace('"foreground": "p:muted"', '"foreground": "p:brand"');
+      writeFileSync(configPath, configWithBadRole, "utf8");
+
+      expect(() => readOhMyPoshLayout(configPath)).toThrow(/brand/);
+    });
+  });
+});
+
+describe("layout — pure segment operations", () => {
+  const pathSegment: LayoutSegment = buildLayoutSegment("path", "accent");
+  const gitSegment: LayoutSegment = buildLayoutSegment("git", "body", "muted");
+  const emptyLayout: Layout = { left: [], right: [] };
+
+  it("builds a segment coloured entirely by role reference, never a literal hex", () => {
+    const segment = buildLayoutSegment("git", "accent", "muted");
+    expect(segment["foreground"]).toBe("p:accent");
+    expect(segment["background"]).toBe("p:muted");
+    // No hex ever appears anywhere on the built segment's own values.
+    expect(Object.values(segment).some((value) => typeof value === "string" && /^#[0-9a-f]{3,8}$/i.test(value))).toBe(false);
+  });
+
+  it("omits background entirely when none is given, rather than writing it as undefined", () => {
+    const segment = buildLayoutSegment("text", "muted");
+    expect("background" in segment).toBe(false);
+  });
+
+  it("adds a segment to the end of a block by default", () => {
+    const layout = addSegment(addSegment(emptyLayout, "left", pathSegment), "left", gitSegment);
+    expect(layout.left).toEqual([pathSegment, gitSegment]);
+    expect(layout.right).toEqual([]);
+  });
+
+  it("adds a segment at a given index, shifting the rest right", () => {
+    const withPath = addSegment(emptyLayout, "left", pathSegment);
+    const layout = addSegment(withPath, "left", gitSegment, 0);
+    expect(layout.left).toEqual([gitSegment, pathSegment]);
+  });
+
+  it("rejects an out-of-range insert index, naming the block", () => {
+    expect(() => addSegment(emptyLayout, "right", pathSegment, 5)).toThrow(/right/);
+  });
+
+  it("removes the segment at the given index, leaving the rest in order", () => {
+    const withBoth = addSegment(addSegment(emptyLayout, "left", pathSegment), "left", gitSegment);
+    expect(removeSegment(withBoth, "left", 0).left).toEqual([gitSegment]);
+  });
+
+  it("rejects an out-of-range remove index", () => {
+    expect(() => removeSegment(emptyLayout, "left", 0)).toThrow(/index 0/);
+  });
+
+  it("reorders a segment within its own block", () => {
+    const withThree = addSegment(addSegment(addSegment(emptyLayout, "left", pathSegment), "left", gitSegment), "left", pathSegment);
+    const reordered = reorderSegment(withThree, "left", 0, 2);
+    expect(reordered.left).toEqual([gitSegment, pathSegment, pathSegment]);
+  });
+
+  it("moves a segment from one block to the other, appending by default", () => {
+    const withPath = addSegment(emptyLayout, "left", pathSegment);
+    const moved = moveSegmentBetweenBlocks(withPath, "left", 0, "right");
+    expect(moved.left).toEqual([]);
+    expect(moved.right).toEqual([pathSegment]);
+  });
+
+  it("moves a segment to a specific index in the destination block", () => {
+    const layout = addSegment(addSegment(emptyLayout, "left", pathSegment), "right", gitSegment);
+    const moved = moveSegmentBetweenBlocks(layout, "left", 0, "right", 0);
+    expect(moved.right).toEqual([pathSegment, gitSegment]);
+  });
+
+  it("rejects a layout segment that references a role Chameleon does not know, naming the role", () => {
+    // Hand-built rather than through buildLayoutSegment, which only ever
+    // accepts a real Role — this is what a hand-edited or corrupted config
+    // can still smuggle in, and addSegment must catch it just the same.
+    const segmentWithBadRole: LayoutSegment = { type: "text", foreground: "p:brand" };
+    expect(() => addSegment(emptyLayout, "left", segmentWithBadRole)).toThrow(/brand/);
   });
 });
 

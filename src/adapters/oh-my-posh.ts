@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { parse as parseJsonc } from "jsonc-parser";
+import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
-import type { Role } from "../constants.js";
+import { isKnownRole, type Role } from "../constants.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
@@ -135,6 +135,27 @@ function readOhMyPoshConfig(configPath: string): OhMyPoshConfig {
 }
 
 /**
+ * Parses `text`'s root as a JSON object, removes any plain (non-Chameleon-
+ * owned) property named `key`, and reparses — the shared first half of
+ * every root-level marked-block upsert in this file: "palette" here and
+ * "blocks" below both key off a root-level property this way, so this is
+ * where that shape lives rather than twice.
+ */
+function dedupeRootProperty(configPath: string, text: string, key: string): { dedupedText: string; container: Node } {
+  const root = parseJsonTree(configPath, text);
+  if (root.type !== "object") {
+    throw new Error(`${configPath}'s root is not a JSON object`);
+  }
+
+  const dedupedText = dedupeConflict(text, root, findPropertyNode(root, key), key);
+  const container = parseJsonTree(configPath, dedupedText);
+  if (container.type !== "object") {
+    throw new Error(`${configPath}'s root is not a JSON object`);
+  }
+  return { dedupedText, container };
+}
+
+/**
  * Swaps the config's top-level "palette" lookup table for `paletteTable`,
  * scoped between ch:begin/ch:end. Never touches "blocks" — the segment
  * list — which is what keeps a theme swap byte-identical there: every
@@ -143,17 +164,8 @@ function readOhMyPoshConfig(configPath: string): OhMyPoshConfig {
  */
 function upsertPaletteTable(configPath: string, text: string, paletteTable: Record<Role, string>): string {
   const eol = detectLineEnding(text);
-  const root = parseJsonTree(configPath, text);
-  if (root.type !== "object") {
-    throw new Error(`${configPath}'s root is not a JSON object`);
-  }
-
-  const dedupedText = dedupeConflict(text, root, findPropertyNode(root, "palette"));
-  const container = parseJsonTree(configPath, dedupedText);
-  if (container.type !== "object") {
-    throw new Error(`${configPath}'s root is not a JSON object`);
-  }
-  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("palette", paletteTable, eol), eol);
+  const { dedupedText, container } = dedupeRootProperty(configPath, text, "palette");
+  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("palette", paletteTable, eol), eol, "palette");
 }
 
 /**
@@ -325,6 +337,255 @@ function requireConfigPath(configPath: string | undefined): string {
     throw new Error("POSH_THEME is not set — no active Oh My Posh config to read");
   }
   return configPath;
+}
+
+// --- Layout: the left and right-hand (status line) segment blocks ---------
+//
+// CHM-8's "ch edit" — add, remove, reorder and move a segment between the
+// left prompt block and the right-hand status line. This owns the config's
+// "blocks" property, scoped in its own ch:begin blocks / ch:end blocks
+// region — see marked-json-edit.ts's keyed markers — and never the
+// "palette" property applyOhMyPoshScheme owns above: a theme swap and a
+// layout edit are independent operations on independent root-level
+// properties, which is what lets a layout edit survive a theme swap and
+// vice versa.
+
+/**
+ * The Oh My Posh segment types `ch edit add` offers — the handful that cover
+ * what most prompts actually show, per Oh My Posh's own segment reference.
+ * Not exhaustive: a config may carry other segment types already, and this
+ * adapter still reads, reorders and moves those untouched — only adding a
+ * brand new segment is restricted to a type from this list.
+ */
+export const SEGMENT_TYPES = ["path", "git", "os", "session", "shell", "root", "status", "time", "battery", "text"] as const;
+
+export type SegmentType = (typeof SEGMENT_TYPES)[number];
+
+/** Whether `candidateType` is one of SEGMENT_TYPES — the boundary check `ch edit add`'s own `--type` flag must clear, same pattern as isKnownRole for `--foreground`/`--background`. */
+export function isSegmentType(candidateType: string): candidateType is SegmentType {
+  return SEGMENT_TYPES.some((segmentType) => segmentType === candidateType);
+}
+
+/** How every colour `ch edit` writes into a segment is expressed — a reference to one of Chameleon's roles, resolved by the palette table `ch <theme>` maintains, never a literal hex. See CHM-8's "no command in this ticket can write a literal colour." */
+const PALETTE_REF_PREFIX = "p:";
+
+/**
+ * One entry in a block's segment list. `type`, `foreground` and
+ * `background` are all this adapter needs to reason about; every other
+ * property a real segment carries — style, properties, template, … — is
+ * unvalidated and carried through untouched, the same "validate only what we
+ * edit" contract as OhMyPoshConfigSchema above.
+ */
+const LayoutSegmentSchema = z.object({ type: z.string().min(1) }).catchall(z.unknown());
+export type LayoutSegment = z.infer<typeof LayoutSegmentSchema>;
+
+const LayoutBlockSchema = z
+  .object({
+    type: z.literal("prompt"),
+    alignment: z.enum(["left", "right"]),
+    segments: z.array(LayoutSegmentSchema),
+  })
+  .catchall(z.unknown());
+
+/** "left" is the prompt's own block; "right" is the status line — see CLAUDE.md's "why" for CHM-8. */
+export type LayoutBlockName = "left" | "right";
+
+/**
+ * Chameleon's own model of a config's segment layout: which segments sit in
+ * the left and right blocks, and in what order. Never carries a colour
+ * beyond a role reference, and never carries the palette table itself — see
+ * CHM-8's "operate on the layout file only; never touch the palette."
+ */
+export interface Layout {
+  readonly left: readonly LayoutSegment[];
+  readonly right: readonly LayoutSegment[];
+}
+
+/** The role a segment property references, when it is a "p:role" string — undefined for anything else, including a plain hex a user wrote by hand before ever running `ch edit`. */
+function roleReferencedBy(segmentPropertyValue: unknown): string | undefined {
+  return typeof segmentPropertyValue === "string" && segmentPropertyValue.startsWith(PALETTE_REF_PREFIX)
+    ? segmentPropertyValue.slice(PALETTE_REF_PREFIX.length)
+    : undefined;
+}
+
+/**
+ * Throws, naming the role, when `segment`'s foreground or background
+ * references a role Chameleon does not know — see CHM-8's "a layout
+ * referencing an undefined role is rejected with a message naming the
+ * role."
+ */
+function assertSegmentRolesAreDefined(segment: LayoutSegment): void {
+  for (const property of ["foreground", "background"] as const) {
+    const referencedRole = roleReferencedBy(segment[property]);
+    if (referencedRole !== undefined && !isKnownRole(referencedRole)) {
+      throw new Error(`layout segment "${segment.type}" references undefined role "${referencedRole}"`);
+    }
+  }
+}
+
+function assertLayoutRolesAreDefined(layout: Layout): void {
+  for (const segment of [...layout.left, ...layout.right]) assertSegmentRolesAreDefined(segment);
+}
+
+/**
+ * The segments of the single block whose alignment is `alignment`, or an
+ * empty list when the config has none yet. Throws when more than one block
+ * shares that alignment — `ch edit` only understands a single block per
+ * side, the same shape every example in Oh My Posh's own docs and this
+ * project's fixture use.
+ */
+function segmentsForAlignment(configPath: string, blocks: readonly unknown[], alignment: LayoutBlockName): readonly LayoutSegment[] {
+  const matchingBlocks = blocks.flatMap((block) => {
+    const parsedBlock = LayoutBlockSchema.safeParse(block);
+    return parsedBlock.success && parsedBlock.data.alignment === alignment ? [parsedBlock.data] : [];
+  });
+
+  if (matchingBlocks.length > 1) {
+    throw new Error(`${configPath} has more than one "${alignment}" prompt block — ch edit only understands a single block per side`);
+  }
+  return matchingBlocks[0]?.segments ?? [];
+}
+
+/** Reads the config's "blocks" property into Chameleon's own left/right layout model, rejecting a segment that already references an undefined role before any edit is attempted. */
+function readLayout(configPath: string): Layout {
+  const config = readOhMyPoshConfig(configPath);
+  const blocks = config.blocks ?? [];
+  const layout: Layout = {
+    left: segmentsForAlignment(configPath, blocks, "left"),
+    right: segmentsForAlignment(configPath, blocks, "right"),
+  };
+  assertLayoutRolesAreDefined(layout);
+  return layout;
+}
+
+/** Renders `layout` back into Oh My Posh's own "blocks" shape, omitting a side entirely once it has no segments left rather than writing an empty prompt block. */
+function blocksFromLayout(layout: Layout): unknown[] {
+  const blocks: unknown[] = [];
+  if (layout.left.length > 0) blocks.push({ type: "prompt", alignment: "left", segments: layout.left });
+  if (layout.right.length > 0) blocks.push({ type: "prompt", alignment: "right", segments: layout.right });
+  return blocks;
+}
+
+/**
+ * Swaps the config's top-level "blocks" property for `blocks`, scoped
+ * between ch:begin blocks/ch:end blocks — the layout counterpart of
+ * upsertPaletteTable above, owning its own marked region so the two never
+ * collide inside the same root object.
+ */
+function upsertBlocksArray(configPath: string, text: string, blocks: unknown[]): string {
+  const eol = detectLineEnding(text);
+  const { dedupedText, container } = dedupeRootProperty(configPath, text, "blocks");
+  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("blocks", blocks, eol), eol, "blocks");
+}
+
+/** Backs up the config, then rewrites its "blocks" property — and only that property — from `layout`. */
+function writeLayout(configPath: string, layout: Layout): void {
+  assertLayoutRolesAreDefined(layout);
+  copyFileSync(configPath, backupPathFor(configPath));
+  const originalText = readFileSync(configPath, "utf8");
+  const updatedText = upsertBlocksArray(configPath, originalText, blocksFromLayout(layout));
+  writeFileSync(configPath, updatedText, "utf8");
+}
+
+/** Reads the active config's layout — the left and right-hand segment blocks `ch edit` operates on. */
+export function readOhMyPoshLayout(configPath: string | undefined = defaultConfigPath()): Layout {
+  return readLayout(requireConfigPath(configPath));
+}
+
+/** Writes `layout` back to the active config, backed up first. Not part of the adapter interface — editing the layout is `ch edit`'s job, never a step in the theming pipeline. */
+export function writeOhMyPoshLayout(layout: Layout, configPath: string | undefined = defaultConfigPath()): void {
+  writeLayout(requireConfigPath(configPath), layout);
+}
+
+/** Builds a brand-new segment of `type`, coloured entirely by role reference — never a literal hex. `backgroundRole` is genuinely optional: plenty of real segments set only a foreground and let the block's own styling supply the rest. */
+export function buildLayoutSegment(type: SegmentType, foregroundRole: Role, backgroundRole?: Role): LayoutSegment {
+  return {
+    type,
+    foreground: `${PALETTE_REF_PREFIX}${foregroundRole}`,
+    ...(backgroundRole !== undefined ? { background: `${PALETTE_REF_PREFIX}${backgroundRole}` } : {}),
+  };
+}
+
+/** Throws, naming the block, when `atIndex` cannot be inserted at — i.e. is not one of the block's own existing indices or the one right past its end (an append). */
+function assertInsertIndex(atIndex: number, block: LayoutBlockName, segmentCount: number): void {
+  if (!Number.isInteger(atIndex) || atIndex < 0 || atIndex > segmentCount) {
+    throw new Error(`index ${atIndex} is out of range for the "${block}" block, which has ${segmentCount} segment(s)`);
+  }
+}
+
+/** Throws, naming the block, when `atIndex` does not name one of the block's own existing segments. */
+function assertExistingIndex(atIndex: number, block: LayoutBlockName, segmentCount: number): void {
+  if (!Number.isInteger(atIndex) || atIndex < 0 || atIndex >= segmentCount) {
+    throw new Error(`index ${atIndex} is out of range for the "${block}" block, which has ${segmentCount} segment(s)`);
+  }
+}
+
+function withSegments(layout: Layout, block: LayoutBlockName, segments: readonly LayoutSegment[]): Layout {
+  return { ...layout, [block]: segments };
+}
+
+/** Inserts `segment` into `block` at `atIndex`, defaulting to the end. Pure — the caller is responsible for reading the current layout first and writing the result back. */
+export function addSegment(layout: Layout, block: LayoutBlockName, segment: LayoutSegment, atIndex: number = layout[block].length): Layout {
+  assertSegmentRolesAreDefined(segment);
+  const segments = layout[block];
+  assertInsertIndex(atIndex, block, segments.length);
+  return withSegments(layout, block, [...segments.slice(0, atIndex), segment, ...segments.slice(atIndex)]);
+}
+
+/** Removes the segment at `atIndex` from `block`. Pure — see addSegment. */
+export function removeSegment(layout: Layout, block: LayoutBlockName, atIndex: number): Layout {
+  const segments = layout[block];
+  assertExistingIndex(atIndex, block, segments.length);
+  return withSegments(layout, block, [...segments.slice(0, atIndex), ...segments.slice(atIndex + 1)]);
+}
+
+/** Moves the segment at `fromIndex` to `toIndex` within the same block, shifting the segments between them. Pure — see addSegment. */
+export function reorderSegment(layout: Layout, block: LayoutBlockName, fromIndex: number, toIndex: number): Layout {
+  const segments = layout[block];
+  assertExistingIndex(fromIndex, block, segments.length);
+  assertExistingIndex(toIndex, block, segments.length);
+
+  const segmentToMove = segments[fromIndex];
+  if (segmentToMove === undefined) {
+    throw new Error(`index ${fromIndex} is out of range for the "${block}" block, which has ${segments.length} segment(s)`);
+  }
+  const withoutSegment = [...segments.slice(0, fromIndex), ...segments.slice(fromIndex + 1)];
+  return withSegments(layout, block, [...withoutSegment.slice(0, toIndex), segmentToMove, ...withoutSegment.slice(toIndex)]);
+}
+
+/**
+ * Moves the segment at `fromIndex` in `fromBlock` to `toBlock`, at `toIndex`
+ * (defaulting to the end of `toBlock`). This is what makes a segment cross
+ * from the prompt into the status line, or back — the one operation neither
+ * addSegment nor removeSegment can express alone, since a segment moving
+ * blocks has to leave one array and land in the other atomically or a
+ * caller could observe it in neither.
+ */
+export function moveSegmentBetweenBlocks(
+  layout: Layout,
+  fromBlock: LayoutBlockName,
+  fromIndex: number,
+  toBlock: LayoutBlockName,
+  toIndex?: number,
+): Layout {
+  const fromSegments = layout[fromBlock];
+  assertExistingIndex(fromIndex, fromBlock, fromSegments.length);
+
+  const segmentToMove = fromSegments[fromIndex];
+  if (segmentToMove === undefined) {
+    throw new Error(`index ${fromIndex} is out of range for the "${fromBlock}" block, which has ${fromSegments.length} segment(s)`);
+  }
+
+  const toSegments = fromBlock === toBlock ? [...fromSegments.slice(0, fromIndex), ...fromSegments.slice(fromIndex + 1)] : layout[toBlock];
+  const resolvedToIndex = toIndex ?? toSegments.length;
+  assertInsertIndex(resolvedToIndex, toBlock, toSegments.length);
+
+  const withoutSegment = withSegments(layout, fromBlock, [...fromSegments.slice(0, fromIndex), ...fromSegments.slice(fromIndex + 1)]);
+  return withSegments(withoutSegment, toBlock, [
+    ...toSegments.slice(0, resolvedToIndex),
+    segmentToMove,
+    ...toSegments.slice(resolvedToIndex),
+  ]);
 }
 
 /**
