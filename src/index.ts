@@ -10,3 +10,9 @@ export const VERSION = "0.0.0";
 export const TARGETS = ["windows-terminal", "oh-my-posh", "herdr"] as const;
 
 export type Target = (typeof TARGETS)[number];
+
+export type { Appearance, MeasuredColor, Palette, SlotName } from "./palette/palette.js";
+export { toPalette } from "./palette/palette.js";
+export { loadVendoredSchemes } from "./palette/scheme-library.js";
+export type { Scheme } from "./palette/scheme.js";
+export { parseScheme, SchemeSchema } from "./palette/scheme.js";
