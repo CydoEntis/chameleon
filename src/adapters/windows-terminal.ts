@@ -113,9 +113,9 @@ function upsertSchemesEntry(settingsPath: string, text: string, scheme: Scheme):
   const eol = detectLineEnding(text);
   const schemesNode = requireNode(settingsPath, parseJsonTree(settingsPath, text), ["schemes"], "array", 'a "schemes" array');
 
-  const dedupedText = dedupeConflict(text, schemesNode, findSchemeEntryNode(schemesNode, scheme.name));
+  const dedupedText = dedupeConflict(text, schemesNode, findSchemeEntryNode(schemesNode, scheme.name), "scheme");
   const container = requireNode(settingsPath, parseJsonTree(settingsPath, dedupedText), ["schemes"], "array", 'a "schemes" array');
-  return upsertMarkedBlock(dedupedText, container, buildArrayEntryBlockContent(scheme, eol), eol);
+  return upsertMarkedBlock(dedupedText, container, buildArrayEntryBlockContent(scheme, eol), eol, "scheme");
 }
 
 /**
@@ -134,7 +134,7 @@ function upsertDefaultColorScheme(settingsPath: string, text: string, schemeName
     'a "profiles.defaults" object',
   );
 
-  const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, "colorScheme"));
+  const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, "colorScheme"), "colorScheme");
   const container = requireNode(
     settingsPath,
     parseJsonTree(settingsPath, dedupedText),
@@ -142,7 +142,7 @@ function upsertDefaultColorScheme(settingsPath: string, text: string, schemeName
     "object",
     'a "profiles.defaults" object',
   );
-  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("colorScheme", schemeName, eol), eol);
+  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("colorScheme", schemeName, eol), eol, "colorScheme");
 }
 
 /**
@@ -158,12 +158,12 @@ function upsertTopLevelTheme(settingsPath: string, text: string, appearance: App
     throw new Error(`${settingsPath}'s root is not a JSON object`);
   }
 
-  const dedupedText = dedupeConflict(text, root, findPropertyNode(root, "theme"));
+  const dedupedText = dedupeConflict(text, root, findPropertyNode(root, "theme"), "theme");
   const container = parseJsonTree(settingsPath, dedupedText);
   if (container.type !== "object") {
     throw new Error(`${settingsPath}'s root is not a JSON object`);
   }
-  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("theme", appearance, eol), eol);
+  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("theme", appearance, eol), eol, "theme");
 }
 
 /**
@@ -199,7 +199,7 @@ function upsertSelectedFont(settingsPath: string, text: string, fontFace: string
   );
 
   if (existingFontShape(defaultsNode) === "flat") {
-    const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, "fontFace"));
+    const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, "fontFace"), "fontFace");
     const container = requireNode(
       settingsPath,
       parseJsonTree(settingsPath, dedupedText),
@@ -207,11 +207,11 @@ function upsertSelectedFont(settingsPath: string, text: string, fontFace: string
       "object",
       'a "profiles.defaults" object',
     );
-    return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("fontFace", fontFace, eol), eol);
+    return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("fontFace", fontFace, eol), eol, "fontFace");
   }
 
   const existingFont = readWindowsTerminalSettings(settingsPath).profiles?.defaults?.font ?? {};
-  const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, "font"));
+  const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, "font"), "font");
   const container = requireNode(
     settingsPath,
     parseJsonTree(settingsPath, dedupedText),
@@ -219,7 +219,7 @@ function upsertSelectedFont(settingsPath: string, text: string, fontFace: string
     "object",
     'a "profiles.defaults" object',
   );
-  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("font", { ...existingFont, face: fontFace }, eol), eol);
+  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("font", { ...existingFont, face: fontFace }, eol), eol, "font");
 }
 
 function detectWindowsTerminal(settingsPath: string): boolean {
