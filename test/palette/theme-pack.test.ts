@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TEXT_MIN_RATIO, MUTED_MIN_RATIO, ROLES } from "../../src/constants.js";
 import { contrastRatio } from "../../src/palette/color.js";
-import { buildThemePack, parseThemePack } from "../../src/palette/theme-pack.js";
+import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src/palette/theme-pack.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 const ATTRIBUTION = {
@@ -59,6 +59,14 @@ describe("buildThemePack", () => {
       expect(contrastRatio(hex, groundHex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     }
   });
+
+  it("omits attribution entirely when none is given — a user pack has no upstream to credit", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const pack = buildThemePack(scheme, "Dracula");
+
+    expect(pack.manifest.attribution).toBeUndefined();
+    expect(Object.hasOwn(pack.manifest, "attribution")).toBe(false);
+  });
 });
 
 describe("parseThemePack", () => {
@@ -72,5 +80,26 @@ describe("parseThemePack", () => {
 
   it("names the file when a pack is malformed", () => {
     expect(() => parseThemePack({ manifest: {} }, "broken.json")).toThrow(/broken\.json/);
+  });
+});
+
+describe("parseUserPackManifest", () => {
+  it("parses a user manifest naming a scheme and a family", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const manifest = parseUserPackManifest({ family: "My Dracula", scheme }, "my-dracula");
+
+    expect(manifest.family).toBe("My Dracula");
+    expect(manifest.scheme).toEqual(scheme);
+  });
+
+  it("allows family to be omitted", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const manifest = parseUserPackManifest({ scheme }, "my-dracula");
+
+    expect(manifest.family).toBeUndefined();
+  });
+
+  it("names the pack directory when a user manifest is malformed", () => {
+    expect(() => parseUserPackManifest({ family: "Broken" }, "broken-pack")).toThrow(/broken-pack/);
   });
 });

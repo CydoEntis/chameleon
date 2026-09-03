@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { contrastRatio } from "../../src/palette/color.js";
-import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
+import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../../src/palette/theme-pack-library.js";
+import { buildThemePack } from "../../src/palette/theme-pack.js";
+import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 // The twelve families in CHM-6, each light and dark, plus Dracula and
 // Monokai (dark only) — see CLAUDE.md's "What".
@@ -77,5 +79,46 @@ describe("loadCuratedThemePacks", () => {
         expect(appearances.has("dark")).toBe(true);
       }
     }
+  });
+});
+
+describe("mergeThemePacksBySlug", () => {
+  it("marks every bundled pack's origin as bundled when there is no user pack to override it", () => {
+    const bundledPacks = loadCuratedThemePacks();
+    const merged = mergeThemePacksBySlug(bundledPacks, []);
+
+    expect(merged).toHaveLength(bundledPacks.length);
+    expect(merged.every((loaded) => loaded.origin === "bundled")).toBe(true);
+  });
+
+  it("lets a user pack override a bundled pack of the same slug", () => {
+    const bundledPacks = loadCuratedThemePacks();
+    const draculaScheme = readVendoredScheme("Dracula.json");
+    // Same family and appearance as the bundled "Dracula" pack, so this
+    // resolves to the same slug ("dracula-dark") but with a name that
+    // proves the user's version — not the bundled one — won.
+    const overridingPack = buildThemePack(
+      { ...draculaScheme, name: "My Custom Dracula" },
+      "Dracula",
+    );
+
+    const merged = mergeThemePacksBySlug(bundledPacks, [overridingPack]);
+    const draculaEntry = merged.find((loaded) => loaded.pack.manifest.slug === "dracula-dark");
+
+    expect(merged).toHaveLength(bundledPacks.length);
+    expect(draculaEntry?.origin).toBe("user");
+    expect(draculaEntry?.pack.manifest.name).toBe("My Custom Dracula");
+  });
+
+  it("adds a user pack whose slug matches no bundled pack, marked as user", () => {
+    const bundledPacks = loadCuratedThemePacks();
+    const scheme = readVendoredScheme("0x96f.json");
+    const newPack = buildThemePack(scheme, "0x96f");
+
+    const merged = mergeThemePacksBySlug(bundledPacks, [newPack]);
+    const newEntry = merged.find((loaded) => loaded.pack.manifest.slug === newPack.manifest.slug);
+
+    expect(merged).toHaveLength(bundledPacks.length + 1);
+    expect(newEntry?.origin).toBe("user");
   });
 });

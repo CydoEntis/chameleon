@@ -19,13 +19,19 @@ export interface PackAttribution {
   readonly license: string;
 }
 
-/** Everything about a pack that is not colour: identity, grouping and provenance. */
+/**
+ * Everything about a pack that is not colour: identity, grouping and
+ * provenance. Attribution is optional because it names an *upstream*
+ * source — every bundled pack has one (see PackAttribution above), but a
+ * pack a user drops into their own theme directory adapts a scheme of
+ * their own choosing and owes no attribution to Chameleon.
+ */
 export interface ThemePackManifest {
   readonly slug: string;
   readonly name: string;
   readonly family: string;
   readonly appearance: Appearance;
-  readonly attribution: PackAttribution;
+  readonly attribution?: PackAttribution | undefined;
 }
 
 /**
@@ -95,10 +101,12 @@ function assertRoleClearsFloor(role: Role, hex: string, groundHex: string, schem
  * Runs a scheme through the full contrast engine — assign, then repair —
  * and packages the result as a shippable pack: a manifest carrying identity
  * and attribution, plus every target's payload. Pure: no file I/O, so the
- * build tool that generates the bundled packs and any future test can call
- * it directly against a scheme literal.
+ * build tool that generates the bundled packs, the loader that reads a
+ * user's dropped-in pack, and any test can all call it directly against a
+ * scheme literal. `attribution` is omitted for a user pack, which has no
+ * upstream to credit — see ThemePackManifest.
  */
-export function buildThemePack(scheme: Scheme, family: string, attribution: PackAttribution): ThemePack {
+export function buildThemePack(scheme: Scheme, family: string, attribution?: PackAttribution): ThemePack {
   const measured = toPalette(scheme);
   const { palette: resolvedPalette } = repairFailingRoles(assignRolesByContrast(measured));
 
@@ -114,7 +122,7 @@ export function buildThemePack(scheme: Scheme, family: string, attribution: Pack
       name: scheme.name,
       family,
       appearance: measured.appearance,
-      attribution,
+      ...(attribution !== undefined ? { attribution } : {}),
     },
     payloads: {
       "windows-terminal": scheme,
@@ -148,12 +156,14 @@ export const ThemePackSchema = z.object({
     name: z.string().min(1),
     family: z.string().min(1),
     appearance: z.enum(["light", "dark"]),
-    attribution: z.object({
-      source: z.string().min(1),
-      sourceUrl: z.string().min(1),
-      commit: z.string().min(1),
-      license: z.string().min(1),
-    }),
+    attribution: z
+      .object({
+        source: z.string().min(1),
+        sourceUrl: z.string().min(1),
+        commit: z.string().min(1),
+        license: z.string().min(1),
+      })
+      .optional(),
   }),
   payloads: z.object({
     "windows-terminal": SchemeSchema,
@@ -167,6 +177,36 @@ export function parseThemePack(input: unknown, fileName: string): ThemePack {
   const result = ThemePackSchema.safeParse(input);
   if (!result.success) {
     throw new Error(`theme pack "${fileName}" is malformed: ${result.error.message}`);
+  }
+  return result.data;
+}
+
+/**
+ * What a user hand-writes in a dropped-in pack's pack.json: the one scheme
+ * it adapts, plus an optional family for grouping it with a light/dark
+ * sibling the way the bundled families are grouped. The pack's display name
+ * is the scheme's own `name` — the same field buildThemePack reads it from
+ * for a bundled pack — so this manifest carries nothing buildThemePack does
+ * not already know how to turn into a full pack, repaired through the same
+ * contrast floors. See CLAUDE.md, "Run a user pack through the same
+ * contrast floors as a bundled one."
+ */
+export const UserPackManifestSchema = z.object({
+  family: z.string().min(1).optional(),
+  scheme: SchemeSchema,
+});
+
+export type UserPackManifest = z.infer<typeof UserPackManifestSchema>;
+
+/**
+ * Parses a dropped-in pack's pack.json, naming the pack directory whose
+ * shape is wrong rather than throwing a bare ZodError — see CLAUDE.md, "A
+ * malformed pack names the file and the problem and is skipped".
+ */
+export function parseUserPackManifest(input: unknown, packDirName: string): UserPackManifest {
+  const result = UserPackManifestSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(`user pack "${packDirName}" is malformed: ${result.error.message}`);
   }
   return result.data;
 }

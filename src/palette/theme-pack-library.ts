@@ -31,3 +31,35 @@ export function loadCuratedThemePacks(): ThemePack[] {
     return parseThemePack(rawJson, fileName);
   });
 }
+
+/** Where a loaded pack came from — what `ch list` marks each entry with. */
+export type ThemePackOrigin = "bundled" | "user";
+
+export interface LoadedThemePack {
+  readonly pack: ThemePack;
+  readonly origin: ThemePackOrigin;
+}
+
+/**
+ * Combines the bundled library with whatever a user has dropped into their
+ * own theme directory, keyed by slug — a user pack sharing a bundled pack's
+ * slug wins, so anyone can override a shipped theme without editing the
+ * package. Pure: both lists are already loaded in memory, so this is plain
+ * merging, not another read.
+ */
+export function mergeThemePacksBySlug(
+  bundledPacks: readonly ThemePack[],
+  userPacks: readonly ThemePack[],
+): LoadedThemePack[] {
+  const packsBySlug = new Map<string, LoadedThemePack>();
+  for (const pack of bundledPacks) {
+    packsBySlug.set(pack.manifest.slug, { pack, origin: "bundled" });
+  }
+  for (const pack of userPacks) {
+    packsBySlug.set(pack.manifest.slug, { pack, origin: "user" });
+  }
+
+  return [...packsBySlug.values()].sort((packA, packB) =>
+    packA.pack.manifest.slug.localeCompare(packB.pack.manifest.slug),
+  );
+}
