@@ -74,8 +74,9 @@ or JSON/TOML editing without a concrete argument in the PR that hand-rolling it 
 
 - **Never ship a colour that fails its contrast floor.** Body and accent clear 4.5:1 against their
   own ground; muted clears 3.0:1 *and* sits below body. Mechanical mapping produces broken output
-  in roughly a fifth of real themes — Solarized Dark's muted scores 2.11, Solarized Light's
-  inverts and outranks its body text. Repair runs before anything reaches a prompt.
+  in 433 of the 606 vendored themes — seven in ten. Solarized Dark's muted scores 2.11, and
+  Solarized Light's inverts and outranks its body text. Repair runs before anything reaches a
+  prompt.
 
 - **Never trust an ANSI slot's name.** Rosé Pine Dawn's `green` slot holds a blue and its `cyan`
   holds a pink. Roles are chosen by measured contrast against that theme's own background; the slot
