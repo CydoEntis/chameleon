@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TEXT_MIN_RATIO, MUTED_MIN_RATIO, ROLES } from "../../src/constants.js";
 import { contrastRatio } from "../../src/palette/color.js";
-import { buildThemePack, parseThemePack } from "../../src/palette/theme-pack.js";
+import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src/palette/theme-pack.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 const ATTRIBUTION = {
@@ -59,6 +59,31 @@ describe("buildThemePack", () => {
       expect(contrastRatio(hex, groundHex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     }
   });
+
+  it("omits attribution entirely when none is given — a user pack has no upstream to credit", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const pack = buildThemePack(scheme, "Dracula");
+
+    expect(pack.manifest.attribution).toBeUndefined();
+    expect(Object.hasOwn(pack.manifest, "attribution")).toBe(false);
+  });
+
+  it("uses an explicit slug verbatim instead of deriving one from family and appearance", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const pack = buildThemePack(scheme, "Dracula", undefined, "catppuccin-dark");
+
+    // "catppuccin-dark" is not what toSlug("Dracula", "dark") would produce
+    // ("dracula-dark") — proving the explicit slug wins outright, not just
+    // as a tiebreak.
+    expect(pack.manifest.slug).toBe("catppuccin-dark");
+  });
+
+  it("still derives a slug from family and appearance when no explicit slug is given", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const pack = buildThemePack(scheme, "Dracula", ATTRIBUTION);
+
+    expect(pack.manifest.slug).toBe("dracula-dark");
+  });
 });
 
 describe("parseThemePack", () => {
@@ -72,5 +97,28 @@ describe("parseThemePack", () => {
 
   it("names the file when a pack is malformed", () => {
     expect(() => parseThemePack({ manifest: {} }, "broken.json")).toThrow(/broken\.json/);
+  });
+});
+
+describe("parseUserPackManifest", () => {
+  it("parses a user manifest naming a scheme, a family and a declared slug", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const manifest = parseUserPackManifest({ slug: "my-dracula-dark", family: "My Dracula", scheme }, "my-dracula");
+
+    expect(manifest.slug).toBe("my-dracula-dark");
+    expect(manifest.family).toBe("My Dracula");
+    expect(manifest.scheme).toEqual(scheme);
+  });
+
+  it("allows slug and family to both be omitted", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const manifest = parseUserPackManifest({ scheme }, "my-dracula");
+
+    expect(manifest.slug).toBeUndefined();
+    expect(manifest.family).toBeUndefined();
+  });
+
+  it("names the pack directory when a user manifest is malformed", () => {
+    expect(() => parseUserPackManifest({ family: "Broken" }, "broken-pack")).toThrow(/broken-pack/);
   });
 });
