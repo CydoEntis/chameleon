@@ -23,3 +23,6 @@ export { parseScheme, SchemeSchema } from "./palette/scheme.js";
 
 export type { WindowsTerminalAdapter, WindowsTerminalSettings } from "./adapters/windows-terminal.js";
 export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/windows-terminal.js";
+
+export type { OhMyPoshAdapter, OhMyPoshConfig } from "./adapters/oh-my-posh.js";
+export { createOhMyPoshAdapter, undoOhMyPosh } from "./adapters/oh-my-posh.js";
