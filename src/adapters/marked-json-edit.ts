@@ -5,9 +5,20 @@ import { createScanner, findNodeAtLocation, parseTree, type JSONPath, type Node 
  * a rerun can find and replace its own work, and a human can see at a glance
  * what Chameleon owns. Shared across adapters so two config files never
  * disagree on what a Chameleon-owned block looks like.
+ *
+ * `key` names which property the block belongs to — "palette", "blocks",
+ * "colorScheme" — because a container can hold more than one Chameleon-owned
+ * property (Oh My Posh's root carries both a palette and, once `ch edit` has
+ * touched it, a blocks array) and each needs its own marker pair to be found
+ * and replaced without disturbing its sibling's.
  */
-const MARKER_BEGIN = "// ch:begin";
-const MARKER_END = "// ch:end";
+function markerBegin(key: string): string {
+  return `// ch:begin ${key}`;
+}
+
+function markerEnd(key: string): string {
+  return `// ch:end ${key}`;
+}
 
 /**
  * Indentation given to a freshly inserted marked block. Cosmetic only —
@@ -93,15 +104,60 @@ export function buildPropertyBlockContent(key: string, value: unknown, eol: stri
   return [indentedFirstLine, ...restLines.map((line) => `${INSERTED_BLOCK_INDENT}${line}`)].join(eol);
 }
 
+/** One Chameleon-owned marked block already inside a container: which property it belongs to, and the full span — its own begin-marker line through its own end-marker line, line endings included. */
+interface MarkedBlockSpan {
+  readonly key: string;
+  readonly startOffset: number;
+  readonly endOffsetInclusive: number;
+}
+
 /**
- * Whether `container`'s own content already starts with Chameleon's marker
- * — i.e. the last apply's marked block is already the first thing inside
- * this container, rather than a plain key the user wrote.
+ * Whether `offset` falls inside one of `container`'s own children — i.e. a
+ * marker found there belongs to a block nested in a deeper container (an
+ * array element, a nested object's own property) and is not one of
+ * `container`'s own direct siblings.
  */
-function containerOwnsMarkedBlock(text: string, container: Node): boolean {
-  const start = container.offset + 1;
-  const end = container.offset + container.length - 1;
-  return text.slice(start, end).trimStart().startsWith(MARKER_BEGIN);
+function isInsideChild(container: Node, offset: number): boolean {
+  return (container.children ?? []).some((child) => offset >= child.offset && offset < child.offset + child.length);
+}
+
+/**
+ * Every Chameleon-owned marked block directly inside `container` — never one
+ * belonging to a nested container that happens to sit within the same text
+ * range, such as the "scheme" entry marker living inside root's own
+ * "schemes" array — in document order. jsonc-parser does not expose
+ * comments as AST nodes, so finding these is necessarily a text scan for
+ * the marker comments themselves, not a walk over parsed properties; the
+ * child-range check is what keeps that scan from wandering into a
+ * descendant container's own markers.
+ */
+function ownedBlockSpans(text: string, container: Node): MarkedBlockSpan[] {
+  const containerStart = container.offset + 1;
+  const containerEnd = container.offset + container.length - 1;
+  const beginPattern = /\/\/ ch:begin (\S+)/g;
+  const spans: MarkedBlockSpan[] = [];
+
+  for (const match of text.slice(containerStart, containerEnd).matchAll(beginPattern)) {
+    const key = match[1];
+    if (key === undefined || match.index === undefined) continue;
+    const beginOffset = containerStart + match.index;
+    if (isInsideChild(container, beginOffset)) continue;
+    const endTokenOffset = text.indexOf(markerEnd(key), beginOffset);
+    if (endTokenOffset === -1 || endTokenOffset >= containerEnd) {
+      throw new Error(`a ${markerBegin(key)} marker has no matching ${markerEnd(key)} — refusing to guess where Chameleon's block ends`);
+    }
+    spans.push({
+      key,
+      startOffset: lineStartOffset(text, beginOffset),
+      endOffsetInclusive: lineEndOffsetInclusive(text, endTokenOffset),
+    });
+  }
+  return spans;
+}
+
+/** Whether `container` already carries a Chameleon-owned marked block for `key` — i.e. a rerun should replace that block in place, rather than dedupe a plain key the user wrote. */
+function containerOwnsMarkedBlock(text: string, container: Node, key: string): boolean {
+  return ownedBlockSpans(text, container).some((span) => span.key === key);
 }
 
 /**
@@ -174,47 +230,60 @@ function removeNodeFromContainer(text: string, container: Node, node: Node): str
  * silent no-op CHM-3's attempt 1 shipped — JSON resolves last-wins, and the
  * user's untouched original always came last.
  */
-export function dedupeConflict(text: string, container: Node, conflict: Node | undefined): string {
-  if (!conflict || containerOwnsMarkedBlock(text, container)) {
+export function dedupeConflict(text: string, container: Node, conflict: Node | undefined, key: string): string {
+  if (!conflict || containerOwnsMarkedBlock(text, container, key)) {
     return text;
   }
   return removeNodeFromContainer(text, container, conflict);
 }
 
 /**
- * Inserts `ownedContent` just inside `container`'s opening bracket, wrapped
- * in ch:begin/ch:end. If Chameleon's own marked block is already the first
- * thing in the container — from an earlier apply — only that block is
- * replaced; everything else in the file, including a user's own comments
- * and key order, never moves. This is what makes upserting a value and
- * applying the same theme twice idempotent: the same input always produces
- * the same marked block, and nothing outside it is ever touched.
+ * Upserts `ownedContent` as `key`'s own marked block inside `container`,
+ * wrapped in ch:begin/ch:end. A block already owned by `key` is replaced in
+ * place; a brand new one is appended right after whichever Chameleon-owned
+ * block currently sits last, or just inside `container`'s opening bracket
+ * when this is the first block ever written there. Either way, everything
+ * else in the file — a user's own comments, key order, and any other
+ * property `key` this container already owns — never moves. This is what
+ * makes upserting a value and applying the same theme twice idempotent: the
+ * same input always produces the same marked block, and nothing outside it
+ * is ever touched.
  *
  * A trailing comma is added only when there is real content left after the
  * block — an empty array or object with nothing else in it must not gain a
  * dangling comma before the closing bracket.
  */
-export function upsertMarkedBlock(text: string, container: Node, ownedContent: string, eol: string): string {
+export function upsertMarkedBlock(text: string, container: Node, ownedContent: string, eol: string, key: string): string {
   const containerStart = container.offset + 1;
   const containerEnd = container.offset + container.length - 1;
-  const hasExistingBlock = containerOwnsMarkedBlock(text, container);
+  const spans = ownedBlockSpans(text, container);
+  const existingSpan = spans.find((span) => span.key === key);
+  const lastSpanEndOffsetInclusive = spans[spans.length - 1]?.endOffsetInclusive;
 
-  // Replacing an existing block removes it, the whitespace we left before
-  // it, and the one line ending we left after it — all three are ours to
-  // redraw — so this never leaves a stray blank line behind from one apply
-  // to the next.
-  const markerEndOffset = hasExistingBlock ? text.indexOf(MARKER_END, containerStart) : -1;
-  const rightAfterMarkerEnd = markerEndOffset + MARKER_END.length;
-  const afterBlockOffset = hasExistingBlock
-    ? rightAfterMarkerEnd + (text.startsWith(eol, rightAfterMarkerEnd) ? eol.length : 0)
-    : containerStart;
+  // Replacing an existing block removes it, and only it, in place. A brand
+  // new block is inserted right after the last block this container already
+  // owns — so a second Chameleon-owned property never collides with the
+  // first's — or at the very start when the container owns none yet.
+  //
+  // Every splice point below except the very-first-block case sits right
+  // after an eol Chameleon itself wrote — the one trailing the block being
+  // replaced, or the one trailing whichever block currently comes last. That
+  // eol is consumed here (`- eol.length`) and regenerated by `replacement`'s
+  // own leading eol below, so neither replacing nor appending a block ever
+  // leaves a blank line in its wake.
+  const replaceStart = existingSpan
+    ? existingSpan.startOffset - eol.length
+    : lastSpanEndOffsetInclusive !== undefined
+      ? lastSpanEndOffsetInclusive - eol.length
+      : containerStart;
+  const replaceEnd = existingSpan ? existingSpan.endOffsetInclusive : (lastSpanEndOffsetInclusive ?? containerStart);
 
-  const hasContentAfterBlock = text.slice(afterBlockOffset, containerEnd).trim().length > 0;
+  const hasContentAfterBlock = text.slice(replaceEnd, containerEnd).trim().length > 0;
   const separator = hasContentAfterBlock ? "," : "";
-  // MARKER_END is always followed by a line ending of our own — `//` is a
-  // line comment, so without one it would silently swallow whatever the
-  // original file put right after the container's opening bracket.
-  const replacement = `${eol}${INSERTED_BLOCK_INDENT}${MARKER_BEGIN}${eol}${ownedContent}${separator}${eol}${INSERTED_BLOCK_INDENT}${MARKER_END}${eol}`;
+  // The end marker is always followed by a line ending of our own — `//` is
+  // a line comment, so without one it would silently swallow whatever
+  // originally followed the block's own position.
+  const replacement = `${eol}${INSERTED_BLOCK_INDENT}${markerBegin(key)}${eol}${ownedContent}${separator}${eol}${INSERTED_BLOCK_INDENT}${markerEnd(key)}${eol}`;
 
-  return text.slice(0, containerStart) + replacement + text.slice(afterBlockOffset);
+  return text.slice(0, replaceStart) + replacement + text.slice(replaceEnd);
 }

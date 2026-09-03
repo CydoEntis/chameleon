@@ -28,6 +28,11 @@ export const ROLES = ["ground", "body", "accent", "muted", "success", "error"] a
 
 export type Role = (typeof ROLES)[number];
 
+/** Whether `candidateRole` is one of Chameleon's six roles — the boundary check every role a user or a config supplies must clear before it is trusted, so a typo or a made-up name is rejected by name rather than silently accepted. */
+export function isKnownRole(candidateRole: string): candidateRole is Role {
+  return ROLES.some((role) => role === candidateRole);
+}
+
 /**
  * Minimum contrast, against ground, that body text and the accent colour
  * must clear to be legible. Reused for success and error, which are also

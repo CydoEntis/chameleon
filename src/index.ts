@@ -22,6 +22,9 @@ export const TARGETS = ["windows-terminal", "oh-my-posh", "herdr"] as const;
 
 export type Target = (typeof TARGETS)[number];
 
+export type { Role } from "./constants.js";
+export { isKnownRole, ROLES } from "./constants.js";
+
 export type { Appearance, MeasuredColor, Palette, SlotName } from "./palette/palette.js";
 export { toPalette } from "./palette/palette.js";
 export type { ContrastReport, RepairedRoleColor, ResolvedPalette } from "./palette/repair.js";
@@ -50,8 +53,20 @@ export { loadCuratedThemePacks, mergeThemePacksBySlug } from "./palette/theme-pa
 export type { WindowsTerminalAdapter, WindowsTerminalSettings } from "./adapters/windows-terminal.js";
 export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/windows-terminal.js";
 
-export type { OhMyPoshAdapter, OhMyPoshConfig } from "./adapters/oh-my-posh.js";
-export { createOhMyPoshAdapter, undoOhMyPosh } from "./adapters/oh-my-posh.js";
+export type { Layout, LayoutBlockName, LayoutSegment, OhMyPoshAdapter, OhMyPoshConfig, SegmentType } from "./adapters/oh-my-posh.js";
+export {
+  addSegment,
+  buildLayoutSegment,
+  createOhMyPoshAdapter,
+  isSegmentType,
+  moveSegmentBetweenBlocks,
+  readOhMyPoshLayout,
+  removeSegment,
+  reorderSegment,
+  SEGMENT_TYPES,
+  undoOhMyPosh,
+  writeOhMyPoshLayout,
+} from "./adapters/oh-my-posh.js";
 
 export type { HerdrAdapter, HerdrConfig } from "./adapters/herdr.js";
 export { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
