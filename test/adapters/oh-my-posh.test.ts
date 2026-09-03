@@ -1,12 +1,34 @@
+import type { SpawnSyncReturns } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createOhMyPoshAdapter, undoOhMyPosh } from "../../src/adapters/oh-my-posh.js";
+import {
+  createOhMyPoshAdapter,
+  installOhMyPosh,
+  OH_MY_POSH_WINGET_INSTALL_ARGS,
+  undoOhMyPosh,
+  WINGET_BINARY_NAME,
+} from "../../src/adapters/oh-my-posh.js";
 import { ROLES } from "../../src/constants.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
+
+vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
+
+function makeSpawnResult(overrides: Partial<SpawnSyncReturns<string>> = {}): SpawnSyncReturns<string> {
+  return {
+    pid: 1234,
+    output: [null, "", ""],
+    stdout: "",
+    stderr: "",
+    status: 0,
+    signal: null,
+    ...overrides,
+  };
+}
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FIXTURE_PATH = path.join(currentDir, "fixtures", "oh-my-posh-config.omp.json");
@@ -358,5 +380,34 @@ describe("oh my posh adapter — edge cases", () => {
     const parsed = parseWritten(resultText) as { palette: Record<string, string> };
     expect(parsed.palette["accent"]).toMatch(/^#[0-9a-f]{6}$/i);
     expect(resultText).not.toMatch(/,\s*[\]}]/);
+  });
+});
+
+describe("installOhMyPosh", () => {
+  beforeEach(() => {
+    vi.mocked(spawnSync).mockReset();
+  });
+
+  it("delegates to winget, never a hand-rolled installer", () => {
+    vi.mocked(spawnSync).mockReturnValue(makeSpawnResult());
+
+    installOhMyPosh();
+
+    expect(spawnSync).toHaveBeenCalledWith(WINGET_BINARY_NAME, [...OH_MY_POSH_WINGET_INSTALL_ARGS], expect.objectContaining({ stdio: "inherit" }));
+  });
+
+  it("throws naming the command when winget cannot be started", () => {
+    vi.mocked(spawnSync).mockReturnValue(makeSpawnResult({ error: new Error("ENOENT"), status: null }));
+    expect(() => installOhMyPosh()).toThrow(/ENOENT/);
+  });
+
+  it("throws when winget runs but exits non-zero", () => {
+    vi.mocked(spawnSync).mockReturnValue(makeSpawnResult({ status: 1 }));
+    expect(() => installOhMyPosh()).toThrow(/status 1/);
+  });
+
+  it("succeeds silently on a zero exit", () => {
+    vi.mocked(spawnSync).mockReturnValue(makeSpawnResult({ status: 0 }));
+    expect(() => installOhMyPosh()).not.toThrow();
   });
 });

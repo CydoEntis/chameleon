@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
@@ -13,6 +14,7 @@ import {
   parseJsonTree,
   upsertMarkedBlock,
 } from "./marked-json-edit.js";
+import { describeSpawnFailure } from "./spawn-result.js";
 
 /** Suffix for the pre-apply copy of a config or profile file that `undoOhMyPosh` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -22,6 +24,10 @@ const STATE_DIR_NAME = "chameleon";
 
 /** File name of the pointer `apply` writes and the profile's `Set-PoshContext` hook reads. */
 const POINTER_FILE_NAME = "oh-my-posh-pointer.json";
+
+/** The winget package installing Oh My Posh — from Oh My Posh's own docs. `ch doctor` offers this instead of reimplementing an installer, see CLAUDE.md, "Delegate installs." */
+export const WINGET_BINARY_NAME = "winget";
+export const OH_MY_POSH_WINGET_INSTALL_ARGS = ["install", "JanDeDobbeleer.OhMyPosh"] as const;
 
 /**
  * Every edit this adapter makes to the user's PowerShell profile is wrapped
@@ -100,6 +106,20 @@ function backupPathFor(targetPath: string): string {
 
 function detectOhMyPosh(configPath: string | undefined): boolean {
   return configPath !== undefined && existsSync(configPath);
+}
+
+/**
+ * Installs Oh My Posh via winget — never a hand-rolled installer, see
+ * CLAUDE.md, "Delegate installs... Do not reimplement installers." Runs
+ * with inherited stdio so winget's own progress, and any prompt it raises
+ * itself (a source agreement on first run, say), reaches the user directly.
+ * `ch doctor` is the only caller, and only after the user has confirmed.
+ */
+export function installOhMyPosh(): void {
+  const result = spawnSync(WINGET_BINARY_NAME, [...OH_MY_POSH_WINGET_INSTALL_ARGS], { stdio: "inherit" });
+  if (result.error || result.status !== 0) {
+    throw new Error(`could not install Oh My Posh: ${describeSpawnFailure(WINGET_BINARY_NAME, OH_MY_POSH_WINGET_INSTALL_ARGS, result)}`);
+  }
 }
 
 /**

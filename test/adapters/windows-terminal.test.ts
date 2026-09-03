@@ -4,7 +4,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWindowsTerminalAdapter, undoWindowsTerminal } from "../../src/adapters/windows-terminal.js";
+import {
+  createWindowsTerminalAdapter,
+  selectedFontFace,
+  setDefaultFontFace,
+  undoWindowsTerminal,
+} from "../../src/adapters/windows-terminal.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -287,5 +292,81 @@ describe("windows terminal adapter — edge cases", () => {
 
     createWindowsTerminalAdapter(settingsPath).reload();
     expect(readFileSync(settingsPath, "utf8")).toBe(LF_FIXTURE);
+  });
+});
+
+describe("selectedFontFace", () => {
+  it("reads profiles.defaults.fontFace off already-parsed settings", () => {
+    const settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-font-"));
+    try {
+      const settingsPath = path.join(settingsDir, "settings.json");
+      writeFileSync(settingsPath, LF_FIXTURE, "utf8");
+      expect(selectedFontFace(createWindowsTerminalAdapter(settingsPath).read())).toBe("Cascadia Mono");
+    } finally {
+      rmSync(settingsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("is undefined when nothing has ever set a fontFace", () => {
+    expect(selectedFontFace({ profiles: { defaults: {} } })).toBeUndefined();
+    expect(selectedFontFace({})).toBeUndefined();
+  });
+});
+
+describe("setDefaultFontFace", () => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-set-font-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, LF_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("leaves exactly one fontFace key, resolving to the requested Nerd Font, when one already existed", () => {
+    expect(LF_FIXTURE).toContain('"fontFace": "Cascadia Mono"');
+
+    setDefaultFontFace("MesloLGS NF", settingsPath);
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(countOccurrences(resultText, '"fontFace"')).toBe(1);
+    const parsed = parseWritten(resultText) as { profiles: { defaults: { fontFace?: unknown } } };
+    expect(parsed.profiles.defaults.fontFace).toBe("MesloLGS NF");
+  });
+
+  it("preserves unrelated settings — colorScheme and fontSize included — untouched", () => {
+    setDefaultFontFace("MesloLGS NF", settingsPath);
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(resultText).toContain('"colorScheme": "Campbell"');
+    const parsed = parseWritten(resultText) as { profiles: { defaults: { fontSize?: unknown } } };
+    expect(parsed.profiles.defaults.fontSize).toBe(11);
+  });
+
+  it("writes a backup before editing, and undo restores it exactly — the same backup apply uses", () => {
+    setDefaultFontFace("MesloLGS NF", settingsPath);
+    expect(readFileSync(settingsPath, "utf8")).not.toBe(LF_FIXTURE);
+    expect(readFileSync(`${settingsPath}.chameleon-backup`, "utf8")).toBe(LF_FIXTURE);
+
+    undoWindowsTerminal(settingsPath);
+    expect(readFileSync(settingsPath, "utf8")).toBe(LF_FIXTURE);
+  });
+
+  it("is idempotent — setting the same font face twice produces the same file", () => {
+    setDefaultFontFace("MesloLGS NF", settingsPath);
+    const afterFirst = readFileSync(settingsPath, "utf8");
+    setDefaultFontFace("MesloLGS NF", settingsPath);
+    const afterSecond = readFileSync(settingsPath, "utf8");
+
+    expect(afterSecond).toBe(afterFirst);
+    expect(countOccurrences(afterSecond, "// ch:begin")).toBe(1);
+  });
+
+  it("refuses to edit when there is no settings.json to edit", () => {
+    expect(() => setDefaultFontFace("MesloLGS NF", path.join(settingsDir, "missing.json"))).toThrow();
   });
 });

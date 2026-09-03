@@ -40,16 +40,22 @@ export type { LoadedThemePack, ThemePackOrigin } from "./palette/theme-pack-libr
 export { loadCuratedThemePacks, mergeThemePacksBySlug } from "./palette/theme-pack-library.js";
 
 export type { WindowsTerminalAdapter, WindowsTerminalSettings } from "./adapters/windows-terminal.js";
-export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/windows-terminal.js";
+export { createWindowsTerminalAdapter, selectedFontFace, setDefaultFontFace, undoWindowsTerminal } from "./adapters/windows-terminal.js";
 
 export type { OhMyPoshAdapter, OhMyPoshConfig } from "./adapters/oh-my-posh.js";
-export { createOhMyPoshAdapter, undoOhMyPosh } from "./adapters/oh-my-posh.js";
+export { createOhMyPoshAdapter, installOhMyPosh, undoOhMyPosh } from "./adapters/oh-my-posh.js";
 
 export type { HerdrAdapter, HerdrConfig } from "./adapters/herdr.js";
 export { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
 
+export type { NerdFontStatus } from "./adapters/nerd-font.js";
+export { evaluateNerdFontStatus, installNerdFont, isNerdFontFamilyName, listInstalledFontFamilyNames } from "./adapters/nerd-font.js";
+
 export type { UserThemePackLoadResult } from "./adapters/user-theme-packs.js";
 export { defaultUserThemePackDir, loadUserThemePacks } from "./adapters/user-theme-packs.js";
+
+export type { DoctorAction, DoctorActionKind, DoctorReport, TargetDoctorStatus } from "./doctor.js";
+export { buildDoctorReport, describeDoctorActions } from "./doctor.js";
 
 /**
  * The full set of packs `ch` can offer right now: every bundled pack plus

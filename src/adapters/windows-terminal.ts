@@ -26,6 +26,20 @@ const STABLE_PACKAGE_FAMILY_NAME = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
 
 /**
+ * profiles.defaults' own flat key for the terminal's font family — the
+ * setting `ch doctor` names when a Nerd Font is installed but never picked,
+ * see CLAUDE.md, "Catches a Nerd Font that is installed but not selected,
+ * and names the exact setting to change." Windows Terminal's newer schema
+ * also accepts a nested `font.face`, but every real settings.json this
+ * adapter has seen — including a fresh default profile — still writes the
+ * flat key, so that is the one Chameleon reads and edits.
+ */
+const FONT_FACE_SETTING_KEY = "fontFace";
+
+/** profiles.defaults' own key for the active colour scheme's name — the setting every `apply` points at the scheme just themed. */
+const COLOR_SCHEME_SETTING_KEY = "colorScheme";
+
+/**
  * The slice of Windows Terminal's settings.json this adapter actually
  * depends on. Everything else in a real settings.json (fonts, keybindings,
  * profile lists, …) is unvalidated and passed through untouched — this
@@ -90,12 +104,14 @@ function upsertSchemesEntry(settingsPath: string, text: string, scheme: Scheme):
 }
 
 /**
- * Points profiles.defaults.colorScheme at `schemeName`. A pre-existing
- * colorScheme — the common case, since Windows Terminal's own theme picker
- * writes one — is removed first, so the result always resolves to exactly
- * one colorScheme key: Chameleon's.
+ * Points profiles.defaults[key] at `value`. A pre-existing key of the same
+ * name — the common case, since Windows Terminal's own theme picker writes
+ * a colorScheme and ships a default fontFace — is removed first, so the
+ * result always resolves to exactly one key of that name: Chameleon's.
+ * Shared by colorScheme (set on every `apply`) and fontFace (set only by
+ * `ch doctor`'s fix for a Nerd Font that is installed but not selected).
  */
-function upsertDefaultColorScheme(settingsPath: string, text: string, schemeName: string): string {
+function upsertDefaultsProperty(settingsPath: string, text: string, key: string, value: unknown): string {
   const eol = detectLineEnding(text);
   const defaultsNode = requireNode(
     settingsPath,
@@ -105,7 +121,7 @@ function upsertDefaultColorScheme(settingsPath: string, text: string, schemeName
     'a "profiles.defaults" object',
   );
 
-  const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, "colorScheme"));
+  const dedupedText = dedupeConflict(text, defaultsNode, findPropertyNode(defaultsNode, key));
   const container = requireNode(
     settingsPath,
     parseJsonTree(settingsPath, dedupedText),
@@ -113,7 +129,7 @@ function upsertDefaultColorScheme(settingsPath: string, text: string, schemeName
     "object",
     'a "profiles.defaults" object',
   );
-  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("colorScheme", schemeName, eol), eol);
+  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent(key, value, eol), eol);
 }
 
 /**
@@ -139,6 +155,16 @@ function upsertTopLevelTheme(settingsPath: string, text: string, appearance: App
 
 function detectWindowsTerminal(settingsPath: string): boolean {
   return existsSync(settingsPath);
+}
+
+/**
+ * The font family name Windows Terminal will actually render with, read
+ * from already-parsed settings — undefined when the user has never set one
+ * (profiles.defaults falls back to Windows Terminal's own bundled font).
+ */
+export function selectedFontFace(settings: WindowsTerminalSettings): string | undefined {
+  const value = settings.profiles?.defaults?.[FONT_FACE_SETTING_KEY];
+  return typeof value === "string" ? value : undefined;
 }
 
 /**
@@ -176,7 +202,7 @@ function applyWindowsTerminalScheme(settingsPath: string, scheme: Scheme): void 
   const appearance = toPalette(scheme).appearance;
 
   const withScheme = upsertSchemesEntry(settingsPath, originalText, scheme);
-  const withColorScheme = upsertDefaultColorScheme(settingsPath, withScheme, scheme.name);
+  const withColorScheme = upsertDefaultsProperty(settingsPath, withScheme, COLOR_SCHEME_SETTING_KEY, scheme.name);
   const withTheme = upsertTopLevelTheme(settingsPath, withColorScheme, appearance);
 
   writeFileSync(settingsPath, withTheme, "utf8");
@@ -189,6 +215,27 @@ function applyWindowsTerminalScheme(settingsPath: string, scheme: Scheme): void 
  */
 function reloadWindowsTerminal(): void {
   // Intentional no-op — see the doc comment above.
+}
+
+/**
+ * Backs up settings.json, then sets profiles.defaults.fontFace to
+ * `fontFace` — the fix `ch doctor` offers for a Nerd Font that is installed
+ * but never selected. Not part of the adapter interface — this is a
+ * `ch doctor` fix, not a step in the theming pipeline — but it lives beside
+ * the adapter because settings.json's shape and markers are this file's
+ * business. Shares `undoWindowsTerminal`'s own backup file, so undoing this
+ * edit works the same way undoing an `apply` does.
+ */
+export function setDefaultFontFace(fontFace: string, settingsPath: string = defaultSettingsPath()): void {
+  if (!existsSync(settingsPath)) {
+    throw new Error(`no Windows Terminal settings.json found at ${settingsPath}`);
+  }
+
+  copyFileSync(settingsPath, backupPathFor(settingsPath));
+
+  const originalText = readFileSync(settingsPath, "utf8");
+  const updatedText = upsertDefaultsProperty(settingsPath, originalText, FONT_FACE_SETTING_KEY, fontFace);
+  writeFileSync(settingsPath, updatedText, "utf8");
 }
 
 /**
