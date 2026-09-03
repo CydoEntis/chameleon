@@ -27,7 +27,7 @@ export interface Palette {
 }
 
 function measureColor(hex: string): MeasuredColor {
-  return { hex, relativeLuminance: relativeLuminance(hex) };
+  return Object.freeze({ hex, relativeLuminance: relativeLuminance(hex) });
 }
 
 // A lookup table mapping the twenty slots is one function and stays one —
@@ -65,13 +65,15 @@ function appearanceOf(scheme: Scheme): Appearance {
 
 /**
  * Converts a parsed Scheme into a Palette: every slot measured, appearance
- * derived from the background. The result is frozen — repair (the next
- * ticket) returns a new palette, it never edits the one it was given.
+ * derived from the background. The result is deep-frozen — the palette
+ * itself, its slots record, and every MeasuredColor within it — so repair
+ * (the next ticket) returns a new palette, it never edits the one it was
+ * given.
  */
 export function toPalette(scheme: Scheme): Palette {
   return Object.freeze({
     name: scheme.name,
     appearance: appearanceOf(scheme),
-    slots: measureSlots(scheme),
+    slots: Object.freeze(measureSlots(scheme)),
   });
 }
