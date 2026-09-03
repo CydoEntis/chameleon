@@ -1,0 +1,37 @@
+// Oh My Posh prompt config — hand edited, please don't nuke my comments.
+{
+    "$schema": "https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/main/themes/schema.json",
+    "version": 2,
+    "palette": {
+        "customAccent": "#89b4fa", // a colour I added myself, unrelated to chameleon
+        "os": "#ACE1AF"
+    },
+    "blocks": [
+        {
+            "type": "prompt",
+            "alignment": "left",
+            "segments":
+            [
+                {
+                    "type": "os",
+                    "style": "plain",
+                    "foreground": "p:accent",
+                    "background": "p:ground",
+                    "template": "{{ .Icon }}"
+                },
+                {
+                    "type": "path",
+                    "style": "plain",
+                    "foreground": "p:body", // uses the body role
+                    "background": "p:ground",
+                    "properties": {
+                        "style": "full"
+                    }
+                }
+            ]
+        }
+    ],
+
+    // keep the title in sync with the shell name
+    "console_title_template": "{{ .Shell }}"
+}
