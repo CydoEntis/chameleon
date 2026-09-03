@@ -20,3 +20,6 @@ export { assignRolesByContrast } from "./palette/roles.js";
 export { loadVendoredSchemes } from "./palette/scheme-library.js";
 export type { Scheme } from "./palette/scheme.js";
 export { parseScheme, SchemeSchema } from "./palette/scheme.js";
+
+export type { WindowsTerminalAdapter, WindowsTerminalSettings } from "./adapters/windows-terminal.js";
+export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/windows-terminal.js";

@@ -1,0 +1,5 @@
+# The Windows Terminal adapter test derives both a CRLF and an LF fixture
+# from this file at test time (see test/adapters/windows-terminal.test.ts).
+# That only proves anything if the checked-in bytes are LF on every
+# platform — core.autocrlf must not get a vote.
+test/adapters/fixtures/settings.jsonc text eol=lf
