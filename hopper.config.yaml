@@ -1,0 +1,17 @@
+# Which workspace this folder belongs to.
+#
+# One key, and this is it. A repository config used to be a config layer —
+# it could set linear, repo, pipeline, pipelines, tickets and projects, and
+# propose agents — which meant a file arriving in a repository you cloned
+# could name a model, a tool allowlist and a write boundary, so a person had
+# to be asked before any of it ran.
+#
+# What a repository alone knows — its own checks, and the branch it merges
+# into — is a field on its row in the workspace's own hopper.yaml. Everything
+# else was your method rather than this repository's fact, and your method
+# follows you between repositories rather than the other way round.
+#
+#   hopper routing checkout set <path> --stage verify --command "bun test"
+#   hopper routing checkout set <path> --base dev
+
+workspace: Chameleon
