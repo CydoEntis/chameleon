@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MUTED_MIN_RATIO, TEXT_MIN_RATIO } from "../src/constants.js";
+import { loadAllThemePacks, runDoctorChecks } from "../src/index.js";
 import { contrastRatio } from "../src/palette/color.js";
-import { loadAllThemePacks } from "../src/index.js";
 import { readVendoredScheme } from "../tools/vendor-scheme-library.js";
 
 let userThemeDir: string;
@@ -93,5 +93,23 @@ describe("loadAllThemePacks", () => {
     expect(contrastRatio(roleHexes.body, roleHexes.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     expect(contrastRatio(roleHexes.accent, roleHexes.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     expect(contrastRatio(roleHexes.muted, roleHexes.ground)).toBeGreaterThanOrEqual(MUTED_MIN_RATIO);
+  });
+});
+
+describe("runDoctorChecks", () => {
+  it("never hard-fails, and reports a well-formed row for every target plus the Nerd Font check", () => {
+    const report = runDoctorChecks();
+
+    expect(report.targets.map((check) => check.target)).toEqual(["windows-terminal", "oh-my-posh", "herdr"]);
+    for (const check of report.targets) {
+      expect(typeof check.isInstalled).toBe("boolean");
+    }
+
+    // Herdr is detect-only — see CLAUDE.md, "Herdr stays detect-only, never installed."
+    const herdrCheck = report.targets.find((check) => check.target === "herdr");
+    expect(herdrCheck?.installCommand).toBeUndefined();
+
+    expect(typeof report.nerdFont.isInstalled).toBe("boolean");
+    expect(typeof report.nerdFont.isSelected).toBe("boolean");
   });
 });
