@@ -12,11 +12,11 @@ import { detectLineEnding } from "./marked-json-edit.js";
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
 
 /**
- * Every edit this adapter makes inside [theme.custom] is wrapped in this
- * pair, so a rerun can find and replace its own entries without disturbing
- * any override the user wrote there themselves. TOML's comment syntax is
- * `#`, same as the marker this project already uses for the PowerShell
- * profile — see oh-my-posh.ts.
+ * Every edit this adapter makes inside a table it owns ([theme.custom] and
+ * [ui] — see upsertMarkedTokens) is wrapped in this pair, so a rerun can find
+ * and replace its own entries without disturbing any override the user wrote
+ * there themselves. TOML's comment syntax is `#`, same as the marker this
+ * project already uses for the PowerShell profile — see oh-my-posh.ts.
  */
 const MARKER_BEGIN = "# ch:begin";
 const MARKER_END = "# ch:end";
@@ -27,15 +27,19 @@ const RELOAD_CONFIG_ARGS = ["server", "reload-config"] as const;
 
 /**
  * The slice of Herdr's config.toml this adapter actually depends on.
- * Everything else in a real config.toml ([ui], status-bar settings, …) is
- * never parsed and never touched — this schema exists only to describe the
- * shape this adapter reads back out, never to police the rest of a user's
- * config.
+ * [ui]'s own behaviour settings (status-bar, pane border style, …) are never
+ * parsed and never touched; [ui].accent is the one exception — see CHM-23 —
+ * and is read back the same way [theme.custom] is. This schema exists only
+ * to describe the shape this adapter reads back out, never to police the
+ * rest of a user's config.
  */
 const HerdrConfigSchema = z.object({
   theme: z.object({
     name: z.string().optional(),
     custom: z.record(z.string(), z.string()),
+  }),
+  ui: z.object({
+    accent: z.string().optional(),
   }),
 });
 
@@ -61,7 +65,7 @@ export interface HerdrAdapter {
  * `name` falls back to the nearest built-in by appearance (see
  * HERDR_DARK_FALLBACK_THEME/HERDR_LIGHT_FALLBACK_THEME below); its own
  * colours still reach Herdr through [theme.custom] regardless, via
- * buildCustomBlockLines, so the theme visibly changes either way.
+ * upsertCustomBlock, so the theme visibly changes either way.
  */
 const PACK_SLUG_TO_HERDR_THEME: Readonly<Record<string, string>> = {
   "catppuccin-dark": "catppuccin",
@@ -119,6 +123,16 @@ const ROLE_TO_HERDR_TOKEN: Readonly<Record<Role, string>> = {
   error: "red",
 };
 
+/**
+ * The one colour key under [ui] — Herdr's own docs call it "Accent color for
+ * highlights, borders, and navigation UI", and it is what pane and sidebar
+ * borders actually read. It shares its name with, but is a different key in
+ * a different table from, [theme.custom]'s `accent` (ROLE_TO_HERDR_TOKEN.accent
+ * above). Chameleon set the latter and never the former — CHM-23 — leaving
+ * borders stuck on whatever the user had here before.
+ */
+const UI_ACCENT_KEY = "accent";
+
 /** Where Herdr keeps config.toml, under the user's roaming app data. */
 function defaultConfigPath(): string | undefined {
   const appData = process.env["APPDATA"];
@@ -144,8 +158,8 @@ function detectHerdr(configPath: string | undefined): boolean {
 // --- Minimal TOML table/line scanning -------------------------------------
 //
 // Herdr's config.toml is never fully parsed: this adapter depends on
-// exactly two tables ([theme] and [theme.custom]), both flat string maps,
-// so a hand-rolled line scan is enough to find and edit them without
+// exactly three tables ([theme], [theme.custom] and [ui]), all flat string
+// maps, so a hand-rolled line scan is enough to find and edit them without
 // dragging in a general-purpose TOML parser this project has no other use
 // for. See code-standards.md, "Dependencies".
 
@@ -222,10 +236,16 @@ function readHerdrConfig(configPath: string): HerdrConfig {
   const customTable = findTable(lines, "theme.custom");
   const customBodyLines = customTable ? lines.slice(customTable.bodyStartLineIndex, customTable.bodyEndLineIndex) : [];
 
+  const uiTable = findTable(lines, "ui");
+  const uiBodyLines = uiTable ? lines.slice(uiTable.bodyStartLineIndex, uiTable.bodyEndLineIndex) : [];
+
   const shape = {
     theme: {
       name: extractStringValue(themeBodyLines, "name"),
       custom: extractStringKeyValues(customBodyLines),
+    },
+    ui: {
+      accent: extractStringValue(uiBodyLines, UI_ACCENT_KEY),
     },
   };
   const validated = HerdrConfigSchema.safeParse(shape);
@@ -275,8 +295,9 @@ function upsertThemeName(text: string, eol: string, themeName: string): string {
   return spliceTableBody(lines, themeTable, updatedBodyLines, eol);
 }
 
-function buildCustomBlockLines(roles: readonly Role[], colorTable: Readonly<Record<Role, string>>): string[] {
-  return roles.map((role) => `${ROLE_TO_HERDR_TOKEN[role]} = ${JSON.stringify(colorTable[role])}`);
+/** `token = "value"` for every entry of `tokenValues`, in the object's own key order. */
+function buildTokenLines(tokenValues: Readonly<Record<string, string>>): string[] {
+  return Object.entries(tokenValues).map(([token, value]) => `${token} = ${JSON.stringify(value)}`);
 }
 
 /** `key = "…"` capturing everything before and after the quoted value, so the value can be swapped without disturbing indentation, key spacing or a trailing comment. */
@@ -289,10 +310,10 @@ function replaceStringValue(line: string, newValue: string): string {
 
 /**
  * Rewrites, in place, the value of any line among `lines` whose key is one of
- * Herdr's own tokens for `colorTable`'s roles — the line itself, and any
- * comment on it or above it, never moves. Returns which Herdr tokens were
- * found this way, so the caller can leave them out of the marked block it is
- * about to (re)write instead of writing a second copy of the same key.
+ * `tokenValues`' own keys — the line itself, and any comment on it or above
+ * it, never moves. Returns which keys were found this way, so the caller can
+ * leave them out of the marked block it is about to (re)write instead of
+ * writing a second copy of the same key.
  *
  * This is the fix for CHM-22: a user who already had `text` set further down
  * [theme.custom] ended up with two `text` keys once Chameleon's marked block
@@ -303,55 +324,62 @@ function replaceStringValue(line: string, newValue: string): string {
  */
 function takeOverExistingTokenLines(
   lines: readonly string[],
-  colorTable: Readonly<Record<Role, string>>,
+  tokenValues: Readonly<Record<string, string>>,
 ): { updatedLines: string[]; ownedTokens: Set<string> } {
   const ownedTokens = new Set<string>();
   const updatedLines = lines.map((line) => {
     const key = STRING_KEY_VALUE_REGEX.exec(line)?.[1];
-    const role = key === undefined ? undefined : ROLES.find((candidateRole) => ROLE_TO_HERDR_TOKEN[candidateRole] === key);
-    if (!role || key === undefined) return line;
+    const value = key === undefined ? undefined : tokenValues[key];
+    if (key === undefined || value === undefined) return line;
     ownedTokens.add(key);
-    return replaceStringValue(line, colorTable[role]);
+    return replaceStringValue(line, value);
   });
   return { updatedLines, ownedTokens };
 }
 
-/** The roles among `ROLES` whose Herdr token is not already claimed by a plain line the user wrote — i.e. the roles the marked block still needs to carry itself. */
-function rolesNotOwned(ownedTokens: ReadonlySet<string>): Role[] {
-  return ROLES.filter((role) => !ownedTokens.has(ROLE_TO_HERDR_TOKEN[role]));
+/** The entries of `tokenValues` whose key is not already claimed by a plain line the user wrote — i.e. the keys the marked block still needs to carry itself. */
+function tokensNotOwned(tokenValues: Readonly<Record<string, string>>, ownedTokens: ReadonlySet<string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(tokenValues).filter(([token]) => !ownedTokens.has(token)));
 }
 
 /**
- * Upserts Chameleon's own colour tokens into [theme.custom], scoped between
- * ch:begin/ch:end. A user's own overrides in the same table — outside the
+ * Upserts `tokenValues` into `tableName`'s own body, scoped between
+ * ch:begin/ch:end. A user's own entries in the same table — outside the
  * marker — are never touched, so a config that already carries hand-picked
- * [theme.custom] entries keeps them across every apply. When one of those
- * outside-the-marker lines already sets a key Chameleon itself owns (`text`,
- * `subtext0`, …), that line is updated in place instead — see
- * takeOverExistingTokenLines — so the table never ends up with two of it.
+ * entries keeps them across every apply. When one of those outside-the-marker
+ * lines already sets a key `tokenValues` itself owns, that line is updated in
+ * place instead — see takeOverExistingTokenLines — so the table never ends up
+ * with two of it.
+ *
+ * Shared by [theme.custom] (Chameleon's six roles, under Herdr's own token
+ * names — see upsertCustomBlock) and [ui] (just `accent` — see
+ * upsertUiAccent, CHM-23): both are "one table, a handful of colour keys
+ * Chameleon owns, everything else in the table left alone", and the
+ * take-over-in-place behaviour is the same fix for the same TOML-forbids-
+ * duplicate-keys problem either way.
  */
-function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Record<Role, string>>): string {
+function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenValues: Readonly<Record<string, string>>): string {
   const lines = text.split(eol);
-  const customTable = findTable(lines, "theme.custom");
+  const table = findTable(lines, tableName);
 
-  if (!customTable) {
-    const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(ROLES, colorTable), MARKER_END];
-    return appendTable(text, eol, "theme.custom", markedLines);
+  if (!table) {
+    const markedLines = [MARKER_BEGIN, ...buildTokenLines(tokenValues), MARKER_END];
+    return appendTable(text, eol, tableName, markedLines);
   }
 
-  const bodyLines = lines.slice(customTable.bodyStartLineIndex, customTable.bodyEndLineIndex);
+  const bodyLines = lines.slice(table.bodyStartLineIndex, table.bodyEndLineIndex);
   const beginIndex = bodyLines.findIndex((line) => line.trim() === MARKER_BEGIN);
 
   if (beginIndex === -1) {
-    const { updatedLines, ownedTokens } = takeOverExistingTokenLines(bodyLines, colorTable);
-    const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(rolesNotOwned(ownedTokens), colorTable), MARKER_END];
-    return spliceTableBody(lines, customTable, [...markedLines, ...updatedLines], eol);
+    const { updatedLines, ownedTokens } = takeOverExistingTokenLines(bodyLines, tokenValues);
+    const markedLines = [MARKER_BEGIN, ...buildTokenLines(tokensNotOwned(tokenValues, ownedTokens)), MARKER_END];
+    return spliceTableBody(lines, table, [...markedLines, ...updatedLines], eol);
   }
 
   const endIndex = bodyLines.findIndex((line, index) => index > beginIndex && line.trim() === MARKER_END);
   if (endIndex === -1) {
     throw new Error(
-      "config.toml has a ch:begin marker in [theme.custom] with no matching ch:end — refusing to guess where Chameleon's block ends",
+      `config.toml has a ch:begin marker in [${tableName}] with no matching ch:end — refusing to guess where Chameleon's block ends`,
     );
   }
 
@@ -359,20 +387,39 @@ function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Recor
   // "the user already has this key" — the marker's own lines are about to be
   // replaced wholesale regardless, so scanning them too would just make this
   // rewrite think it "found" its own previous values.
-  const before = takeOverExistingTokenLines(bodyLines.slice(0, beginIndex), colorTable);
-  const after = takeOverExistingTokenLines(bodyLines.slice(endIndex + 1), colorTable);
+  const before = takeOverExistingTokenLines(bodyLines.slice(0, beginIndex), tokenValues);
+  const after = takeOverExistingTokenLines(bodyLines.slice(endIndex + 1), tokenValues);
   const ownedTokens = new Set([...before.ownedTokens, ...after.ownedTokens]);
-  const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(rolesNotOwned(ownedTokens), colorTable), MARKER_END];
+  const markedLines = [MARKER_BEGIN, ...buildTokenLines(tokensNotOwned(tokenValues, ownedTokens)), MARKER_END];
 
   const updatedBodyLines = [...before.updatedLines, ...markedLines, ...after.updatedLines];
-  return spliceTableBody(lines, customTable, updatedBodyLines, eol);
+  return spliceTableBody(lines, table, updatedBodyLines, eol);
+}
+
+/** [theme.custom]'s own token values for `colorTable`, keyed by Herdr's own token names rather than Chameleon's role names — see ROLE_TO_HERDR_TOKEN. */
+function customTokenValues(colorTable: Readonly<Record<Role, string>>): Record<string, string> {
+  return Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]]));
+}
+
+/** Upserts Chameleon's six roles into [theme.custom], under Herdr's own token names. See upsertMarkedTokens. */
+function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Record<Role, string>>): string {
+  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(colorTable));
+}
+
+/**
+ * Upserts [ui]'s own `accent` — the key Herdr's borders and sidebar actually
+ * read (see UI_ACCENT_KEY) — to `accentHex`. See upsertMarkedTokens.
+ */
+function upsertUiAccent(text: string, eol: string, accentHex: string): string {
+  return upsertMarkedTokens(text, eol, "ui", { [UI_ACCENT_KEY]: accentHex });
 }
 
 /**
  * Backs up config.toml, then sets [theme].name to a real Herdr built-in for
- * `slug` and upserts the [theme.custom] colour tokens, under Herdr's own
- * token names, for `scheme`'s resolved roles — both edits leaving everything
- * else in the file, [ui] and its comments included, untouched.
+ * `slug`, upserts the [theme.custom] colour tokens under Herdr's own token
+ * names for `scheme`'s resolved roles, and upserts [ui]'s own `accent` to
+ * match — accent is the only colour key under [ui]; see CHM-23. Every other
+ * [ui] setting, its comments included, is left untouched.
  */
 function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
   const resolvedConfigPath = requireConfigPath(configPath);
@@ -389,8 +436,9 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
 
   const withName = upsertThemeName(originalText, eol, themeName);
   const withCustom = upsertCustomBlock(withName, eol, colorTable);
+  const withUiAccent = upsertUiAccent(withCustom, eol, colorTable.accent);
 
-  writeFileSync(resolvedConfigPath, withCustom, "utf8");
+  writeFileSync(resolvedConfigPath, withUiAccent, "utf8");
 }
 
 const HerdrCliErrorSchema = z.object({ code: z.string(), message: z.string().optional() }).catchall(z.unknown());
