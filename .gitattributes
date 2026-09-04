@@ -16,6 +16,10 @@ test/adapters/fixtures/profile.ps1 text eol=lf
 # test/adapters/herdr.test.ts).
 test/adapters/fixtures/herdr-config.toml text eol=lf
 
+# Same reasoning again, for the Herdr adapter's own CHM-22 duplicate-key
+# fixture (see test/adapters/herdr.test.ts).
+test/adapters/fixtures/herdr-config-duplicate-key.toml text eol=lf
+
 # The real, unmodified "chips" Oh My Posh community theme — vendored for
 # CHM-16's "verified against a real, unmodified community theme" (see
 # test/adapters/oh-my-posh.test.ts). Read-only in every test that uses it,

@@ -275,29 +275,77 @@ function upsertThemeName(text: string, eol: string, themeName: string): string {
   return spliceTableBody(lines, themeTable, updatedBodyLines, eol);
 }
 
-function buildCustomBlockLines(colorTable: Readonly<Record<Role, string>>): string[] {
-  return ROLES.map((role) => `${ROLE_TO_HERDR_TOKEN[role]} = ${JSON.stringify(colorTable[role])}`);
+function buildCustomBlockLines(roles: readonly Role[], colorTable: Readonly<Record<Role, string>>): string[] {
+  return roles.map((role) => `${ROLE_TO_HERDR_TOKEN[role]} = ${JSON.stringify(colorTable[role])}`);
+}
+
+/** `key = "…"` capturing everything before and after the quoted value, so the value can be swapped without disturbing indentation, key spacing or a trailing comment. */
+const STRING_KEY_VALUE_REPLACE_REGEX = /^(\s*[A-Za-z0-9_.-]+\s*=\s*)"(?:[^"\\]|\\.)*"(\s*(?:#.*)?)$/;
+
+/** `line`, with its quoted value swapped for `newValue` — everything else on the line, trailing comment included, is left exactly as written. */
+function replaceStringValue(line: string, newValue: string): string {
+  return line.replace(STRING_KEY_VALUE_REPLACE_REGEX, (_match, prefix: string, suffix: string) => `${prefix}${JSON.stringify(newValue)}${suffix}`);
+}
+
+/**
+ * Rewrites, in place, the value of any line among `lines` whose key is one of
+ * Herdr's own tokens for `colorTable`'s roles — the line itself, and any
+ * comment on it or above it, never moves. Returns which Herdr tokens were
+ * found this way, so the caller can leave them out of the marked block it is
+ * about to (re)write instead of writing a second copy of the same key.
+ *
+ * This is the fix for CHM-22: a user who already had `text` set further down
+ * [theme.custom] ended up with two `text` keys once Chameleon's marked block
+ * added its own — TOML forbids that, so Herdr rejected the whole file.
+ * Updating in place, rather than deleting the line and re-adding it inside
+ * the marker, is also what keeps the user's own comment on that line —
+ * often the reason they picked that colour — attached to it.
+ */
+function takeOverExistingTokenLines(
+  lines: readonly string[],
+  colorTable: Readonly<Record<Role, string>>,
+): { updatedLines: string[]; ownedTokens: Set<string> } {
+  const ownedTokens = new Set<string>();
+  const updatedLines = lines.map((line) => {
+    const key = STRING_KEY_VALUE_REGEX.exec(line)?.[1];
+    const role = key === undefined ? undefined : ROLES.find((candidateRole) => ROLE_TO_HERDR_TOKEN[candidateRole] === key);
+    if (!role || key === undefined) return line;
+    ownedTokens.add(key);
+    return replaceStringValue(line, colorTable[role]);
+  });
+  return { updatedLines, ownedTokens };
+}
+
+/** The roles among `ROLES` whose Herdr token is not already claimed by a plain line the user wrote — i.e. the roles the marked block still needs to carry itself. */
+function rolesNotOwned(ownedTokens: ReadonlySet<string>): Role[] {
+  return ROLES.filter((role) => !ownedTokens.has(ROLE_TO_HERDR_TOKEN[role]));
 }
 
 /**
  * Upserts Chameleon's own colour tokens into [theme.custom], scoped between
  * ch:begin/ch:end. A user's own overrides in the same table — outside the
  * marker — are never touched, so a config that already carries hand-picked
- * [theme.custom] entries keeps them across every apply.
+ * [theme.custom] entries keeps them across every apply. When one of those
+ * outside-the-marker lines already sets a key Chameleon itself owns (`text`,
+ * `subtext0`, …), that line is updated in place instead — see
+ * takeOverExistingTokenLines — so the table never ends up with two of it.
  */
 function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Record<Role, string>>): string {
   const lines = text.split(eol);
   const customTable = findTable(lines, "theme.custom");
-  const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(colorTable), MARKER_END];
 
   if (!customTable) {
+    const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(ROLES, colorTable), MARKER_END];
     return appendTable(text, eol, "theme.custom", markedLines);
   }
 
   const bodyLines = lines.slice(customTable.bodyStartLineIndex, customTable.bodyEndLineIndex);
   const beginIndex = bodyLines.findIndex((line) => line.trim() === MARKER_BEGIN);
+
   if (beginIndex === -1) {
-    return spliceTableBody(lines, customTable, [...markedLines, ...bodyLines], eol);
+    const { updatedLines, ownedTokens } = takeOverExistingTokenLines(bodyLines, colorTable);
+    const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(rolesNotOwned(ownedTokens), colorTable), MARKER_END];
+    return spliceTableBody(lines, customTable, [...markedLines, ...updatedLines], eol);
   }
 
   const endIndex = bodyLines.findIndex((line, index) => index > beginIndex && line.trim() === MARKER_END);
@@ -307,7 +355,16 @@ function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Recor
     );
   }
 
-  const updatedBodyLines = [...bodyLines.slice(0, beginIndex), ...markedLines, ...bodyLines.slice(endIndex + 1)];
+  // Only the lines outside Chameleon's own current marker are candidates for
+  // "the user already has this key" — the marker's own lines are about to be
+  // replaced wholesale regardless, so scanning them too would just make this
+  // rewrite think it "found" its own previous values.
+  const before = takeOverExistingTokenLines(bodyLines.slice(0, beginIndex), colorTable);
+  const after = takeOverExistingTokenLines(bodyLines.slice(endIndex + 1), colorTable);
+  const ownedTokens = new Set([...before.ownedTokens, ...after.ownedTokens]);
+  const markedLines = [MARKER_BEGIN, ...buildCustomBlockLines(rolesNotOwned(ownedTokens), colorTable), MARKER_END];
+
+  const updatedBodyLines = [...before.updatedLines, ...markedLines, ...after.updatedLines];
   return spliceTableBody(lines, customTable, updatedBodyLines, eol);
 }
 
@@ -372,6 +429,42 @@ function describeReloadFailure(result: SpawnSyncReturns<string>): string {
   return `"${HERDR_BINARY_NAME} ${RELOAD_CONFIG_ARGS.join(" ")}" exited with status ${String(result.status)}`;
 }
 
+const HerdrReloadResultSchema = z.object({
+  result: z.object({ status: z.string(), diagnostics: z.array(z.string()).default([]) }).catchall(z.unknown()),
+});
+
+type HerdrReloadResult = z.infer<typeof HerdrReloadResultSchema>;
+
+/** Herdr's own word, inside `reloadResult`, for whether the new config actually took effect — never the process exit code, see reloadHerdr. */
+const RELOAD_APPLIED_STATUS = "applied";
+
+/**
+ * Herdr's own CLI prints this JSON object on stdout after every
+ * `reload-config` call, success or failure alike — `result.status` is
+ * Herdr's own word for whether the new config was actually applied, and
+ * `result.diagnostics` names the reason when it was not, e.g. a config.toml
+ * that failed to parse. Extracted so a failure reported this way can surface
+ * Herdr's own diagnostics instead of a generic "it didn't work".
+ */
+function parseHerdrReloadResult(stdout: string): HerdrReloadResult | undefined {
+  const jsonMatch = /\{[\s\S]*\}/.exec(stdout);
+  if (!jsonMatch) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(jsonMatch[0]);
+    const validated = HerdrReloadResultSchema.safeParse(parsed);
+    return validated.success ? validated.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Herdr's own diagnostics for a reload whose `status` was not "applied", verbatim — Herdr's own message names the file, the line and the problem better than anything Chameleon could synthesise. */
+function describeReloadDiagnostics(reloadResult: HerdrReloadResult): string {
+  const { status, diagnostics } = reloadResult.result;
+  if (diagnostics.length === 0) return `herdr reported status "${status}"`;
+  return diagnostics.join("\n");
+}
+
 /**
  * Reloads every pane from the config.toml already on disk — a call over
  * Herdr's own control socket, not a relaunch, which is what makes this safe
@@ -381,17 +474,27 @@ function describeReloadFailure(result: SpawnSyncReturns<string>): string {
  * environment — HERDR_ENV included — the same as any other spawned process;
  * nothing here needs to special-case it.
  *
- * spawnSync reports a failed reload two different ways and both must be
- * checked: `result.error` when the binary could not even be started, and a
+ * A failed reload shows up three different ways, and all three must be
+ * checked: `result.error` when the binary could not even be started, a
  * non-zero `result.status` when it ran and Herdr's own CLI reported failure
- * — most commonly `server_not_running`, a stale environment pointed at a
- * server that is no longer listening. Checking only `error` would call that
- * second case a success and claim every pane repainted when none did.
+ * over stderr — most commonly `server_not_running`, a stale environment
+ * pointed at a server that is no longer listening — and, since CHM-22, a
+ * zero exit status whose stdout JSON payload itself says
+ * `"status":"failed"`, which is exactly what Herdr returns for a
+ * config.toml it refused to parse: the process succeeded at making the
+ * call, and Herdr succeeded at rejecting the config. Checking only the exit
+ * code would call that last case a success and claim every pane repainted
+ * when Herdr silently kept the previous config.
  */
 function reloadHerdr(): void {
   const result = spawnSync(HERDR_BINARY_NAME, [...RELOAD_CONFIG_ARGS], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw new Error(`Herdr did not reload: ${describeReloadFailure(result)}`);
+  }
+
+  const reloadResult = parseHerdrReloadResult(result.stdout);
+  if (reloadResult && reloadResult.result.status !== RELOAD_APPLIED_STATUS) {
+    throw new Error(`Herdr did not reload: ${describeReloadDiagnostics(reloadResult)}`);
   }
 }
 
