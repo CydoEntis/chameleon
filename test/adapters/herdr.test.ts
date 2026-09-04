@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHerdrAdapter, undoHerdr } from "../../src/adapters/herdr.js";
-import { ROLES } from "../../src/constants.js";
+import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
@@ -66,6 +66,49 @@ const AARDVARK_BLUE_SCHEME: Scheme = parseScheme({
   cursorColor: "#007acc",
   selectionBackground: "#bfdbfe",
 });
+
+// Real vendored scheme values (mbadolato/iTerm2-Color-Schemes), taken from
+// the bundled github-light pack itself — see themes/github-light.json.
+// github-light has no Herdr built-in (see CHM-21's ticket body), so it's
+// what exercises the appearance-fallback branch below.
+const GITHUB_LIGHT_SCHEME: Scheme = parseScheme({
+  name: "GitHub Light Default",
+  black: "#24292f",
+  red: "#cf222e",
+  green: "#116329",
+  yellow: "#4d2d00",
+  blue: "#0969da",
+  purple: "#8250df",
+  cyan: "#1b7c83",
+  white: "#6e7781",
+  brightBlack: "#57606a",
+  brightRed: "#a40e26",
+  brightGreen: "#1a7f37",
+  brightYellow: "#633c01",
+  brightBlue: "#218bff",
+  brightPurple: "#a475f9",
+  brightCyan: "#3192aa",
+  brightWhite: "#8c959f",
+  background: "#ffffff",
+  foreground: "#1f2328",
+  cursorColor: "#0969da",
+  selectionBackground: "#1f2328",
+});
+
+// Real bundled pack slugs (see themes/index.json), used to drive the
+// slug → Herdr built-in mapping under test rather than inventing slugs that
+// mean nothing. catppuccin-dark and dracula-dark both ship a Herdr
+// built-in; monokai-dark and github-light do not — see CHM-21's ticket
+// body for the authoritative lists of each.
+const MAPPED_DARK_SLUG = "catppuccin-dark";
+const MAPPED_DARK_HERDR_THEME = "catppuccin";
+const OTHER_MAPPED_DARK_SLUG = "dracula-dark";
+const OTHER_MAPPED_DARK_HERDR_THEME = "dracula";
+const UNMAPPED_DARK_SLUG = "monokai-dark";
+const UNMAPPED_LIGHT_SLUG = "github-light";
+
+/** Herdr's own [theme.custom] token names for Chameleon's six roles, in role order — see ROLE_TO_HERDR_TOKEN in adapters/herdr.ts. */
+const HERDR_TOKENS_IN_ROLE_ORDER = ["sidebar_bg", "text", "accent", "subtext0", "green", "red"];
 
 /**
  * True when every line of `original`, in order, appears verbatim somewhere
@@ -153,7 +196,7 @@ describe.each([
   });
 
   it("round-trips every original line byte-identical outside the theme name, its own line endings included", () => {
-    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME);
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(everyOriginalLineSurvivesInOrder(linesUnrelatedToChameleonEdits(fixture, eol), resultText)).toBe(true);
@@ -161,7 +204,7 @@ describe.each([
   });
 
   it("leaves [ui] and its comments byte-identical", () => {
-    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME);
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(resultText).toContain("# status bar lives here, out of scope for Chameleon");
@@ -170,18 +213,22 @@ describe.each([
     expect(resultText).toContain('socket_path = "/tmp/herdr.sock"');
   });
 
-  it("leaves exactly one name key, resolving to the applied scheme's name", () => {
+  it("leaves exactly one name key, resolving to the pack's own Herdr built-in — not the scheme's display name", () => {
     expect(fixture).toContain('name = "legacy-theme"');
 
-    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME);
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(countOccurrences(resultText, "name = ")).toBe(1);
-    expect(resultText).toContain('name = "0x96f"');
+    // The scheme's own name is "0x96f" (see ZEROX96F_SCHEME); a name of
+    // "0x96f" or "Catppuccin Mocha" is exactly the CHM-21 regression — Herdr
+    // has no built-in by either name and silently ignores it.
+    expect(resultText).toContain(`name = "${MAPPED_DARK_HERDR_THEME}"`);
+    expect(resultText).not.toContain('name = "0x96f"');
   });
 
-  it("keeps a user's own [theme.custom] overrides untouched, alongside Chameleon's own tokens", () => {
-    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME);
+  it("keeps a user's own [theme.custom] overrides untouched, alongside Chameleon's own tokens under Herdr's own names", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(resultText).toContain("# my own overrides, do not remove");
@@ -189,41 +236,42 @@ describe.each([
     expect(resultText).toContain('accent_override = "#445566"');
 
     const config = createHerdrAdapter(configPath).read();
-    for (const role of ROLES) {
-      expect(config.theme.custom[role]).toMatch(/^#[0-9a-f]{6}$/i);
+    for (const herdrToken of HERDR_TOKENS_IN_ROLE_ORDER) {
+      expect(config.theme.custom[herdrToken]).toMatch(/^#[0-9a-f]{6}$/i);
     }
     expect(config.theme.custom["banner"]).toBe("#112233");
     expect(config.theme.custom["accent_override"]).toBe("#445566");
   });
 
-  it("is idempotent — applying the same theme twice produces the same file", () => {
+  it("is idempotent — applying the same pack twice produces the same file", () => {
     const adapter = createHerdrAdapter(configPath);
 
-    adapter.apply(ZEROX96F_SCHEME);
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
     const afterFirstApply = readFileSync(configPath, "utf8");
-    adapter.apply(ZEROX96F_SCHEME);
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
     const afterSecondApply = readFileSync(configPath, "utf8");
 
     expect(afterSecondApply).toBe(afterFirstApply);
     expect(countOccurrences(afterSecondApply, "# ch:begin")).toBe(1);
   });
 
-  it("upserts the marked block in place when a different theme is applied later, instead of accumulating", () => {
+  it("upserts the marked block in place when a different pack is applied later, instead of accumulating", () => {
     const adapter = createHerdrAdapter(configPath);
 
-    adapter.apply(ZEROX96F_SCHEME);
-    adapter.apply(AARDVARK_BLUE_SCHEME);
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    adapter.apply(AARDVARK_BLUE_SCHEME, OTHER_MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(countOccurrences(resultText, "# ch:begin")).toBe(1);
     expect(countOccurrences(resultText, "# ch:end")).toBe(1);
-    expect(resultText).toContain('name = "Aardvark Blue"');
+    expect(resultText).toContain(`name = "${OTHER_MAPPED_DARK_HERDR_THEME}"`);
+    expect(resultText).not.toContain(`name = "${MAPPED_DARK_HERDR_THEME}"`);
     // The user's own overrides are still there, untouched by the second apply.
     expect(resultText).toContain('banner = "#112233"');
   });
 
   it("writes a backup before every apply, and undo restores it exactly", () => {
-    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME);
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
     expect(readFileSync(configPath, "utf8")).not.toBe(fixture);
     expect(readFileSync(`${configPath}.chameleon-backup`, "utf8")).toBe(fixture);
 
@@ -251,18 +299,18 @@ describe("herdr adapter — edge cases", () => {
 
   it("refuses to apply when there is no config.toml to edit", () => {
     const adapter = createHerdrAdapter(path.join(configDir, "missing.toml"));
-    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow();
+    expect(() => adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG)).toThrow();
   });
 
   it("creates [theme.custom] when the config does not have one yet", () => {
     const configPath = path.join(configDir, "config.toml");
     writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
 
-    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME);
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const config = createHerdrAdapter(configPath).read();
-    for (const role of ROLES) {
-      expect(config.theme.custom[role]).toMatch(/^#[0-9a-f]{6}$/i);
+    for (const herdrToken of HERDR_TOKENS_IN_ROLE_ORDER) {
+      expect(config.theme.custom[herdrToken]).toMatch(/^#[0-9a-f]{6}$/i);
     }
   });
 
@@ -275,6 +323,68 @@ describe("herdr adapter — edge cases", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+// CHM-21: Chameleon wrote a theme name Herdr does not recognise ("Catppuccin
+// Mocha", the Windows Terminal scheme's own display name) and five colour
+// tokens Herdr does not document. Herdr silently ignored all of it. These
+// tests pin the fix directly: the name comes from the pack's own slug, not
+// the scheme, and only Herdr's documented tokens are ever written.
+describe("herdr adapter — theme name and token mapping", () => {
+  let configDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-mapping-"));
+    configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, LF_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("writes a pack's own Herdr built-in, decoupled from the applied scheme's display name", () => {
+    // ZEROX96F_SCHEME's own name is "0x96f" — irrelevant here. What decides
+    // the written name is the slug, matched against Herdr's own picker.
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.name).toBe(MAPPED_DARK_HERDR_THEME);
+  });
+
+  it("falls back to Herdr's neutral dark built-in for a dark pack with no family match, and still carries its own colours", () => {
+    createHerdrAdapter(configPath).apply(AARDVARK_BLUE_SCHEME, UNMAPPED_DARK_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.name).toBe("terminal");
+
+    const expectedColorTable = resolveRoleHexes(AARDVARK_BLUE_SCHEME);
+    expect(config.theme.custom["sidebar_bg"]).toBe(expectedColorTable.ground);
+    expect(config.theme.custom["text"]).toBe(expectedColorTable.body);
+    expect(config.theme.custom["accent"]).toBe(expectedColorTable.accent);
+    expect(config.theme.custom["subtext0"]).toBe(expectedColorTable.muted);
+    expect(config.theme.custom["green"]).toBe(expectedColorTable.success);
+    expect(config.theme.custom["red"]).toBe(expectedColorTable.error);
+  });
+
+  it("falls back to a light built-in for a light pack with no family match", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.name).toBe("one-light");
+  });
+
+  it("never writes the invented tokens this ticket exists to fix", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.custom["ground"]).toBeUndefined();
+    expect(config.theme.custom["body"]).toBeUndefined();
+    expect(config.theme.custom["muted"]).toBeUndefined();
+    expect(config.theme.custom["success"]).toBeUndefined();
+    expect(config.theme.custom["error"]).toBeUndefined();
   });
 });
 
