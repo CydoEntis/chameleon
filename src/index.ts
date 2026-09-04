@@ -207,16 +207,28 @@ export interface PackActionResult {
   readonly detail?: string | undefined;
 }
 
-/** The slice of a target's adapter this file needs: enough to detect it and hand it a scheme, never the target-specific `read`/`reload`. */
-interface ApplicableTargetAdapter {
+/** The slice of a target's adapter this file needs to check before applying or undoing: enough to detect it, never the target-specific `read`/`reload`. */
+interface DetectableTargetAdapter {
   detect(): boolean;
-  apply(scheme: Scheme): void;
 }
 
-function adapterForTarget(target: Target): ApplicableTargetAdapter {
+function adapterForTarget(target: Target): DetectableTargetAdapter {
   if (target === "windows-terminal") return createWindowsTerminalAdapter();
   if (target === "oh-my-posh") return createOhMyPoshAdapter();
   return createHerdrAdapter();
+}
+
+/**
+ * Applies `scheme` to `target`. Herdr's own `apply` also takes the pack's
+ * `slug` — unlike the raw scheme, Herdr needs pack identity to pick a real
+ * built-in theme name, see adapters/herdr.ts's herdrThemeNameFor — so this,
+ * not a shared single-argument interface, is what lets that adapter's apply
+ * differ in shape from windows-terminal's and oh-my-posh's.
+ */
+function applyToTarget(target: Target, scheme: Scheme, slug: string): void {
+  if (target === "windows-terminal") return createWindowsTerminalAdapter().apply(scheme);
+  if (target === "oh-my-posh") return createOhMyPoshAdapter().apply(scheme);
+  return createHerdrAdapter().apply(scheme, slug);
 }
 
 /** `target`'s own `undo*` function — undoWindowsTerminal, undoOhMyPosh or undoHerdr — restoring it from the backup its adapter's most recent `apply` wrote. */
@@ -263,17 +275,19 @@ function findLoadedPack(slug: string, userThemeDir: string | undefined): LoadedT
  * Applies the pack named `slug` to every detected target. Every adapter's
  * own `apply` takes the pack's raw scheme and derives what it needs from it
  * itself — see theme-pack.ts's ThemePackPayloads doc comment — so the same
- * scheme is handed to all three. The pack is recorded as the active one as
- * soon as at least one target actually changed, which is what lets
- * `ch current`/`ch next`/`ch dark`/`ch light` work on a machine where only
- * some targets are installed. `statePath`, like `userThemeDir`, is only ever
- * overridden by tests; `ch` itself always reads and writes the real one.
+ * scheme is handed to all three; Herdr's `apply` also takes `slug` itself,
+ * since picking a real Herdr built-in needs pack identity the scheme's raw
+ * colours cannot supply — see applyToTarget. The pack is recorded as the
+ * active one as soon as at least one target actually changed, which is what
+ * lets `ch current`/`ch next`/`ch dark`/`ch light` work on a machine where
+ * only some targets are installed. `statePath`, like `userThemeDir`, is only
+ * ever overridden by tests; `ch` itself always reads and writes the real one.
  */
 export function applyThemePack(slug: string, userThemeDir?: string, statePath?: string): ApplyPackReport {
   const loaded = findLoadedPack(slug, userThemeDir);
   const scheme = loaded.pack.payloads["windows-terminal"];
 
-  const results = TARGETS.map((target) => runOnInstalledTarget(target, "applied", () => adapterForTarget(target).apply(scheme)));
+  const results = TARGETS.map((target) => runOnInstalledTarget(target, "applied", () => applyToTarget(target, scheme, slug)));
 
   if (results.some((result) => result.status === "applied")) {
     writeActivePackState(slug, statePath);
