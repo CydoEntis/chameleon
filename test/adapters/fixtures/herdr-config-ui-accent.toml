@@ -1,0 +1,17 @@
+# Herdr configuration — hand edited, please don't nuke my comments.
+
+[ui]
+# I tried the Monokai magenta this theme ships with and it looked wrong
+# against every dark background I use, so I've stuck with Solarized blue
+# here for years now — please don't touch this without asking me first.
+accent = "#268BD2"
+show_status_bar = true
+
+[theme]
+name = "legacy-theme"
+
+[theme.custom]
+accent = "#94e2d5"
+
+[server]
+socket_path = "/tmp/herdr.sock"
