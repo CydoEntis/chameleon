@@ -14,6 +14,7 @@ vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = path.join(currentDir, "fixtures", "herdr-config.toml");
 const DUPLICATE_KEY_FIXTURE_PATH = path.join(currentDir, "fixtures", "herdr-config-duplicate-key.toml");
+const UI_ACCENT_FIXTURE_PATH = path.join(currentDir, "fixtures", "herdr-config-ui-accent.toml");
 
 const CRLF = "\r\n";
 const LF = "\n";
@@ -148,6 +149,28 @@ function usesOnlyLineEnding(text: string, eol: string): boolean {
   return eol === CRLF ? !/(?<!\r)\n/.test(text) : !text.includes("\r");
 }
 
+/**
+ * `tableName`'s own body text within `text` — everything after its `[tableName]`
+ * header, up to the next table header or end of file. [theme.custom] and [ui]
+ * both use the literal key `accent` (see UI_ACCENT_KEY in adapters/herdr.ts),
+ * so a plain `countOccurrences(text, "accent = ")` conflates the two tables;
+ * this scopes the count to the one table a test actually cares about.
+ */
+function tableBodyText(text: string, eol: string, tableName: string): string {
+  const lines = text.split(eol);
+  const escapedTableName = tableName.replace(/\./g, "\\.");
+  const headerRegex = new RegExp(`^\\s*\\[${escapedTableName}\\]\\s*(#.*)?$`);
+  const anyHeaderRegex = /^\s*\[[^[\]]+\]\s*(#.*)?$/;
+
+  const headerIndex = lines.findIndex((line) => headerRegex.test(line));
+  if (headerIndex === -1) return "";
+
+  const nextHeaderOffset = lines.slice(headerIndex + 1).findIndex((line) => anyHeaderRegex.test(line));
+  const bodyEndIndex = nextHeaderOffset === -1 ? lines.length : headerIndex + 1 + nextHeaderOffset;
+
+  return lines.slice(headerIndex + 1, bodyEndIndex).join(eol);
+}
+
 function makeSpawnResult(overrides: Partial<SpawnSyncReturns<string>> = {}): SpawnSyncReturns<string> {
   return {
     pid: 1234,
@@ -204,7 +227,7 @@ describe.each([
     expect(usesOnlyLineEnding(resultText, eol)).toBe(true);
   });
 
-  it("leaves [ui] and its comments byte-identical", () => {
+  it("leaves [ui]'s own behaviour settings and their comments untouched, apart from the accent CHM-23 now sets", () => {
     createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
@@ -212,6 +235,9 @@ describe.each([
     expect(resultText).toContain('pane_border_style = "rounded" # I like rounded borders');
     expect(resultText).toContain("show_status_bar = true");
     expect(resultText).toContain('socket_path = "/tmp/herdr.sock"');
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.ui.accent).toBe(resolveRoleHexes(ZEROX96F_SCHEME).accent);
   });
 
   it("leaves exactly one name key, resolving to the pack's own Herdr built-in — not the scheme's display name", () => {
@@ -253,7 +279,8 @@ describe.each([
     const afterSecondApply = readFileSync(configPath, "utf8");
 
     expect(afterSecondApply).toBe(afterFirstApply);
-    expect(countOccurrences(afterSecondApply, "# ch:begin")).toBe(1);
+    // One marker pair per table Chameleon owns — [theme.custom] and [ui].
+    expect(countOccurrences(afterSecondApply, "# ch:begin")).toBe(2);
   });
 
   it("upserts the marked block in place when a different pack is applied later, instead of accumulating", () => {
@@ -263,8 +290,9 @@ describe.each([
     adapter.apply(AARDVARK_BLUE_SCHEME, OTHER_MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
-    expect(countOccurrences(resultText, "# ch:begin")).toBe(1);
-    expect(countOccurrences(resultText, "# ch:end")).toBe(1);
+    // One marker pair per table Chameleon owns — [theme.custom] and [ui].
+    expect(countOccurrences(resultText, "# ch:begin")).toBe(2);
+    expect(countOccurrences(resultText, "# ch:end")).toBe(2);
     expect(resultText).toContain(`name = "${OTHER_MAPPED_DARK_HERDR_THEME}"`);
     expect(resultText).not.toContain(`name = "${MAPPED_DARK_HERDR_THEME}"`);
     // The user's own overrides are still there, untouched by the second apply.
@@ -455,7 +483,8 @@ describe("herdr adapter — duplicate key dedup", () => {
     expect(config.theme.custom["accent"]).toBe(expectedColorTable.accent);
     expect(config.theme.custom["green"]).toBe(expectedColorTable.success);
     expect(config.theme.custom["red"]).toBe(expectedColorTable.error);
-    expect(countOccurrences(readFileSync(configPath, "utf8"), "# ch:begin")).toBe(1);
+    // One marker pair per table Chameleon owns — [theme.custom] and [ui].
+    expect(countOccurrences(readFileSync(configPath, "utf8"), "# ch:begin")).toBe(2);
   });
 
   it("stays idempotent — a second apply of the same pack still produces exactly one of each key", () => {
@@ -481,6 +510,90 @@ describe("herdr adapter — duplicate key dedup", () => {
     const expectedColorTable = resolveRoleHexes(AARDVARK_BLUE_SCHEME);
     expect(countOccurrences(resultText, "text = ")).toBe(1);
     expect(resultText).toContain(`text = "${expectedColorTable.body}"`);
+  });
+});
+
+// CHM-23: Chameleon set [theme.custom].accent — the token Herdr's own theme
+// preview reads — but never [ui].accent, the key Herdr's docs name as
+// "Accent color for highlights, borders, and navigation UI". Applying a
+// theme left pane and sidebar borders on whatever colour the user (or
+// Herdr's own default) had there before. These tests pin the fix: [ui]'s own
+// accent is taken over in place, exactly like a pre-existing [theme.custom]
+// token (CHM-22's fix, reused — see upsertMarkedTokens), and every other
+// [ui] setting is left alone.
+describe("herdr adapter — ui accent (CHM-23)", () => {
+  let configDir: string;
+  let configPath: string;
+  let fixture: string;
+
+  beforeEach(() => {
+    configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-ui-accent-"));
+    configPath = path.join(configDir, "config.toml");
+    fixture = readFileSync(UI_ACCENT_FIXTURE_PATH, "utf8");
+    writeFileSync(configPath, fixture, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("updates the user's existing [ui] accent in place, to exactly one occurrence, rather than adding a second copy", () => {
+    expect(countOccurrences(tableBodyText(fixture, LF, "ui"), "accent = ")).toBe(1);
+
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    const resultText = readFileSync(configPath, "utf8");
+
+    const expectedColorTable = resolveRoleHexes(ZEROX96F_SCHEME);
+    const uiBody = tableBodyText(resultText, LF, "ui");
+    expect(countOccurrences(uiBody, "accent = ")).toBe(1);
+    expect(uiBody).toContain(`accent = "${expectedColorTable.accent}"`);
+    expect(uiBody).not.toContain('accent = "#268BD2"');
+  });
+
+  it("preserves the user's own comments explaining their [ui] accent choice", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const resultText = readFileSync(configPath, "utf8");
+    expect(resultText).toContain("# I tried the Monokai magenta this theme ships with and it looked wrong");
+    expect(resultText).toContain("# against every dark background I use, so I've stuck with Solarized blue");
+    expect(resultText).toContain("# here for years now — please don't touch this without asking me first.");
+  });
+
+  it("leaves [theme.custom]'s own accent — a different table's same-named key — untouched by the [ui] take-over", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    const expectedColorTable = resolveRoleHexes(ZEROX96F_SCHEME);
+    expect(config.theme.custom["accent"]).toBe(expectedColorTable.accent);
+    expect(config.ui.accent).toBe(expectedColorTable.accent);
+  });
+
+  it("leaves [ui]'s other settings untouched by the accent take-over", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const resultText = readFileSync(configPath, "utf8");
+    expect(resultText).toContain("show_status_bar = true");
+  });
+
+  it("stays idempotent — a second apply produces exactly one [ui] accent key and the same file", () => {
+    const adapter = createHerdrAdapter(configPath);
+
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    const afterFirstApply = readFileSync(configPath, "utf8");
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    const afterSecondApply = readFileSync(configPath, "utf8");
+
+    expect(afterSecondApply).toBe(afterFirstApply);
+    expect(countOccurrences(tableBodyText(afterSecondApply, LF, "ui"), "accent = ")).toBe(1);
+  });
+
+  it("ch undo restores the user's original [ui] accent, and its comments, byte-for-byte", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    expect(readFileSync(configPath, "utf8")).not.toBe(fixture);
+
+    undoHerdr(configPath);
+
+    expect(readFileSync(configPath, "utf8")).toBe(fixture);
   });
 });
 
