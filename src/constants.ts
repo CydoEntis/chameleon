@@ -49,6 +49,20 @@ export const TEXT_MIN_RATIO = 4.5;
 export const MUTED_MIN_RATIO = 3.0;
 
 /**
+ * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
+ * clear before it still counts as its role's colour rather than a tinted
+ * grey. Set below Fairyfloss's error candidate's own native chroma (0.24,
+ * a real vendored value) so a candidate that started this restrained is
+ * not punished for it, and well above the floor an earlier, rejected
+ * repair design settled for (0.06 — a target so low it let Acid Lime,
+ * Thayer Bright and Fairyfloss all repair to within a hair of white
+ * anyway). A role that cannot clear both this and its contrast floor at
+ * once falls back to a computed grey instead of shipping a barely-tinted
+ * near-white or near-black — see repairFailingRoles.
+ */
+export const MIN_REPAIRED_CHROMA = 0.2;
+
+/**
  * Hue boundaries, in degrees, used to classify an ANSI slot's *measured*
  * hue rather than trust its name — Rosé Pine Dawn's `green` slot holds a
  * blue (hue ~197°) and its `cyan` slot holds a pink (hue ~3°). A slot's

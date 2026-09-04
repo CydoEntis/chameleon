@@ -1,5 +1,12 @@
-import { MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET, type Role } from "../constants.js";
-import { contrastRatio, fromHsl, relativeLuminance, toHsl } from "./color.js";
+import {
+  MIN_REPAIRED_CHROMA,
+  MUTED_MIN_RATIO,
+  ROLES,
+  TEXT_MIN_RATIO,
+  WCAG_CONTRAST_OFFSET,
+  type Role,
+} from "../constants.js";
+import { chromaOf, contrastRatio, fromHueChromaMatch, relativeLuminance, toHsl } from "./color.js";
 import { toPalette } from "./palette.js";
 import { assignRolesByContrast, type RoleAssignment, type RoleColor } from "./roles.js";
 import type { Scheme } from "./scheme.js";
@@ -15,7 +22,11 @@ export interface ContrastReport {
   readonly palette: ResolvedPalette;
   /** Roles whose colour changed because they either failed their floor or collided with an earlier role. */
   readonly repairedRoles: readonly Role[];
-  /** Repaired roles that still could not clear their floor without a collision, and fell back to a computed grey. */
+  /**
+   * Repaired roles that still could not clear their floor without a
+   * collision, or without giving up MIN_REPAIRED_CHROMA of colour, and fell
+   * back to a computed grey.
+   */
   readonly fallbackRoles: readonly Role[];
 }
 
@@ -25,11 +36,11 @@ const RATIO_CLEARANCE_MARGIN = 1.05;
 /** Fraction of body's ratio a repaired muted targets, so it reads as clearly secondary rather than barely so — proportional, not a fixed gap, so it still holds when body's ratio is large. */
 const MUTED_BELOW_BODY_FRACTION = 0.9;
 
-/** How much further from ground a repair pushes a colour that already clears its floor but collides with an earlier role. */
+/** How much further from ground a repair aims when a candidate already clears its floor but collides with an earlier role — the ideal it reaches for before settling for merely clearing the floor at a hue-true colour instead (see repairAtHue). */
 const COLLISION_NUDGE_MULTIPLIER = 1.15;
 
-/** Bisections used to find the HSL lightness that hits a target relative luminance; 40 gives far more precision than an 8-bit channel can express. */
-const LIGHTNESS_SEARCH_ITERATIONS = 40;
+/** Bisections used to find the matchValue or chroma that hits a target; 40 gives far more precision than an 8-bit channel can express. */
+const SEARCH_ITERATIONS = 40;
 
 function isTaken(hex: string, takenHexes: ReadonlySet<string>): boolean {
   return takenHexes.has(hex.toLowerCase());
@@ -50,49 +61,196 @@ function poleWithMoreHeadroom(groundHex: string): boolean {
   return maxRatioGoingLighter >= maxRatioGoingDarker;
 }
 
-/** The HSL lightness, for a fixed hue and saturation, whose relative luminance is closest to the target. Luminance rises monotonically with lightness, so this is a plain bisection. */
-function lightnessForLuminance(hue: number, saturation: number, targetLuminance: number): number {
+/** The relative luminance `targetRatio` against ground demands, clamped to the [0, 1] a luminance can actually take. */
+function targetLuminanceFor(groundHex: string, targetRatio: number, isLighterThanGround: boolean): number {
+  const groundLuminance = relativeLuminance(groundHex);
+  const rawTargetLuminance = isLighterThanGround
+    ? targetRatio * (groundLuminance + WCAG_CONTRAST_OFFSET) - WCAG_CONTRAST_OFFSET
+    : (groundLuminance + WCAG_CONTRAST_OFFSET) / targetRatio - WCAG_CONTRAST_OFFSET;
+  return Math.min(1, Math.max(0, rawTargetLuminance));
+}
+
+/**
+ * The matchValue, for a fixed hue and chroma, whose relative luminance is
+ * closest to target. Luminance rises monotonically with matchValue over its
+ * full valid domain [0, 1 - chroma] regardless of which pole is being aimed
+ * at — see {@link HueChromaMatch} — so this is a plain bisection.
+ */
+function matchValueForLuminance(hue: number, chroma: number, targetLuminance: number): number {
   let low = 0;
-  let high = 100;
-  for (let iteration = 0; iteration < LIGHTNESS_SEARCH_ITERATIONS; iteration += 1) {
-    const midLightness = (low + high) / 2;
-    const midLuminance = relativeLuminance(fromHsl({ hue, saturation, lightness: midLightness }));
+  let high = 1 - chroma;
+  for (let iteration = 0; iteration < SEARCH_ITERATIONS; iteration += 1) {
+    const midMatchValue = (low + high) / 2;
+    const midLuminance = relativeLuminance(fromHueChromaMatch({ hue, chroma, matchValue: midMatchValue }));
     if (midLuminance < targetLuminance) {
-      low = midLightness;
+      low = midMatchValue;
     } else {
-      high = midLightness;
+      high = midMatchValue;
     }
   }
   return (low + high) / 2;
 }
 
-/**
- * Shifts a colour's lightness — hue and saturation held fixed — until it
- * measures `targetRatio` against ground, staying on the side of ground
- * (lighter or darker) it already occupies. Raising the target pushes it
- * toward the pole opposite ground (more contrast); lowering the target
- * pulls it back toward ground's own lightness (less contrast) without
- * crossing to the other side.
- */
-function retarget(
+interface ChromaRepair {
+  readonly hex: string;
+  readonly chroma: number;
+}
+
+/** The hex, at a fixed hue and chroma, that measures closest to `targetRatio` against ground. */
+function colourAtRatio(
   hue: number,
-  saturation: number,
+  chroma: number,
   groundHex: string,
   targetRatio: number,
   isLighterThanGround: boolean,
-): string {
-  const groundLuminance = relativeLuminance(groundHex);
-  const rawTargetLuminance = isLighterThanGround
-    ? targetRatio * (groundLuminance + WCAG_CONTRAST_OFFSET) - WCAG_CONTRAST_OFFSET
-    : (groundLuminance + WCAG_CONTRAST_OFFSET) / targetRatio - WCAG_CONTRAST_OFFSET;
-  const targetLuminance = Math.min(1, Math.max(0, rawTargetLuminance));
-  const lightness = lightnessForLuminance(hue, saturation, targetLuminance);
+): ChromaRepair {
+  const targetLuminance = targetLuminanceFor(groundHex, targetRatio, isLighterThanGround);
+  const matchValue = matchValueForLuminance(hue, chroma, targetLuminance);
+  return { hex: fromHueChromaMatch({ hue, chroma, matchValue }), chroma };
+}
 
-  return fromHsl({ hue, saturation, lightness });
+/** The lowest and highest contrast ratio a colour at this hue and chroma can reach against ground on the given pole — matchValue swept over its full domain, [0, 1 - chroma]. A target ratio outside this interval cannot be hit without giving up some chroma; one inside it can be hit exactly (see colourAtRatio). */
+interface ReachableRatioRange {
+  readonly min: number;
+  readonly max: number;
+}
+
+function reachableRatioRange(
+  hue: number,
+  chroma: number,
+  groundHex: string,
+  isLighterThanGround: boolean,
+): ReachableRatioRange {
+  const towardGroundMatchValue = isLighterThanGround ? 0 : 1 - chroma;
+  const awayFromGroundMatchValue = isLighterThanGround ? 1 - chroma : 0;
+  return {
+    min: contrastRatio(fromHueChromaMatch({ hue, chroma, matchValue: towardGroundMatchValue }), groundHex),
+    max: contrastRatio(fromHueChromaMatch({ hue, chroma, matchValue: awayFromGroundMatchValue }), groundHex),
+  };
+}
+
+function isRatioReachable(targetRatio: number, range: ReachableRatioRange): boolean {
+  return targetRatio >= range.min && targetRatio <= range.max;
+}
+
+/**
+ * The largest chroma, at or below `ceilingChroma`, whose reachable range
+ * (see {@link reachableRatioRange}) still contains `targetRatio`. Less
+ * chroma always widens that range toward both of its ends — at chroma 0 it
+ * spans everything from true black to true white — so this trades away no
+ * more of it than `targetRatio` actually demands.
+ */
+function chromaAllowingRatio(
+  hue: number,
+  groundHex: string,
+  isLighterThanGround: boolean,
+  targetRatio: number,
+  ceilingChroma: number,
+): number {
+  let low = 0;
+  let high = ceilingChroma;
+  for (let iteration = 0; iteration < SEARCH_ITERATIONS; iteration += 1) {
+    const midChroma = (low + high) / 2;
+    if (isRatioReachable(targetRatio, reachableRatioRange(hue, midChroma, groundHex, isLighterThanGround))) {
+      low = midChroma;
+    } else {
+      high = midChroma;
+    }
+  }
+  return low;
+}
+
+/**
+ * Finds the nearest colour, at a fixed hue, that clears `minAcceptableRatio`
+ * while holding as much of `ceilingChroma` — the candidate's own chroma —
+ * as it can. Reaches for `idealTargetRatio` first; if the full ceiling
+ * cannot reach it — too little contrast headroom left, or (a muted pulling
+ * back below body) too much — aims at the floor itself instead of at
+ * whichever end of the ceiling's own range is nearest (which could just
+ * reproduce the candidate's already-taken point, or overshoot back past
+ * body from the other side); only when the floor itself is out of reach at
+ * full chroma does it give any chroma up, and then only as much as the
+ * floor actually demands. This is the fix for a repair that used to walk a
+ * fixed-saturation lightness line to the first colour that cleared: that
+ * line runs straight through white or black, because HSL saturation stays
+ * put while chroma collapses as lightness nears either pole.
+ */
+function repairAtHue(
+  hue: number,
+  ceilingChroma: number,
+  groundHex: string,
+  idealTargetRatio: number,
+  minAcceptableRatio: number,
+  isLighterThanGround: boolean,
+): ChromaRepair {
+  const ceilingRange = reachableRatioRange(hue, ceilingChroma, groundHex, isLighterThanGround);
+  if (isRatioReachable(idealTargetRatio, ceilingRange)) {
+    return colourAtRatio(hue, ceilingChroma, groundHex, idealTargetRatio, isLighterThanGround);
+  }
+  if (isRatioReachable(minAcceptableRatio, ceilingRange)) {
+    return colourAtRatio(hue, ceilingChroma, groundHex, minAcceptableRatio, isLighterThanGround);
+  }
+
+  const chroma = chromaAllowingRatio(hue, groundHex, isLighterThanGround, minAcceptableRatio, ceilingChroma);
+  return colourAtRatio(hue, chroma, groundHex, minAcceptableRatio, isLighterThanGround);
 }
 
 function finalize(candidate: RoleColor, wasRepaired: boolean, isFallback: boolean): RepairedRoleColor {
   return Object.freeze({ ...candidate, wasRepaired, isFallback });
+}
+
+/**
+ * Turns a {@link ChromaRepair} into a finished role colour: a computed,
+ * hue-free grey if the search traded any chroma away and still landed
+ * below MIN_REPAIRED_CHROMA, or if it still collides with an earlier role
+ * despite holding hue — both cases reported as a fallback, never shipped
+ * silently. A candidate that started below MIN_REPAIRED_CHROMA and needed
+ * no trade at all keeps its own (already low) chroma rather than being
+ * flagged for a loss that never happened.
+ */
+function resolveRepair(
+  slot: RoleColor["slot"],
+  groundHex: string,
+  repaired: ChromaRepair,
+  ceilingChroma: number,
+  minAcceptableRatio: number,
+  isLighterThanGround: boolean,
+  takenHexes: ReadonlySet<string>,
+): RepairedRoleColor {
+  const wasChromaTradedAway = repaired.chroma < ceilingChroma;
+  const didLoseRecognisableChroma = repaired.chroma < MIN_REPAIRED_CHROMA && wasChromaTradedAway;
+  const isStillTaken = !didLoseRecognisableChroma && isTaken(repaired.hex, takenHexes);
+
+  if (!didLoseRecognisableChroma && !isStillTaken) {
+    return finalize(
+      { hex: repaired.hex, slot, contrastRatio: contrastRatio(repaired.hex, groundHex) },
+      true,
+      false,
+    );
+  }
+
+  const fallback = colourAtRatio(0, 0, groundHex, minAcceptableRatio, isLighterThanGround);
+  return finalize({ hex: fallback.hex, slot, contrastRatio: contrastRatio(fallback.hex, groundHex) }, true, true);
+}
+
+/**
+ * Shared last step of both repairTowardFloor and repairMuted: search at the
+ * candidate's own hue and chroma, then resolve that search into a finished
+ * role colour.
+ */
+function repairCandidate(
+  candidate: RoleColor,
+  groundHex: string,
+  idealTargetRatio: number,
+  minAcceptableRatio: number,
+  isLighterThanGround: boolean,
+  takenHexes: ReadonlySet<string>,
+): RepairedRoleColor {
+  const { hue } = toHsl(candidate.hex);
+  const ceilingChroma = chromaOf(candidate.hex);
+
+  const repaired = repairAtHue(hue, ceilingChroma, groundHex, idealTargetRatio, minAcceptableRatio, isLighterThanGround);
+  return resolveRepair(candidate.slot, groundHex, repaired, ceilingChroma, minAcceptableRatio, isLighterThanGround, takenHexes);
 }
 
 /**
@@ -111,29 +269,16 @@ function repairTowardFloor(
   const isCollision = isTaken(candidate.hex, takenHexes);
   if (!isBelowFloor && !isCollision) return finalize(candidate, false, false);
 
-  const targetRatio = isBelowFloor
-    ? minRatio * RATIO_CLEARANCE_MARGIN
-    : candidate.contrastRatio * COLLISION_NUDGE_MULTIPLIER;
+  const minAcceptableRatio = minRatio * RATIO_CLEARANCE_MARGIN;
+  const idealTargetRatio = isBelowFloor ? minAcceptableRatio : candidate.contrastRatio * COLLISION_NUDGE_MULTIPLIER;
   // Below the floor, aim at whichever pole has more contrast headroom. A
   // collision-only nudge instead stays on the candidate's own side — it
   // already clears its floor, it just needs to stop matching another role.
   const isLighterThanGround = isBelowFloor
     ? poleWithMoreHeadroom(groundHex)
     : relativeLuminance(candidate.hex) >= relativeLuminance(groundHex);
-  const { hue, saturation } = toHsl(candidate.hex);
-  const repairedHex = retarget(hue, saturation, groundHex, targetRatio, isLighterThanGround);
-  const repaired = { hex: repairedHex, slot: candidate.slot, contrastRatio: contrastRatio(repairedHex, groundHex) };
 
-  if (!isTaken(repairedHex, takenHexes)) return finalize(repaired, true, false);
-
-  // Repairing by hue still collides — fall back to a computed, hue-free
-  // grey at the same target, which cannot collide with a saturated role.
-  const fallbackHex = retarget(0, 0, groundHex, targetRatio, isLighterThanGround);
-  return finalize(
-    { hex: fallbackHex, slot: candidate.slot, contrastRatio: contrastRatio(fallbackHex, groundHex) },
-    true,
-    true,
-  );
+  return repairCandidate(candidate, groundHex, idealTargetRatio, minAcceptableRatio, isLighterThanGround, takenHexes);
 }
 
 /**
@@ -159,17 +304,12 @@ function repairMuted(
   const isLighterThanGround = isTooFaint
     ? poleWithMoreHeadroom(groundHex)
     : relativeLuminance(candidate.hex) >= relativeLuminance(groundHex);
-  const { hue, saturation } = toHsl(candidate.hex);
-  const targetRatio = isTooFaint
-    ? MUTED_MIN_RATIO * RATIO_CLEARANCE_MARGIN
-    : Math.max(MUTED_MIN_RATIO * RATIO_CLEARANCE_MARGIN, body.contrastRatio * MUTED_BELOW_BODY_FRACTION);
-  const repairedHex = retarget(hue, saturation, groundHex, targetRatio, isLighterThanGround);
+  const minAcceptableRatio = MUTED_MIN_RATIO * RATIO_CLEARANCE_MARGIN;
+  const idealTargetRatio = isTooFaint
+    ? minAcceptableRatio
+    : Math.max(minAcceptableRatio, body.contrastRatio * MUTED_BELOW_BODY_FRACTION);
 
-  return finalize(
-    { hex: repairedHex, slot: candidate.slot, contrastRatio: contrastRatio(repairedHex, groundHex) },
-    true,
-    false,
-  );
+  return repairCandidate(candidate, groundHex, idealTargetRatio, minAcceptableRatio, isLighterThanGround, takenHexes);
 }
 
 /**
