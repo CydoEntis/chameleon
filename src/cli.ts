@@ -1,24 +1,32 @@
 #!/usr/bin/env node
+import { createInterface } from "node:readline/promises";
 import {
   addSegment,
+  applyThemePack,
   buildLayoutSegment,
+  currentPack,
+  findFamilySibling,
   isKnownRole,
   isSegmentType,
   layoutBlocksOnSide,
   loadAllThemePacks,
   moveSegmentBetweenBlocks,
+  nextPackSlug,
   readOhMyPoshLayout,
   removeSegment,
   reorderSegment,
   ROLES,
   runDoctorChecks,
   SEGMENT_TYPES,
+  undoAppliedPack,
   VERSION,
   writeOhMyPoshLayout,
+  type Appearance,
   type DoctorNerdFontCheck,
   type Layout,
   type LayoutBlockName,
   type LoadedThemePack,
+  type PackActionResult,
   type Role,
   type SegmentType,
 } from "./index.js";
@@ -260,27 +268,174 @@ function runEdit(argv: string[]): number {
   }
 }
 
+/** One line of `ch <slug>`/`ch undo`'s per-target report — plain text, no Nerd Font glyph. */
+function formatPackActionLine(result: PackActionResult): string {
+  if (result.status === "applied") return `${result.target}: applied`;
+  if (result.status === "restored") return `${result.target}: restored`;
+  if (result.status === "skipped") return `${result.target}: skipped (${result.detail})`;
+  return `${result.target}: failed — ${result.detail}`;
+}
+
+/** Prints one line per target — a failure on stderr, everything else on stdout — so a script can tell success from failure without parsing text. */
+function printPackActionResults(results: readonly PackActionResult[]): void {
+  for (const result of results) {
+    const line = formatPackActionLine(result);
+    if (result.status === "failed") {
+      process.stderr.write(`${line}\n`);
+    } else {
+      process.stdout.write(`${line}\n`);
+    }
+  }
+}
+
+function hasFailure(results: readonly PackActionResult[]): boolean {
+  return results.some((result) => result.status === "failed");
+}
+
 /**
- * Entry point. Argument parsing and the command table land with the tickets
- * that add real commands; for now this exists so `bin` resolves and the
- * package is installable end to end.
+ * `ch <slug>` — applies that pack to every detected target, reporting per
+ * target what changed. A target that is absent is skipped, never a failure;
+ * this only returns non-zero when a target that *is* installed threw.
  */
-function main(argv: string[]): number {
+function runApply(slug: string): number {
+  try {
+    const report = applyThemePack(slug);
+    process.stdout.write(`applied ${report.slug}\n`);
+    printPackActionResults(report.results);
+    return hasFailure(report.results) ? 1 : 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/** `ch undo` — restores every detected target from the backup its own adapter's most recent apply wrote. */
+function runUndo(): number {
+  try {
+    const results = undoAppliedPack();
+    printPackActionResults(results);
+    return hasFailure(results) ? 1 : 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/** `ch next` — cycles to the next pack in `ch list` order, wrapping past the end, and applies it. */
+function runNext(): number {
+  try {
+    return runApply(nextPackSlug());
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/**
+ * `ch dark` / `ch light` — switches to the active pack's sibling in the same
+ * family. A family with no sibling in that mode never fails silently: it
+ * names the nearest alternative instead, or says plainly that none exists.
+ */
+function runFamilySwitch(appearance: Appearance): number {
+  try {
+    const result = findFamilySibling(appearance);
+    if (result.siblingSlug) {
+      return runApply(result.siblingSlug);
+    }
+    if (result.nearestAlternativeSlug) {
+      process.stderr.write(`"${result.family}" has no ${appearance} pack — try \`ch ${result.nearestAlternativeSlug}\`\n`);
+    } else {
+      process.stderr.write(`"${result.family}" has no ${appearance} pack, and no ${appearance} pack is available at all\n`);
+    }
+    return 1;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/** `ch current [--short]` — prints the active pack's slug, or just its name with `--short`, for embedding in a status bar. */
+function runCurrent(args: readonly string[]): number {
+  const current = currentPack();
+  if (!current) {
+    process.stderr.write("ch current: no pack has been applied yet\n");
+    return 1;
+  }
+  const showNameOnly = args.includes("--short");
+  process.stdout.write(`${showNameOnly ? (current.name ?? current.slug) : current.slug}\n`);
+  return 0;
+}
+
+/** Prompts interactively for a pack to apply: a numbered list, then a free-form answer of either the number or the slug directly. Empty input picks nothing. */
+async function promptForPackSlug(packs: readonly LoadedThemePack[]): Promise<string | undefined> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    packs.forEach((loaded, index) => process.stdout.write(`${index + 1}) ${formatPackLine(loaded)}\n`));
+    const answer = (await rl.question("Apply which pack (number or slug)? ")).trim();
+    if (answer === "") return undefined;
+
+    const chosenIndex = Number(answer);
+    if (Number.isInteger(chosenIndex) && chosenIndex >= 1 && chosenIndex <= packs.length) {
+      return packs[chosenIndex - 1]!.pack.manifest.slug;
+    }
+    return answer;
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * `ch` with no argument — picks a pack interactively. When stdin is not a
+ * TTY there is nobody to answer a prompt, so this prints the same list
+ * `ch list` would and exits, rather than blocking on a read that would never
+ * resolve.
+ */
+async function runPick(): Promise<number> {
+  const { packs, warnings } = loadAllThemePacks();
+  for (const warning of warnings) {
+    process.stderr.write(`${warning}\n`);
+  }
+
+  if (!process.stdin.isTTY) {
+    for (const loaded of packs) {
+      process.stdout.write(`${formatPackLine(loaded)}\n`);
+    }
+    return 0;
+  }
+
+  const chosenSlug = await promptForPackSlug(packs);
+  if (chosenSlug === undefined) {
+    process.stderr.write("ch: no pack chosen\n");
+    return 1;
+  }
+  return runApply(chosenSlug);
+}
+
+/**
+ * Entry point: `ch <slug>` applies that pack; `ch` with no argument picks
+ * one interactively; the rest are the named commands below. An argument
+ * that matches none of them is tried as a pack slug, so `ch catppuccin-dark`
+ * needs no verb of its own.
+ */
+async function main(argv: string[]): Promise<number> {
   if (argv.includes("--version") || argv.includes("-v")) {
     process.stdout.write(`${VERSION}\n`);
     return 0;
   }
-  if (argv[0] === "list") {
-    return runList();
-  }
-  if (argv[0] === "doctor") {
-    return runDoctor();
-  }
-  if (argv[0] === "edit") {
-    return runEdit(argv.slice(1));
-  }
-  process.stdout.write("chameleon: no commands yet\n");
-  return 0;
+
+  const [command, ...rest] = argv;
+  if (command === undefined) return runPick();
+  if (command === "list") return runList();
+  if (command === "doctor") return runDoctor();
+  if (command === "edit") return runEdit(rest);
+  if (command === "current") return runCurrent(rest);
+  if (command === "undo") return runUndo();
+  if (command === "next") return runNext();
+  if (command === "dark") return runFamilySwitch("dark");
+  if (command === "light") return runFamilySwitch("light");
+  return runApply(command);
 }
 
-process.exitCode = main(process.argv.slice(2));
+main(process.argv.slice(2)).then((exitCode) => {
+  process.exitCode = exitCode;
+});

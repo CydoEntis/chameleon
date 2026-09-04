@@ -6,11 +6,12 @@ Oh My Posh prompt, and Herdr's UI — from a single palette. Nothing restarts.
 ```sh
 npm i -g @cydoentis/chameleon
 
-ch                 # pick a theme
-ch tokyo-night     # apply by name
-ch dark / ch light # flip mode, same family
-ch next            # cycle — bind it to a key
-ch undo            # put it back
+ch                     # pick a pack — prints the list instead of prompting when stdin isn't a TTY
+ch catppuccin-dark     # apply by slug — see `ch list` for every slug you can use
+ch dark / ch light     # flip mode, same family
+ch next                # cycle — bind it to a key
+ch current             # print the active pack's slug ("--short" for just its name)
+ch undo                # put it back
 ```
 
 ## Why
