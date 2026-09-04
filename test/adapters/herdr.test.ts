@@ -13,6 +13,7 @@ vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = path.join(currentDir, "fixtures", "herdr-config.toml");
+const DUPLICATE_KEY_FIXTURE_PATH = path.join(currentDir, "fixtures", "herdr-config-duplicate-key.toml");
 
 const CRLF = "\r\n";
 const LF = "\n";
@@ -388,6 +389,101 @@ describe("herdr adapter — theme name and token mapping", () => {
   });
 });
 
+// CHM-22: Chameleon's marked block wrote `text` and `subtext0` a second time
+// even when the user already had them further down [theme.custom]. TOML
+// forbids a duplicate key in a table, so Herdr rejected the whole file and
+// silently kept the previous config. These tests pin the fix: a pre-existing
+// plain line for one of Chameleon's own tokens is updated in place — value
+// changed, comments and position untouched — instead of getting a second
+// copy inside the marker. The fixture's `text`/`subtext0` values are the
+// real Solarized Dark hex values from the ticket's own reload-config output.
+describe("herdr adapter — duplicate key dedup", () => {
+  let configDir: string;
+  let configPath: string;
+  let fixture: string;
+
+  beforeEach(() => {
+    configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-dedup-"));
+    configPath = path.join(configDir, "config.toml");
+    fixture = readFileSync(DUPLICATE_KEY_FIXTURE_PATH, "utf8");
+    writeFileSync(configPath, fixture, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("updates a pre-existing role token's value in place instead of adding a second copy inside the marker", () => {
+    expect(countOccurrences(fixture, "text = ")).toBe(1);
+    expect(countOccurrences(fixture, "subtext0 = ")).toBe(1);
+
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    const resultText = readFileSync(configPath, "utf8");
+
+    const expectedColorTable = resolveRoleHexes(ZEROX96F_SCHEME);
+    expect(countOccurrences(resultText, "text = ")).toBe(1);
+    expect(countOccurrences(resultText, "subtext0 = ")).toBe(1);
+    expect(resultText).toContain(`text = "${expectedColorTable.body}"`);
+    expect(resultText).toContain(`subtext0 = "${expectedColorTable.muted}" # inline comment, do not lose me`);
+    expect(resultText).not.toContain('text = "#586E75"');
+    expect(resultText).not.toContain('subtext0 = "#657B83"');
+  });
+
+  it("preserves the user's comments on a role token it takes over, standalone and trailing alike", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const resultText = readFileSync(configPath, "utf8");
+    expect(resultText).toContain("# Solarized base01 — picked this shade of grey myself, don't overwrite the comment");
+    expect(resultText).toContain("# inline comment, do not lose me");
+  });
+
+  it("leaves a custom token Chameleon has no role for untouched and singular", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const resultText = readFileSync(configPath, "utf8");
+    expect(countOccurrences(resultText, "surface_dim = ")).toBe(1);
+    expect(resultText).toContain('surface_dim = "#001100"');
+    expect(resultText).toContain("# surface_dim isn't one of Chameleon's own tokens — must survive untouched");
+  });
+
+  it("still writes the remaining role tokens inside the marker", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    const expectedColorTable = resolveRoleHexes(ZEROX96F_SCHEME);
+    expect(config.theme.custom["sidebar_bg"]).toBe(expectedColorTable.ground);
+    expect(config.theme.custom["accent"]).toBe(expectedColorTable.accent);
+    expect(config.theme.custom["green"]).toBe(expectedColorTable.success);
+    expect(config.theme.custom["red"]).toBe(expectedColorTable.error);
+    expect(countOccurrences(readFileSync(configPath, "utf8"), "# ch:begin")).toBe(1);
+  });
+
+  it("stays idempotent — a second apply of the same pack still produces exactly one of each key", () => {
+    const adapter = createHerdrAdapter(configPath);
+
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    const afterFirstApply = readFileSync(configPath, "utf8");
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    const afterSecondApply = readFileSync(configPath, "utf8");
+
+    expect(afterSecondApply).toBe(afterFirstApply);
+    expect(countOccurrences(afterSecondApply, "text = ")).toBe(1);
+    expect(countOccurrences(afterSecondApply, "subtext0 = ")).toBe(1);
+  });
+
+  it("keeps updating the taken-over token in place across a later apply of a different pack", () => {
+    const adapter = createHerdrAdapter(configPath);
+
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    adapter.apply(AARDVARK_BLUE_SCHEME, OTHER_MAPPED_DARK_SLUG);
+
+    const resultText = readFileSync(configPath, "utf8");
+    const expectedColorTable = resolveRoleHexes(AARDVARK_BLUE_SCHEME);
+    expect(countOccurrences(resultText, "text = ")).toBe(1);
+    expect(resultText).toContain(`text = "${expectedColorTable.body}"`);
+  });
+});
+
 describe("herdr adapter — reload", () => {
   beforeEach(() => {
     vi.mocked(spawnSync).mockReset();
@@ -445,5 +541,48 @@ describe("herdr adapter — reload", () => {
 
     const adapter = createHerdrAdapter("unused/config.toml");
     expect(() => adapter.reload()).toThrow(/status 1/);
+  });
+
+  // CHM-22: a config.toml with a duplicate key makes `herdr server
+  // reload-config` exit 0 while its own stdout JSON says
+  // `"status":"failed"` and names the parse error — Herdr kept the previous
+  // config rather than accept the broken one. Checking only the exit code
+  // (what CHM-5 added) called this a successful reload. This is the exact
+  // payload from the ticket's own repro.
+  it("treats a zero exit whose JSON payload reports status failed as a failed reload, surfacing Herdr's diagnostics verbatim", () => {
+    vi.mocked(spawnSync).mockReturnValue(
+      makeSpawnResult({
+        status: 0,
+        stdout: JSON.stringify({
+          result: {
+            diagnostics: [
+              'config parse error: TOML parse error at line 23, column 1\n   |\n23 | text = "#586E75"\n   | ^\nduplicate key `text` in table `theme.custom`\n; keeping current config',
+            ],
+            status: "failed",
+            type: "config_reload",
+          },
+        }),
+      }),
+    );
+
+    const adapter = createHerdrAdapter("unused/config.toml");
+    expect(() => adapter.reload()).toThrow(/duplicate key `text` in table `theme\.custom`/);
+  });
+
+  it("succeeds when the JSON payload confirms status applied with empty diagnostics", () => {
+    vi.mocked(spawnSync).mockReturnValue(
+      makeSpawnResult({
+        status: 0,
+        stdout: JSON.stringify({ result: { diagnostics: [], status: "applied", type: "config_reload" } }),
+      }),
+    );
+
+    expect(() => createHerdrAdapter("unused/config.toml").reload()).not.toThrow();
+  });
+
+  it("still succeeds on a zero exit with no JSON on stdout at all — an older Herdr that never sent this payload", () => {
+    vi.mocked(spawnSync).mockReturnValue(makeSpawnResult({ status: 0, stdout: "" }));
+
+    expect(() => createHerdrAdapter("unused/config.toml").reload()).not.toThrow();
   });
 });
