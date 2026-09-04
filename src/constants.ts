@@ -49,6 +49,20 @@ export const TEXT_MIN_RATIO = 4.5;
 export const MUTED_MIN_RATIO = 3.0;
 
 /**
+ * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
+ * clear once repair has finished trading hue and saturation for contrast —
+ * below this it reads as grey rather than as the role's colour. Set at the
+ * ceiling reachable, within repair's bounded hue trade, by the hardest
+ * known case: Hot Dog Stand's success candidate against its saturated
+ * red-orange ground, which can only buy back this much chroma before
+ * a further trade would misread it as the red hue family reserved for
+ * error. A role that cannot clear this floor falls back instead of
+ * shipping a colour that has been driven to white or black — see
+ * repairFailingRoles.
+ */
+export const MIN_REPAIRED_CHROMA = 0.06;
+
+/**
  * Hue boundaries, in degrees, used to classify an ANSI slot's *measured*
  * hue rather than trust its name — Rosé Pine Dawn's `green` slot holds a
  * blue (hue ~197°) and its `cyan` slot holds a pink (hue ~3°). A slot's

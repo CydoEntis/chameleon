@@ -62,10 +62,25 @@ export function contrastRatio(hexA: string, hexB: string): number {
 }
 
 /**
+ * How colourful a hex reads, from 0 (grey) to 1 (a fully saturated channel
+ * pair at the most colourful lightness). This is the spread between a
+ * colour's lightest and darkest channel — the same quantity HSL calls
+ * chroma — and it is what actually collapses to zero as a colour is pushed
+ * toward white or black, regardless of what its HSL saturation says. A
+ * lightness-only contrast repair can clear its floor by landing on a
+ * near-white or near-black hex whose saturation is still 100% but whose
+ * chroma, and so its visible colour, is gone.
+ */
+export function chromaOf(hex: string): number {
+  const { red, green, blue } = toRgbChannels(hex);
+  return (Math.max(red, green, blue) - Math.min(red, green, blue)) / 255;
+}
+
+/**
  * A colour in hue/saturation/lightness form: hue in degrees [0, 360),
  * saturation and lightness as percentages [0, 100]. Repair shifts
- * lightness only, so hue and saturation carry through unchanged — that is
- * what "preserves hue" means in practice.
+ * lightness first and only trades hue or saturation when lightness alone
+ * cannot clear a floor without collapsing chroma — see repair.ts.
  */
 export interface Hsl {
   readonly hue: number;

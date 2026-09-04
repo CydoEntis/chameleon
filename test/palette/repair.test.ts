@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
-import { toHsl } from "../../src/palette/color.js";
+import { MIN_REPAIRED_CHROMA, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { chromaOf, toHsl } from "../../src/palette/color.js";
 import type { Palette } from "../../src/palette/palette.js";
 import { repairFailingRoles } from "../../src/palette/repair.js";
 import { assignRolesByContrast } from "../../src/palette/roles.js";
@@ -79,6 +79,28 @@ describe("repairFailingRoles", () => {
     expect(Math.abs(hueBefore - hueAfter)).toBeLessThanOrEqual(HUE_TOLERANCE_DEGREES);
   });
 
+  // These four candidates have no lightness headroom left in the direction
+  // their repair needs: pushed to their floor by lightness alone, each is
+  // driven to a white or black that clears the ratio but loses its colour
+  // entirely (Acid Lime's success measured a chroma of 0.004, on a 0-1
+  // scale, before this trade existed). Real values, not invented — see
+  // CHM-17.
+  it.each([
+    ["Acid Lime", "success"],
+    ["Hot Dog Stand", "success"],
+    ["Thayer Bright", "error"],
+    ["Fairyfloss", "error"],
+  ] as const)("keeps %s's %s recognisably coloured instead of washing it to white or black", (schemeName, role) => {
+    const assignment = assignRolesByContrast(paletteNamed(schemeName));
+    const report = repairFailingRoles(assignment);
+    const repaired = report.palette[role];
+
+    expect(report.repairedRoles).toContain(role);
+    expect(repaired.isFallback).toBe(false);
+    expect(chromaOf(repaired.hex)).toBeGreaterThanOrEqual(MIN_REPAIRED_CHROMA);
+    expect(repaired.contrastRatio).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+  });
+
   it("repairs Night Owlish Light's purple/foreground collision to two distinct colours", () => {
     const assignment = assignRolesByContrast(paletteNamed("Night Owlish Light"));
     expect(assignment.accent.hex).toBe(assignment.body.hex); // the collision, unrepaired
@@ -112,6 +134,23 @@ describe("repairFailingRoles", () => {
       expect(report.palette.muted.contrastRatio, `${palette.name}: muted below body`).toBeLessThan(
         report.palette.body.contrastRatio,
       );
+    }
+  });
+
+  it("never repairs a role below MIN_REPAIRED_CHROMA without reporting it as a fallback, for every vendored scheme", () => {
+    for (const palette of palettes) {
+      const assignment = assignRolesByContrast(palette);
+      const report = repairFailingRoles(assignment);
+
+      for (const role of ROLES) {
+        const resolved = report.palette[role];
+        if (!resolved.wasRepaired || resolved.isFallback) continue;
+
+        expect(
+          chromaOf(resolved.hex),
+          `${palette.name}: ${role} repaired to ${resolved.hex} without clearing the chroma floor or falling back`,
+        ).toBeGreaterThanOrEqual(MIN_REPAIRED_CHROMA);
+      }
     }
   });
 });
