@@ -351,13 +351,31 @@ function requireConfigPath(configPath: string | undefined): string {
 // vice versa.
 
 /**
- * The Oh My Posh segment types `ch edit add` offers — the handful that cover
- * what most prompts actually show, per Oh My Posh's own segment reference.
- * Not exhaustive: a config may carry other segment types already, and this
- * adapter still reads, reorders and moves those untouched — only adding a
- * brand new segment is restricted to a type from this list.
+ * Every segment type Oh My Posh's own JSON schema accepts — the
+ * `definitions.segment.properties.type.enum` list from
+ * JanDeDobbeleer/oh-my-posh's `themes/schema.json` (main branch, vendored
+ * here 2026-09-04), not Chameleon's own curated subset. CHM-16: a curated
+ * ten-type list rejected exactly what people put in a real prompt — node,
+ * python, rust and the rest of Oh My Posh's language segments. This is a
+ * point-in-time snapshot rather than a live fetch — `ch` is a CLI that has
+ * to work offline — but every segment type Oh My Posh shipped as of that
+ * date is covered, and `ch edit` still reads, reorders and moves any type
+ * it does not know, same as before.
  */
-export const SEGMENT_TYPES = ["path", "git", "os", "session", "shell", "root", "status", "time", "battery", "text"] as const;
+export const SEGMENT_TYPES = [
+  "angular", "antigravity", "argocd", "aspire", "aurelia", "aws", "az", "azd", "azfunc", "battery",
+  "bazel", "brewfather", "buf", "bun", "carbonintensity", "cds", "cf", "cftarget", "claude", "clojure",
+  "cmake", "copilot", "copilot_cli", "connection", "crystal", "dart", "deno", "docker", "dotnet", "dvc",
+  "elixir", "executiontime", "firebase", "flutter", "fortran", "fossil", "gcp", "git", "gitversion", "go",
+  "gradle", "haskell", "helm", "http", "ipify", "java", "jujutsu", "julia", "kotlin", "kubectl",
+  "language", "lastfm", "lua", "mercurial", "mojo", "mvn", "nba", "nbgv", "nightscout", "nim",
+  "nix-shell", "node", "npm", "nx", "ocaml", "orthodoxcal", "os", "owm", "path", "perl", "php", "plastic",
+  "pnpm", "project", "pulumi", "python", "quasar", "r", "ramadan", "react", "root", "ruby", "rust",
+  "sapling", "session", "shell", "sitecore", "spotify", "status", "strava", "svelte", "svn", "swift",
+  "sysinfo", "talosctl", "taskwarrior", "tauri", "terraform", "text", "time", "todoist", "ui5tooling",
+  "umbraco", "uno", "unity", "upgrade", "v", "vala", "vimode", "wakatime", "winget", "winreg", "withings",
+  "xmake", "yarn", "ytm", "zig", "zvm",
+] as const;
 
 export type SegmentType = (typeof SEGMENT_TYPES)[number];
 
@@ -391,14 +409,33 @@ const LayoutBlockSchema = z
 export type LayoutBlockName = "left" | "right";
 
 /**
- * Chameleon's own model of a config's segment layout: which segments sit in
- * the left and right blocks, and in what order. Never carries a colour
- * beyond a role reference, and never carries the palette table itself — see
- * CHM-8's "operate on the layout file only; never touch the palette."
+ * One block of the config's "blocks" array that `ch edit` can address.
+ * `extra` carries every block-level property beyond type/alignment/segments
+ * — Oh My Posh's schema also allows a block "newline", "overflow", "filler"
+ * and more — untouched, so editing one block's segments never drops what a
+ * sibling block declared about itself. See CHM-16: the real "chips"
+ * community theme turns its second "left" block into its own prompt row
+ * with "newline": true, and losing that on an unrelated edit would silently
+ * break the very theme this ticket exists to support.
+ */
+export interface LayoutBlock {
+  readonly alignment: LayoutBlockName;
+  readonly segments: readonly LayoutSegment[];
+  readonly extra: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Chameleon's own model of a config's segment layout, in the config's own
+ * block order. CHM-16: a real theme is not limited to one block per side —
+ * "chips" carries two "left" blocks (a main prompt row and a second row
+ * toggled on by "newline": true) and one "right" — and document order is
+ * what keeps a block that starts a new row rendering after, not before, the
+ * block sharing its own row. Never carries a colour beyond a role
+ * reference, and never carries the palette table itself — see CHM-8's
+ * "operate on the layout file only; never touch the palette."
  */
 export interface Layout {
-  readonly left: readonly LayoutSegment[];
-  readonly right: readonly LayoutSegment[];
+  readonly blocks: readonly LayoutBlock[];
 }
 
 /** The role a segment property references, when it is a "p:role" string — undefined for anything else, including a plain hex a user wrote by hand before ever running `ch edit`. */
@@ -410,9 +447,12 @@ function roleReferencedBy(segmentPropertyValue: unknown): string | undefined {
 
 /**
  * Throws, naming the role, when `segment`'s foreground or background
- * references a role Chameleon does not know — see CHM-8's "a layout
- * referencing an undefined role is rejected with a message naming the
- * role."
+ * references a role Chameleon does not know. Only ever called on a segment
+ * `ch edit` itself is about to write — see CHM-8's "a layout referencing an
+ * undefined role is rejected with a message naming the role." A segment
+ * already sitting in the config, referencing a palette key Chameleon does
+ * not own, is never passed to this — see CHM-16's "left alone, not
+ * rejected" below.
  */
 function assertSegmentRolesAreDefined(segment: LayoutSegment): void {
   for (const property of ["foreground", "background"] as const) {
@@ -423,47 +463,49 @@ function assertSegmentRolesAreDefined(segment: LayoutSegment): void {
   }
 }
 
-function assertLayoutRolesAreDefined(layout: Layout): void {
-  for (const segment of [...layout.left, ...layout.right]) assertSegmentRolesAreDefined(segment);
+/**
+ * Metadata keys every raw layout block carries that this adapter interprets
+ * itself. Everything else Oh My Posh's own schema allows on a block —
+ * "newline", "overflow", "filler", "leading_diamond", … — is opaque as far
+ * as `ch edit` cares, and is carried in a block's own `extra`.
+ */
+const LAYOUT_BLOCK_OWN_KEYS = new Set(["type", "alignment", "segments"]);
+
+/** Every property of a raw, already-schema-validated block object besides the ones this adapter interprets itself — see LAYOUT_BLOCK_OWN_KEYS. */
+function extraBlockProperties(rawBlock: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(rawBlock).filter(([key]) => !LAYOUT_BLOCK_OWN_KEYS.has(key)));
 }
 
 /**
- * The segments of the single block whose alignment is `alignment`, or an
- * empty list when the config has none yet. Throws when more than one block
- * shares that alignment — `ch edit` only understands a single block per
- * side, the same shape every example in Oh My Posh's own docs and this
- * project's fixture use.
+ * Parses the config's "blocks" property into Chameleon's own block model, in
+ * document order — CHM-16's "operate on a config with multiple blocks per
+ * side, addressing them unambiguously." A block that does not parse as a
+ * left/right "prompt" block — Oh My Posh also allows "rprompt" — is left out
+ * of the model; every real theme this adapter has been checked against, and
+ * CHM-8's own fixture, use "prompt" blocks exclusively. A segment already
+ * referencing a palette key Chameleon does not own is read through
+ * untouched rather than rejected — see CHM-16's "left alone": only a
+ * segment `ch edit` is about to write is ever checked against Chameleon's
+ * own roles, via assertSegmentRolesAreDefined above.
  */
-function segmentsForAlignment(configPath: string, blocks: readonly unknown[], alignment: LayoutBlockName): readonly LayoutSegment[] {
-  const matchingBlocks = blocks.flatMap((block) => {
-    const parsedBlock = LayoutBlockSchema.safeParse(block);
-    return parsedBlock.success && parsedBlock.data.alignment === alignment ? [parsedBlock.data] : [];
+function parseLayoutBlocks(rawBlocks: readonly unknown[]): LayoutBlock[] {
+  return rawBlocks.flatMap((rawBlock) => {
+    const parsedBlock = LayoutBlockSchema.safeParse(rawBlock);
+    if (!parsedBlock.success) return [];
+    const { alignment, segments } = parsedBlock.data;
+    return [{ alignment, segments, extra: extraBlockProperties(parsedBlock.data) }];
   });
-
-  if (matchingBlocks.length > 1) {
-    throw new Error(`${configPath} has more than one "${alignment}" prompt block — ch edit only understands a single block per side`);
-  }
-  return matchingBlocks[0]?.segments ?? [];
 }
 
-/** Reads the config's "blocks" property into Chameleon's own left/right layout model, rejecting a segment that already references an undefined role before any edit is attempted. */
+/** Reads the config's "blocks" property into Chameleon's own layout model. */
 function readLayout(configPath: string): Layout {
   const config = readOhMyPoshConfig(configPath);
-  const blocks = config.blocks ?? [];
-  const layout: Layout = {
-    left: segmentsForAlignment(configPath, blocks, "left"),
-    right: segmentsForAlignment(configPath, blocks, "right"),
-  };
-  assertLayoutRolesAreDefined(layout);
-  return layout;
+  return { blocks: parseLayoutBlocks(config.blocks ?? []) };
 }
 
-/** Renders `layout` back into Oh My Posh's own "blocks" shape, omitting a side entirely once it has no segments left rather than writing an empty prompt block. */
+/** Renders `layout` back into Oh My Posh's own "blocks" shape, in the same document order the config was read in. */
 function blocksFromLayout(layout: Layout): unknown[] {
-  const blocks: unknown[] = [];
-  if (layout.left.length > 0) blocks.push({ type: "prompt", alignment: "left", segments: layout.left });
-  if (layout.right.length > 0) blocks.push({ type: "prompt", alignment: "right", segments: layout.right });
-  return blocks;
+  return layout.blocks.map((block) => ({ type: "prompt", alignment: block.alignment, ...block.extra, segments: block.segments }));
 }
 
 /**
@@ -480,7 +522,6 @@ function upsertBlocksArray(configPath: string, text: string, blocks: unknown[]):
 
 /** Backs up the config, then rewrites its "blocks" property — and only that property — from `layout`. */
 function writeLayout(configPath: string, layout: Layout): void {
-  assertLayoutRolesAreDefined(layout);
   copyFileSync(configPath, backupPathFor(configPath));
   const originalText = readFileSync(configPath, "utf8");
   const updatedText = upsertBlocksArray(configPath, originalText, blocksFromLayout(layout));
@@ -506,86 +547,179 @@ export function buildLayoutSegment(type: SegmentType, foregroundRole: Role, back
   };
 }
 
+/** A human-readable name for one block, used in every error this module throws about a segment index — e.g. `"left" block 1`, so a mistake is clear the moment a config has more than one block on a side. */
+function blockLabel(alignment: LayoutBlockName, blockIndex: number): string {
+  return `"${alignment}" block ${blockIndex}`;
+}
+
 /** Throws, naming the block, when `atIndex` cannot be inserted at — i.e. is not one of the block's own existing indices or the one right past its end (an append). */
-function assertInsertIndex(atIndex: number, block: LayoutBlockName, segmentCount: number): void {
+function assertInsertIndex(atIndex: number, blockDescription: string, segmentCount: number): void {
   if (!Number.isInteger(atIndex) || atIndex < 0 || atIndex > segmentCount) {
-    throw new Error(`index ${atIndex} is out of range for the "${block}" block, which has ${segmentCount} segment(s)`);
+    throw new Error(`index ${atIndex} is out of range for ${blockDescription}, which has ${segmentCount} segment(s)`);
   }
 }
 
 /** Throws, naming the block, when `atIndex` does not name one of the block's own existing segments. */
-function assertExistingIndex(atIndex: number, block: LayoutBlockName, segmentCount: number): void {
+function assertExistingIndex(atIndex: number, blockDescription: string, segmentCount: number): void {
   if (!Number.isInteger(atIndex) || atIndex < 0 || atIndex >= segmentCount) {
-    throw new Error(`index ${atIndex} is out of range for the "${block}" block, which has ${segmentCount} segment(s)`);
+    throw new Error(`index ${atIndex} is out of range for ${blockDescription}, which has ${segmentCount} segment(s)`);
   }
 }
 
-function withSegments(layout: Layout, block: LayoutBlockName, segments: readonly LayoutSegment[]): Layout {
-  return { ...layout, [block]: segments };
-}
-
-/** Inserts `segment` into `block` at `atIndex`, defaulting to the end. Pure — the caller is responsible for reading the current layout first and writing the result back. */
-export function addSegment(layout: Layout, block: LayoutBlockName, segment: LayoutSegment, atIndex: number = layout[block].length): Layout {
-  assertSegmentRolesAreDefined(segment);
-  const segments = layout[block];
-  assertInsertIndex(atIndex, block, segments.length);
-  return withSegments(layout, block, [...segments.slice(0, atIndex), segment, ...segments.slice(atIndex)]);
-}
-
-/** Removes the segment at `atIndex` from `block`. Pure — see addSegment. */
-export function removeSegment(layout: Layout, block: LayoutBlockName, atIndex: number): Layout {
-  const segments = layout[block];
-  assertExistingIndex(atIndex, block, segments.length);
-  return withSegments(layout, block, [...segments.slice(0, atIndex), ...segments.slice(atIndex + 1)]);
-}
-
-/** Moves the segment at `fromIndex` to `toIndex` within the same block, shifting the segments between them. Pure — see addSegment. */
-export function reorderSegment(layout: Layout, block: LayoutBlockName, fromIndex: number, toIndex: number): Layout {
-  const segments = layout[block];
-  assertExistingIndex(fromIndex, block, segments.length);
-  assertExistingIndex(toIndex, block, segments.length);
-
-  const segmentToMove = segments[fromIndex];
-  if (segmentToMove === undefined) {
-    throw new Error(`index ${fromIndex} is out of range for the "${block}" block, which has ${segments.length} segment(s)`);
-  }
-  const withoutSegment = [...segments.slice(0, fromIndex), ...segments.slice(fromIndex + 1)];
-  return withSegments(layout, block, [...withoutSegment.slice(0, toIndex), segmentToMove, ...withoutSegment.slice(toIndex)]);
+/** The blocks sharing `alignment`, in document order — what a `blockIndex` argument counts against. */
+function blocksForAlignment(layout: Layout, alignment: LayoutBlockName): readonly LayoutBlock[] {
+  return layout.blocks.filter((block) => block.alignment === alignment);
 }
 
 /**
- * Moves the segment at `fromIndex` in `fromBlock` to `toBlock`, at `toIndex`
- * (defaulting to the end of `toBlock`). This is what makes a segment cross
- * from the prompt into the status line, or back — the one operation neither
- * addSegment nor removeSegment can express alone, since a segment moving
- * blocks has to leave one array and land in the other atomically or a
- * caller could observe it in neither.
+ * Every block on `alignment`'s own side, in document order — CHM-16's
+ * "addressing them unambiguously": what a caller uses to decide whether a
+ * `--block-index` needs to be asked for at all, since a side with exactly
+ * one block never needs to name it.
+ */
+export function layoutBlocksOnSide(layout: Layout, alignment: LayoutBlockName): readonly LayoutBlock[] {
+  return blocksForAlignment(layout, alignment);
+}
+
+/** Throws, naming the side and its block count, when `blockIndex` does not name one of `alignment`'s own existing blocks. */
+function assertBlockIndex(layout: Layout, alignment: LayoutBlockName, blockIndex: number): LayoutBlock {
+  const matchingBlocks = blocksForAlignment(layout, alignment);
+  const targetBlock = matchingBlocks[blockIndex];
+  if (!Number.isInteger(blockIndex) || blockIndex < 0 || targetBlock === undefined) {
+    throw new Error(`block index ${blockIndex} is out of range for the "${alignment}" side, which has ${matchingBlocks.length} block(s)`);
+  }
+  return targetBlock;
+}
+
+/**
+ * Replaces the `blockIndex`-th block of `alignment`, in document order,
+ * with `updatedBlock` — the one place a layout's blocks array is ever
+ * rewritten, so every mutation below shares the same "find the nth
+ * same-alignment block, leave everything else exactly where it was" logic.
+ */
+function withBlockAt(layout: Layout, alignment: LayoutBlockName, blockIndex: number, updatedBlock: LayoutBlock): Layout {
+  let occurrenceIndex = -1;
+  const blocks = layout.blocks.map((block) => {
+    if (block.alignment !== alignment) return block;
+    occurrenceIndex += 1;
+    return occurrenceIndex === blockIndex ? updatedBlock : block;
+  });
+  return { blocks };
+}
+
+/**
+ * The block at `blockIndex` among `alignment`'s own blocks — creating a
+ * brand new, empty one and appending it to the layout when `blockIndex` is
+ * exactly one past the last block that side already has. That is the only
+ * way a side gains a block: a side with none yet (`blockIndex` 0) or an
+ * existing side gaining an additional one (`blockIndex` equal to its
+ * current count) — the same "index equal to length means append" contract
+ * assertInsertIndex already uses for segments.
+ */
+function resolveBlockForWrite(layout: Layout, alignment: LayoutBlockName, blockIndex: number): { layout: Layout; block: LayoutBlock } {
+  const matchingBlocks = blocksForAlignment(layout, alignment);
+  if (blockIndex === matchingBlocks.length) {
+    const newBlock: LayoutBlock = { alignment, segments: [], extra: {} };
+    return { layout: { blocks: [...layout.blocks, newBlock] }, block: newBlock };
+  }
+  return { layout, block: assertBlockIndex(layout, alignment, blockIndex) };
+}
+
+/**
+ * Inserts `segment` into the `blockIndex`-th block of `alignment` at
+ * `atIndex`, defaulting to the end of that block — creating the block
+ * itself first when `blockIndex` names a fresh one, see
+ * resolveBlockForWrite. Pure — the caller is responsible for reading the
+ * current layout first and writing the result back.
+ */
+export function addSegment(
+  layout: Layout,
+  alignment: LayoutBlockName,
+  blockIndex: number,
+  segment: LayoutSegment,
+  atIndex?: number,
+): Layout {
+  assertSegmentRolesAreDefined(segment);
+  const { layout: layoutWithBlock, block } = resolveBlockForWrite(layout, alignment, blockIndex);
+  const resolvedAtIndex = atIndex ?? block.segments.length;
+  assertInsertIndex(resolvedAtIndex, blockLabel(alignment, blockIndex), block.segments.length);
+  const segments = [...block.segments.slice(0, resolvedAtIndex), segment, ...block.segments.slice(resolvedAtIndex)];
+  return withBlockAt(layoutWithBlock, alignment, blockIndex, { ...block, segments });
+}
+
+/** Removes the segment at `atIndex` from the `blockIndex`-th block of `alignment`. Pure — see addSegment. */
+export function removeSegment(layout: Layout, alignment: LayoutBlockName, blockIndex: number, atIndex: number): Layout {
+  const block = assertBlockIndex(layout, alignment, blockIndex);
+  assertExistingIndex(atIndex, blockLabel(alignment, blockIndex), block.segments.length);
+  const segments = [...block.segments.slice(0, atIndex), ...block.segments.slice(atIndex + 1)];
+  return withBlockAt(layout, alignment, blockIndex, { ...block, segments });
+}
+
+/** Moves the segment at `fromIndex` to `toIndex` within the `blockIndex`-th block of `alignment`, shifting the segments between them. Pure — see addSegment. */
+export function reorderSegment(layout: Layout, alignment: LayoutBlockName, blockIndex: number, fromIndex: number, toIndex: number): Layout {
+  const block = assertBlockIndex(layout, alignment, blockIndex);
+  const label = blockLabel(alignment, blockIndex);
+  assertExistingIndex(fromIndex, label, block.segments.length);
+  assertExistingIndex(toIndex, label, block.segments.length);
+
+  const segmentToMove = block.segments[fromIndex];
+  if (segmentToMove === undefined) {
+    throw new Error(`index ${fromIndex} is out of range for ${label}, which has ${block.segments.length} segment(s)`);
+  }
+  const withoutSegment = [...block.segments.slice(0, fromIndex), ...block.segments.slice(fromIndex + 1)];
+  const segments = [...withoutSegment.slice(0, toIndex), segmentToMove, ...withoutSegment.slice(toIndex)];
+  return withBlockAt(layout, alignment, blockIndex, { ...block, segments });
+}
+
+/**
+ * Moves the segment at `fromIndex` in the `fromBlockIndex`-th block of
+ * `fromAlignment` into the `toBlockIndex`-th block of `toAlignment`, at
+ * `toIndex` (defaulting to the end). This is what makes a segment cross
+ * from the prompt into the status line, or between two blocks on the same
+ * side — the one operation neither addSegment nor removeSegment can express
+ * alone, since a segment moving blocks has to leave one array and land in
+ * the other atomically or a caller could observe it in neither. The
+ * destination block is created fresh, the same as addSegment, when
+ * `toBlockIndex` names one that does not exist yet.
  */
 export function moveSegmentBetweenBlocks(
   layout: Layout,
-  fromBlock: LayoutBlockName,
+  fromAlignment: LayoutBlockName,
+  fromBlockIndex: number,
   fromIndex: number,
-  toBlock: LayoutBlockName,
+  toAlignment: LayoutBlockName,
+  toBlockIndex: number,
   toIndex?: number,
 ): Layout {
-  const fromSegments = layout[fromBlock];
-  assertExistingIndex(fromIndex, fromBlock, fromSegments.length);
+  const fromBlock = assertBlockIndex(layout, fromAlignment, fromBlockIndex);
+  const fromLabel = blockLabel(fromAlignment, fromBlockIndex);
+  assertExistingIndex(fromIndex, fromLabel, fromBlock.segments.length);
 
-  const segmentToMove = fromSegments[fromIndex];
+  const segmentToMove = fromBlock.segments[fromIndex];
   if (segmentToMove === undefined) {
-    throw new Error(`index ${fromIndex} is out of range for the "${fromBlock}" block, which has ${fromSegments.length} segment(s)`);
+    throw new Error(`index ${fromIndex} is out of range for ${fromLabel}, which has ${fromBlock.segments.length} segment(s)`);
   }
 
-  const toSegments = fromBlock === toBlock ? [...fromSegments.slice(0, fromIndex), ...fromSegments.slice(fromIndex + 1)] : layout[toBlock];
-  const resolvedToIndex = toIndex ?? toSegments.length;
-  assertInsertIndex(resolvedToIndex, toBlock, toSegments.length);
+  const isSameBlock = fromAlignment === toAlignment && fromBlockIndex === toBlockIndex;
+  const { layout: layoutWithDestination, block: toBlock } = isSameBlock
+    ? { layout, block: fromBlock }
+    : resolveBlockForWrite(layout, toAlignment, toBlockIndex);
 
-  const withoutSegment = withSegments(layout, fromBlock, [...fromSegments.slice(0, fromIndex), ...fromSegments.slice(fromIndex + 1)]);
-  return withSegments(withoutSegment, toBlock, [
-    ...toSegments.slice(0, resolvedToIndex),
-    segmentToMove,
-    ...toSegments.slice(resolvedToIndex),
-  ]);
+  const fromSegmentsWithoutMoved = [...fromBlock.segments.slice(0, fromIndex), ...fromBlock.segments.slice(fromIndex + 1)];
+  const toSegmentsBeforeInsert = isSameBlock ? fromSegmentsWithoutMoved : toBlock.segments;
+  const resolvedToIndex = toIndex ?? toSegmentsBeforeInsert.length;
+  assertInsertIndex(resolvedToIndex, blockLabel(toAlignment, toBlockIndex), toSegmentsBeforeInsert.length);
+  const toSegments = [...toSegmentsBeforeInsert.slice(0, resolvedToIndex), segmentToMove, ...toSegmentsBeforeInsert.slice(resolvedToIndex)];
+
+  if (isSameBlock) {
+    return withBlockAt(layout, fromAlignment, fromBlockIndex, { ...fromBlock, segments: toSegments });
+  }
+
+  const layoutWithoutSegment = withBlockAt(layoutWithDestination, fromAlignment, fromBlockIndex, {
+    ...fromBlock,
+    segments: fromSegmentsWithoutMoved,
+  });
+  return withBlockAt(layoutWithoutSegment, toAlignment, toBlockIndex, { ...toBlock, segments: toSegments });
 }
 
 /**
