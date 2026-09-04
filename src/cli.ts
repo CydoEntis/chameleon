@@ -4,6 +4,7 @@ import {
   buildLayoutSegment,
   isKnownRole,
   isSegmentType,
+  layoutBlocksOnSide,
   loadAllThemePacks,
   moveSegmentBetweenBlocks,
   readOhMyPoshLayout,
@@ -15,6 +16,7 @@ import {
   VERSION,
   writeOhMyPoshLayout,
   type DoctorNerdFontCheck,
+  type Layout,
   type LayoutBlockName,
   type LoadedThemePack,
   type Role,
@@ -148,7 +150,32 @@ function parseOptionalIndex(args: readonly string[], flagName: string): number |
   return flagValue(args, flagName) === undefined ? undefined : parseIndex(args, flagName);
 }
 
-/** `ch edit add --block <left|right> --type <type> --foreground <role> [--background <role>] [--at <index>]` — appends by default, inserts at `--at` when given. */
+/**
+ * `flagName`'s value as a block index, defaulting to 0 when omitted — but
+ * only when that leaves no ambiguity: a side with at most one block still
+ * resolves without it, while a side carrying more than one requires the
+ * flag by name, naming the count. See CHM-16's "operates on a config with
+ * multiple blocks per side, addressing them unambiguously" — a config like
+ * the real "chips" theme, which carries two "left" blocks, must not have
+ * `ch edit` silently guess which one a bare `--block left` means.
+ */
+function parseBlockIndex(args: readonly string[], layout: Layout, alignment: LayoutBlockName, flagName: string): number {
+  const rawValue = flagValue(args, flagName);
+  if (rawValue === undefined) {
+    const existingBlockCount = layoutBlocksOnSide(layout, alignment).length;
+    if (existingBlockCount > 1) {
+      throw new Error(`ch edit: the "${alignment}" side has ${existingBlockCount} blocks — specify ${flagName} to pick one`);
+    }
+    return 0;
+  }
+  const parsedValue = Number(rawValue);
+  if (!Number.isInteger(parsedValue) || parsedValue < 0) {
+    throw new Error(`ch edit: ${flagName} must be a whole number, got "${rawValue}"`);
+  }
+  return parsedValue;
+}
+
+/** `ch edit add --block <left|right> [--block-index <n>] --type <type> --foreground <role> [--background <role>] [--at <index>]` — appends by default, inserts at `--at` when given. */
 function runEditAdd(args: readonly string[]): number {
   const block = parseBlockName(args, "--block");
   const segmentType = parseSegmentType(args);
@@ -156,37 +183,45 @@ function runEditAdd(args: readonly string[]): number {
   const backgroundRole = parseOptionalRole(args, "--background");
   const atIndex = parseOptionalIndex(args, "--at");
 
-  const segment = buildLayoutSegment(segmentType, foregroundRole, backgroundRole);
   const layout = readOhMyPoshLayout();
-  writeOhMyPoshLayout(addSegment(layout, block, segment, atIndex));
-  process.stdout.write(`added ${segmentType} to the ${block} block\n`);
+  const blockIndex = parseBlockIndex(args, layout, block, "--block-index");
+  const segment = buildLayoutSegment(segmentType, foregroundRole, backgroundRole);
+  writeOhMyPoshLayout(addSegment(layout, block, blockIndex, segment, atIndex));
+  process.stdout.write(`added ${segmentType} to block ${blockIndex} of the ${block} side\n`);
   return 0;
 }
 
-/** `ch edit remove --block <left|right> --at <index>` */
+/** `ch edit remove --block <left|right> [--block-index <n>] --at <index>` */
 function runEditRemove(args: readonly string[]): number {
   const block = parseBlockName(args, "--block");
   const atIndex = parseIndex(args, "--at");
 
   const layout = readOhMyPoshLayout();
-  writeOhMyPoshLayout(removeSegment(layout, block, atIndex));
-  process.stdout.write(`removed segment ${atIndex} from the ${block} block\n`);
+  const blockIndex = parseBlockIndex(args, layout, block, "--block-index");
+  writeOhMyPoshLayout(removeSegment(layout, block, blockIndex, atIndex));
+  process.stdout.write(`removed segment ${atIndex} from block ${blockIndex} of the ${block} side\n`);
   return 0;
 }
 
-/** `ch edit reorder --block <left|right> --from <index> --to <index>` */
+/** `ch edit reorder --block <left|right> [--block-index <n>] --from <index> --to <index>` */
 function runEditReorder(args: readonly string[]): number {
   const block = parseBlockName(args, "--block");
   const fromIndex = parseIndex(args, "--from");
   const toIndex = parseIndex(args, "--to");
 
   const layout = readOhMyPoshLayout();
-  writeOhMyPoshLayout(reorderSegment(layout, block, fromIndex, toIndex));
-  process.stdout.write(`moved segment ${fromIndex} to ${toIndex} in the ${block} block\n`);
+  const blockIndex = parseBlockIndex(args, layout, block, "--block-index");
+  writeOhMyPoshLayout(reorderSegment(layout, block, blockIndex, fromIndex, toIndex));
+  process.stdout.write(`moved segment ${fromIndex} to ${toIndex} in block ${blockIndex} of the ${block} side\n`);
   return 0;
 }
 
-/** `ch edit move --from-block <left|right> --at <index> --to-block <left|right> [--to <index>]` — the one command that crosses a segment between the prompt and the status line. */
+/**
+ * `ch edit move --from-block <left|right> [--from-block-index <n>] --at <index>
+ * --to-block <left|right> [--to-block-index <n>] [--to <index>]` — the one
+ * command that crosses a segment between the prompt and the status line, or
+ * between two blocks on the same side.
+ */
 function runEditMove(args: readonly string[]): number {
   const fromBlock = parseBlockName(args, "--from-block");
   const atIndex = parseIndex(args, "--at");
@@ -194,8 +229,12 @@ function runEditMove(args: readonly string[]): number {
   const toIndex = parseOptionalIndex(args, "--to");
 
   const layout = readOhMyPoshLayout();
-  writeOhMyPoshLayout(moveSegmentBetweenBlocks(layout, fromBlock, atIndex, toBlock, toIndex));
-  process.stdout.write(`moved segment ${atIndex} from the ${fromBlock} block to the ${toBlock} block\n`);
+  const fromBlockIndex = parseBlockIndex(args, layout, fromBlock, "--from-block-index");
+  const toBlockIndex = parseBlockIndex(args, layout, toBlock, "--to-block-index");
+  writeOhMyPoshLayout(moveSegmentBetweenBlocks(layout, fromBlock, fromBlockIndex, atIndex, toBlock, toBlockIndex, toIndex));
+  process.stdout.write(
+    `moved segment ${atIndex} from block ${fromBlockIndex} of the ${fromBlock} side to block ${toBlockIndex} of the ${toBlock} side\n`,
+  );
   return 0;
 }
 
