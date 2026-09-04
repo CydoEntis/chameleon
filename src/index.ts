@@ -323,6 +323,27 @@ export function currentPack(userThemeDir?: string, statePath?: string): CurrentP
 }
 
 /**
+ * The library `ch next`/`ch prev` both cycle over, plus where the active
+ * pack sits in it — -1 when nothing is active or the active slug is no
+ * longer in the list. Shared by nextPackSlug and prevPackSlug, which differ
+ * only in which direction they step from `activeIndex` and where a -1
+ * (nothing to step from) lands them.
+ */
+function loadPacksWithActiveIndex(
+  userThemeDir: string | undefined,
+  statePath: string | undefined,
+): { packs: LoadedThemePack[]; activeIndex: number } {
+  const { packs } = loadAllThemePacks(userThemeDir);
+  if (packs.length === 0) {
+    throw new Error("no packs available — nothing to cycle to");
+  }
+
+  const state = readActivePackState(statePath);
+  const activeIndex = state ? packs.findIndex((candidate) => candidate.pack.manifest.slug === state.slug) : -1;
+  return { packs, activeIndex };
+}
+
+/**
  * The slug that follows the active pack in `ch list` order (mergeThemePacksBySlug's
  * own slug order), wrapping past the end back to the start. With nothing yet
  * applied, or the active slug no longer in the list, this is the first pack
@@ -330,15 +351,38 @@ export function currentPack(userThemeDir?: string, statePath?: string): CurrentP
  * like `userThemeDir`, is only ever overridden by tests.
  */
 export function nextPackSlug(userThemeDir?: string, statePath?: string): string {
-  const { packs } = loadAllThemePacks(userThemeDir);
-  if (packs.length === 0) {
-    throw new Error("no packs available — nothing to cycle to");
-  }
-
-  const state = readActivePackState(statePath);
-  const currentIndex = state ? packs.findIndex((candidate) => candidate.pack.manifest.slug === state.slug) : -1;
-  const nextIndex = (currentIndex + 1) % packs.length;
+  const { packs, activeIndex } = loadPacksWithActiveIndex(userThemeDir, statePath);
+  const nextIndex = (activeIndex + 1) % packs.length;
   return packs[nextIndex]!.pack.manifest.slug;
+}
+
+/**
+ * The mirror of nextPackSlug, for `ch prev`: the slug that precedes the
+ * active pack in `ch list` order, wrapping past the start back to the end.
+ * With nothing yet applied, or the active slug no longer in the list, this
+ * lands on the *last* pack in that order — the mirror image of
+ * nextPackSlug's "first pack" default, so `ch next` then `ch prev` (or the
+ * reverse) from a cold start land on each other's starting points.
+ * `statePath`, like `userThemeDir`, is only ever overridden by tests.
+ */
+export function prevPackSlug(userThemeDir?: string, statePath?: string): string {
+  const { packs, activeIndex } = loadPacksWithActiveIndex(userThemeDir, statePath);
+  const currentIndex = activeIndex === -1 ? packs.length : activeIndex;
+  const prevIndex = (currentIndex - 1 + packs.length) % packs.length;
+  return packs[prevIndex]!.pack.manifest.slug;
+}
+
+/**
+ * The slug at `ch list`'s `oneBasedRow` — the same order loadAllThemePacks
+ * produces, so `ch <n>` can never point at a different pack than the nth
+ * line of `ch list` does. Undefined when the row is out of range, which is
+ * itself information: `ch <n>` reports it by name rather than falling
+ * through to "no pack named …". `userThemeDir` is only ever overridden by
+ * tests.
+ */
+export function packSlugAtRow(oneBasedRow: number, userThemeDir?: string): string | undefined {
+  const { packs } = loadAllThemePacks(userThemeDir);
+  return packs[oneBasedRow - 1]?.pack.manifest.slug;
 }
 
 export interface FamilySiblingResult {
