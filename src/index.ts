@@ -53,12 +53,13 @@ export { loadCuratedThemePacks, mergeThemePacksBySlug } from "./palette/theme-pa
 export type { WindowsTerminalAdapter, WindowsTerminalSettings } from "./adapters/windows-terminal.js";
 export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/windows-terminal.js";
 
-export type { Layout, LayoutBlockName, LayoutSegment, OhMyPoshAdapter, OhMyPoshConfig, SegmentType } from "./adapters/oh-my-posh.js";
+export type { Layout, LayoutBlock, LayoutBlockName, LayoutSegment, OhMyPoshAdapter, OhMyPoshConfig, SegmentType } from "./adapters/oh-my-posh.js";
 export {
   addSegment,
   buildLayoutSegment,
   createOhMyPoshAdapter,
   isSegmentType,
+  layoutBlocksOnSide,
   moveSegmentBetweenBlocks,
   readOhMyPoshLayout,
   removeSegment,
