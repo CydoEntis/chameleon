@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ROLES, type Role } from "../constants.js";
+import { toPalette, type Appearance } from "../palette/palette.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
@@ -43,9 +44,80 @@ export type HerdrConfig = z.infer<typeof HerdrConfigSchema>;
 export interface HerdrAdapter {
   detect(): boolean;
   read(): HerdrConfig;
-  apply(scheme: Scheme): void;
+  apply(scheme: Scheme, slug: string): void;
   reload(): void;
 }
+
+/**
+ * Chameleon pack slug → Herdr's own built-in theme slug, for the packs whose
+ * upstream family already ships as one — see Herdr's own theme picker for
+ * the authoritative list. "Catppuccin Mocha" (the Windows Terminal scheme's
+ * display name Chameleon used to write verbatim) was never one of these:
+ * Herdr's built-in is named `catppuccin`, and it silently ignores anything
+ * else — see CHM-21.
+ *
+ * A slug absent from this table — github, ayu, night-owl, everforest,
+ * monokai, and any user-supplied pack — has no Herdr built-in at all. Its
+ * `name` falls back to the nearest built-in by appearance (see
+ * HERDR_DARK_FALLBACK_THEME/HERDR_LIGHT_FALLBACK_THEME below); its own
+ * colours still reach Herdr through [theme.custom] regardless, via
+ * buildCustomBlockLines, so the theme visibly changes either way.
+ */
+const PACK_SLUG_TO_HERDR_THEME: Readonly<Record<string, string>> = {
+  "catppuccin-dark": "catppuccin",
+  "catppuccin-light": "catppuccin-latte",
+  "tokyo-night-dark": "tokyo-night",
+  "tokyo-night-light": "tokyo-night-day",
+  "dracula-dark": "dracula",
+  "nord-dark": "nord",
+  "gruvbox-dark": "gruvbox",
+  "gruvbox-light": "gruvbox-light",
+  "one-half-dark": "one-dark",
+  "one-half-light": "one-light",
+  "solarized-dark": "solarized",
+  "solarized-light": "solarized-light",
+  "kanagawa-dark": "kanagawa",
+  "rose-pine-dark": "rose-pine",
+};
+
+/**
+ * The built-in Herdr falls back to when a pack's slug has no family match —
+ * "terminal" is Herdr's own generic, non-family dark theme, the closest
+ * thing its picker has to a neutral default. There is no equivalent neutral
+ * light built-in, so "one-light" — the least family-branded of Herdr's five
+ * light built-ins — stands in for one. Neither is a colour match; the
+ * pack's actual colours still land in [theme.custom] regardless (see
+ * herdrThemeNameFor's callers), which is what makes an unmatched pack's
+ * apply visibly change Herdr at all rather than merely naming a real theme.
+ */
+const HERDR_DARK_FALLBACK_THEME = "terminal";
+const HERDR_LIGHT_FALLBACK_THEME = "one-light";
+
+/** The Herdr theme name to write for `slug` — its own built-in when one exists, otherwise the nearest fallback for `appearance`. Always a name real Herdr accepts. */
+function herdrThemeNameFor(slug: string, appearance: Appearance): string {
+  return PACK_SLUG_TO_HERDR_THEME[slug] ?? (appearance === "dark" ? HERDR_DARK_FALLBACK_THEME : HERDR_LIGHT_FALLBACK_THEME);
+}
+
+/**
+ * Chameleon's own six roles → the real [theme.custom] tokens Herdr's own
+ * default config documents. Herdr does not recognise `ground`, `body`,
+ * `muted`, `success` or `error` — those were invented, and Herdr silently
+ * dropped all five (see CHM-21). Only `accent` was ever a real token.
+ *
+ * Ideally sourced from `herdr --default-config` rather than hand-maintained,
+ * per the ticket, but that requires a live Herdr install — not something
+ * this adapter, or its tests, can depend on. Herdr's own docs list these as
+ * the tokens a config's [theme.custom] honours, alongside ones Chameleon has
+ * no role for (active_row_bg, selection_bg, panel_bg, surface_dim).
+ */
+const ROLE_TO_HERDR_TOKEN: Readonly<Record<Role, string>> = {
+  ground: "sidebar_bg",
+  body: "text",
+  accent: "accent",
+  muted: "subtext0",
+  success: "green",
+  error: "red",
+};
 
 /** Where Herdr keeps config.toml, under the user's roaming app data. */
 function defaultConfigPath(): string | undefined {
@@ -204,7 +276,7 @@ function upsertThemeName(text: string, eol: string, themeName: string): string {
 }
 
 function buildCustomBlockLines(colorTable: Readonly<Record<Role, string>>): string[] {
-  return ROLES.map((role) => `${role} = ${JSON.stringify(colorTable[role])}`);
+  return ROLES.map((role) => `${ROLE_TO_HERDR_TOKEN[role]} = ${JSON.stringify(colorTable[role])}`);
 }
 
 /**
@@ -240,12 +312,12 @@ function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Recor
 }
 
 /**
- * Backs up config.toml, then sets [theme].name and upserts the
- * [theme.custom] colour tokens for `scheme`'s resolved roles — both edits
- * leaving everything else in the file, [ui] and its comments included,
- * untouched.
+ * Backs up config.toml, then sets [theme].name to a real Herdr built-in for
+ * `slug` and upserts the [theme.custom] colour tokens, under Herdr's own
+ * token names, for `scheme`'s resolved roles — both edits leaving everything
+ * else in the file, [ui] and its comments included, untouched.
  */
-function applyHerdrScheme(configPath: string | undefined, scheme: Scheme): void {
+function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
   const resolvedConfigPath = requireConfigPath(configPath);
   if (!existsSync(resolvedConfigPath)) {
     throw new Error(`no Herdr config found at ${resolvedConfigPath}`);
@@ -256,8 +328,9 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme): void 
   const originalText = readFileSync(resolvedConfigPath, "utf8");
   const eol = detectLineEnding(originalText);
   const colorTable = resolveRoleHexes(scheme);
+  const themeName = herdrThemeNameFor(slug, toPalette(scheme).appearance);
 
-  const withName = upsertThemeName(originalText, eol, scheme.name);
+  const withName = upsertThemeName(originalText, eol, themeName);
   const withCustom = upsertCustomBlock(withName, eol, colorTable);
 
   writeFileSync(resolvedConfigPath, withCustom, "utf8");
@@ -331,7 +404,7 @@ export function createHerdrAdapter(configPath: string | undefined = defaultConfi
   return {
     detect: () => detectHerdr(configPath),
     read: () => readHerdrConfig(requireConfigPath(configPath)),
-    apply: (scheme) => applyHerdrScheme(configPath, scheme),
+    apply: (scheme, slug) => applyHerdrScheme(configPath, scheme, slug),
     reload: () => reloadHerdr(),
   };
 }
