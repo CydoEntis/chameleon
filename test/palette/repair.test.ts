@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
-import { toHsl } from "../../src/palette/color.js";
+import { MIN_REPAIRED_CHROMA, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { chromaOf, toHsl } from "../../src/palette/color.js";
 import type { Palette } from "../../src/palette/palette.js";
 import { repairFailingRoles } from "../../src/palette/repair.js";
 import { assignRolesByContrast } from "../../src/palette/roles.js";
@@ -77,6 +77,45 @@ describe("repairFailingRoles", () => {
     const hueBefore = toHsl(assignment.accent.hex).hue;
     const hueAfter = toHsl(report.palette.accent.hex).hue;
     expect(Math.abs(hueBefore - hueAfter)).toBeLessThanOrEqual(HUE_TOLERANCE_DEGREES);
+  });
+
+  // A repair that walks a fixed-saturation lightness line to the first
+  // colour that clears its floor runs straight through white or black —
+  // HSL saturation stays at 100% as lightness nears either pole even while
+  // the colour's actual chroma collapses to nothing. These three each need
+  // real contrast (Acid Lime's success and Thayer Bright's error only
+  // clear their floor by outranking a same-hex sibling role; Fairyfloss's
+  // error starts below its own floor) and each still measures a chroma
+  // well above MIN_REPAIRED_CHROMA once repaired: 0.52, 0.55 and 0.24
+  // respectively. See CHM-20.
+  it.each([
+    ["Acid Lime", "success"],
+    ["Thayer Bright", "error"],
+    ["Fairyfloss", "error"],
+  ] as const)("keeps %s's %s recognisably coloured instead of washing it to white or black", (schemeName, role) => {
+    const assignment = assignRolesByContrast(paletteNamed(schemeName));
+    const report = repairFailingRoles(assignment);
+    const repaired = report.palette[role];
+
+    expect(report.repairedRoles).toContain(role);
+    expect(repaired.isFallback).toBe(false);
+    expect(chromaOf(repaired.hex)).toBeGreaterThanOrEqual(MIN_REPAIRED_CHROMA);
+    expect(repaired.contrastRatio).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+  });
+
+  it("carves Hot Dog Stand's success out as a deliberate grey fallback, not a failure", () => {
+    // Hot Dog Stand's #ea3323 background makes a saturated 4.5:1 colour
+    // impossible: the best any hue can reach while holding
+    // MIN_REPAIRED_CHROMA against it is 4.19. Falling back to a computed
+    // near-black is the correct outcome here, and repair reports it as
+    // exactly that rather than silently shipping it as an ordinary repair.
+    const assignment = assignRolesByContrast(paletteNamed("Hot Dog Stand"));
+    const report = repairFailingRoles(assignment);
+    const repaired = report.palette.success;
+
+    expect(report.fallbackRoles).toContain("success");
+    expect(repaired.isFallback).toBe(true);
+    expect(repaired.contrastRatio).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
   });
 
   it("repairs Night Owlish Light's purple/foreground collision to two distinct colours", () => {
