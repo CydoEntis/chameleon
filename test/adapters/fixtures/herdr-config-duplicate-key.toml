@@ -1,0 +1,19 @@
+# Herdr configuration — hand edited, please don't nuke my comments.
+
+[ui]
+# status bar lives here, out of scope for Chameleon
+show_status_bar = true
+pane_border_style = "rounded" # I like rounded borders
+
+[theme]
+name = "legacy-theme" # picked from the built-in list
+
+[theme.custom]
+# Solarized base01 — picked this shade of grey myself, don't overwrite the comment
+text = "#586E75"
+subtext0 = "#657B83" # inline comment, do not lose me
+# surface_dim isn't one of Chameleon's own tokens — must survive untouched
+surface_dim = "#001100"
+
+[server]
+socket_path = "/tmp/herdr.sock"
