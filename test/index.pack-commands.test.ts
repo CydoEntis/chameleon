@@ -3,7 +3,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readActivePackState, writeActivePackState } from "../src/adapters/state.js";
-import { applyThemePack, currentPack, findFamilySibling, loadAllThemePacks, nextPackSlug, undoAppliedPack } from "../src/index.js";
+import {
+  applyThemePack,
+  currentPack,
+  findFamilySibling,
+  loadAllThemePacks,
+  nextPackSlug,
+  packSlugAtRow,
+  prevPackSlug,
+  undoAppliedPack,
+} from "../src/index.js";
 
 // CHM-19's orchestration only fans a pack's scheme out to whichever real
 // adapter each target already ships; the adapters themselves are covered by
@@ -207,6 +216,46 @@ describe("nextPackSlug", () => {
     const { packs } = loadAllThemePacks(userThemeDir);
 
     expect(nextPackSlug(userThemeDir, statePath)).toBe(packs[0]!.pack.manifest.slug);
+  });
+});
+
+describe("prevPackSlug", () => {
+  it("retreats to the pack before the active one in `ch list` order", () => {
+    const { packs } = loadAllThemePacks(userThemeDir);
+    writeActivePackState(packs[1]!.pack.manifest.slug, statePath);
+
+    expect(prevPackSlug(userThemeDir, statePath)).toBe(packs[0]!.pack.manifest.slug);
+  });
+
+  it("wraps from the first pack in the list back to the last", () => {
+    const { packs } = loadAllThemePacks(userThemeDir);
+    const firstSlug = packs[0]!.pack.manifest.slug;
+    const lastSlug = packs[packs.length - 1]!.pack.manifest.slug;
+    writeActivePackState(firstSlug, statePath);
+
+    expect(prevPackSlug(userThemeDir, statePath)).toBe(lastSlug);
+  });
+
+  it("starts at the last pack in the list when nothing has been applied yet — the mirror of nextPackSlug's first-pack default", () => {
+    const { packs } = loadAllThemePacks(userThemeDir);
+
+    expect(prevPackSlug(userThemeDir, statePath)).toBe(packs[packs.length - 1]!.pack.manifest.slug);
+  });
+});
+
+describe("packSlugAtRow", () => {
+  it("returns the slug at the same row `ch list` would print it on", () => {
+    const { packs } = loadAllThemePacks(userThemeDir);
+
+    expect(packSlugAtRow(1, userThemeDir)).toBe(packs[0]!.pack.manifest.slug);
+    expect(packSlugAtRow(packs.length, userThemeDir)).toBe(packs[packs.length - 1]!.pack.manifest.slug);
+  });
+
+  it("returns undefined for a row that does not exist, rather than the nearest one", () => {
+    const { packs } = loadAllThemePacks(userThemeDir);
+
+    expect(packSlugAtRow(0, userThemeDir)).toBeUndefined();
+    expect(packSlugAtRow(packs.length + 1, userThemeDir)).toBeUndefined();
   });
 });
 

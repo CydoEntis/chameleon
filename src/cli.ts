@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createInterface } from "node:readline/promises";
+import { emitKeypressEvents, type Key } from "node:readline";
 import {
   addSegment,
   applyThemePack,
@@ -12,6 +12,8 @@ import {
   loadAllThemePacks,
   moveSegmentBetweenBlocks,
   nextPackSlug,
+  packSlugAtRow,
+  prevPackSlug,
   readOhMyPoshLayout,
   removeSegment,
   reorderSegment,
@@ -331,6 +333,31 @@ function runNext(): number {
   }
 }
 
+/** `ch prev` — the mirror of `ch next`: cycles to the previous pack in `ch list` order, wrapping past the start, and applies it. */
+function runPrev(): number {
+  try {
+    return runApply(prevPackSlug());
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/** Whether `token` is usable as `ch <n>`'s row number — a bare non-negative integer, never a slug that merely happens to start with a digit. */
+function parsePackRowNumber(token: string): number | undefined {
+  return /^[0-9]+$/.test(token) ? Number(token) : undefined;
+}
+
+/** `ch <n>` — applies the pack at row `n` of `ch list`, the direct-argument counterpart CHM-24 adds so that number works outside the interactive picker too. */
+function runApplyByRow(oneBasedRow: number): number {
+  const slug = packSlugAtRow(oneBasedRow);
+  if (slug === undefined) {
+    process.stderr.write(`ch: no pack at row ${oneBasedRow} — run \`ch list\` to see what's available\n`);
+    return 1;
+  }
+  return runApply(slug);
+}
+
 /**
  * `ch dark` / `ch light` — switches to the active pack's sibling in the same
  * family. A family with no sibling in that mode never fails silently: it
@@ -366,29 +393,190 @@ function runCurrent(args: readonly string[]): number {
   return 0;
 }
 
-/** Prompts interactively for a pack to apply: a numbered list, then a free-form answer of either the number or the slug directly. Empty input picks nothing. */
-async function promptForPackSlug(packs: readonly LoadedThemePack[]): Promise<string | undefined> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    packs.forEach((loaded, index) => process.stdout.write(`${index + 1}) ${formatPackLine(loaded)}\n`));
-    const answer = (await rl.question("Apply which pack (number or slug)? ")).trim();
-    if (answer === "") return undefined;
+/** One picker row: enough to render a line with two colour swatches, filter it by slug or name, and apply it. */
+interface PickerEntry {
+  readonly slug: string;
+  readonly name: string;
+  readonly origin: string;
+  readonly groundHex: string;
+  readonly accentHex: string;
+}
 
-    const chosenIndex = Number(answer);
-    if (Number.isInteger(chosenIndex) && chosenIndex >= 1 && chosenIndex <= packs.length) {
-      return packs[chosenIndex - 1]!.pack.manifest.slug;
-    }
-    return answer;
-  } finally {
-    rl.close();
-  }
+function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
+  const roleHexes = loaded.pack.payloads["oh-my-posh"];
+  return {
+    slug: loaded.pack.manifest.slug,
+    name: loaded.pack.manifest.name,
+    origin: loaded.origin,
+    groundHex: roleHexes.ground,
+    accentHex: roleHexes.accent,
+  };
+}
+
+const HEX_COLOR_PATTERN = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
+
+/**
+ * Two spaces painted with `hex` as a background colour — a picker row's
+ * swatch. This is deliberately a solid block of colour rather than a glyph:
+ * see CLAUDE.md, "Terminal output must read without a Nerd Font installed."
+ * The escape codes are plain ANSI 24-bit colour and cursor movement, nothing
+ * Windows Terminal renders differently under cmd.exe, PowerShell or
+ * git-bash — see CHM-24's "must not depend on a terminal feature only one
+ * of them has."
+ */
+function swatch(hex: string): string {
+  const channels = HEX_COLOR_PATTERN.exec(hex);
+  if (!channels) return "  ";
+  const [, redHex, greenHex, blueHex] = channels;
+  const redChannel = Number.parseInt(redHex!, 16);
+  const greenChannel = Number.parseInt(greenHex!, 16);
+  const blueChannel = Number.parseInt(blueHex!, 16);
+  return `\x1b[48;2;${redChannel};${greenChannel};${blueChannel}m  \x1b[0m`;
+}
+
+/** Whether `entry` matches the picker's type-to-filter text, by slug or by name — an empty filter matches everything. */
+function matchesPickerFilter(entry: PickerEntry, filterText: string): boolean {
+  if (filterText === "") return true;
+  const needle = filterText.toLowerCase();
+  return entry.slug.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle);
+}
+
+function renderPickerRow(entry: PickerEntry, isHighlighted: boolean): string {
+  const cursor = isHighlighted ? ">" : " ";
+  return `${cursor} ${swatch(entry.groundHex)}${swatch(entry.accentHex)} ${entry.slug}  ${entry.name}  (${entry.origin})`;
+}
+
+const PICKER_HINT_LINE = "up/down move, type to filter, enter apply, esc cancel";
+
+/** Every line of one picker frame: the hint or filter line, then one row per matching entry, or a plain "no matches" line when the filter matches nothing. */
+function renderPickerFrame(entries: readonly PickerEntry[], highlightedIndex: number, filterText: string): string[] {
+  const filterLine = filterText === "" ? PICKER_HINT_LINE : `filter: ${filterText}`;
+  const rowLines =
+    entries.length === 0 ? ["  no matches"] : entries.map((entry, index) => renderPickerRow(entry, index === highlightedIndex));
+  return [filterLine, ...rowLines];
+}
+
+/** Moves the cursor back up over the previous frame and clears everything from there down, so redrawing never scrolls the screen. */
+function clearPickerFrame(lineCount: number): void {
+  if (lineCount === 0) return;
+  process.stdout.write(`\x1b[${lineCount}A\x1b[0J`);
 }
 
 /**
- * `ch` with no argument — picks a pack interactively. When stdin is not a
- * TTY there is nobody to answer a prompt, so this prints the same list
- * `ch list` would and exits, rather than blocking on a read that would never
- * resolve.
+ * Drives the arrow-key picker: renders the filtered list with colour
+ * swatches, moves the highlight on the arrow keys, narrows the list as the
+ * user types, and applies the highlighted pack immediately on every move —
+ * see CHM-24's "applying as the cursor moves is the feature that makes this
+ * tool worth using." Resolves to the slug Enter committed, or to `undefined`
+ * on Esc/Ctrl-C, after restoring `originalSlug` (or undoing every target's
+ * change, when nothing was active before the picker opened).
+ */
+async function runInteractivePicker(packs: readonly LoadedThemePack[], originalSlug: string | undefined): Promise<string | undefined> {
+  const allEntries = packs.map(toPickerEntry);
+  const startIndex = originalSlug === undefined ? 0 : Math.max(0, allEntries.findIndex((entry) => entry.slug === originalSlug));
+
+  return new Promise<string | undefined>((resolve) => {
+    let filterText = "";
+    let highlightedIndex = startIndex;
+    let visibleEntries = allEntries;
+    let previousFrameLineCount = 0;
+    let lastPreviewedSlug: string | undefined;
+
+    function previewHighlighted(): void {
+      const entry = visibleEntries[highlightedIndex];
+      if (entry === undefined || entry.slug === lastPreviewedSlug) return;
+      lastPreviewedSlug = entry.slug;
+      try {
+        applyThemePack(entry.slug);
+      } catch {
+        // A broken preview apply is reported properly once Enter commits —
+        // runApply reports it then. Ignoring it here only means this one
+        // frame's preview did not take, not that anything is actually wrong.
+      }
+    }
+
+    function redraw(): void {
+      clearPickerFrame(previousFrameLineCount);
+      const frameLines = renderPickerFrame(visibleEntries, highlightedIndex, filterText);
+      process.stdout.write(frameLines.map((line) => `${line}\n`).join(""));
+      previousFrameLineCount = frameLines.length;
+    }
+
+    function applyFilter(nextFilterText: string): void {
+      filterText = nextFilterText;
+      visibleEntries = allEntries.filter((entry) => matchesPickerFilter(entry, filterText));
+      highlightedIndex = 0;
+      previewHighlighted();
+      redraw();
+    }
+
+    function moveHighlight(step: 1 | -1): void {
+      if (visibleEntries.length === 0) return;
+      highlightedIndex = (highlightedIndex + step + visibleEntries.length) % visibleEntries.length;
+      previewHighlighted();
+      redraw();
+    }
+
+    function stopListening(): void {
+      process.stdin.off("keypress", onKeypress);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdout.write("\x1b[?25h");
+    }
+
+    function cancel(): void {
+      try {
+        if (originalSlug === undefined) {
+          undoAppliedPack();
+        } else {
+          applyThemePack(originalSlug);
+        }
+      } catch {
+        // Best effort — the picker still exits either way; a cancel is not
+        // itself a command whose failure `ch` needs to report.
+      }
+      stopListening();
+      resolve(undefined);
+    }
+
+    function commit(): void {
+      // Nothing highlighted means the filter matched no row — Enter has
+      // nothing to commit, so it is a no-op rather than a cancel: cancelling
+      // is Esc/Ctrl-C's job, and treating an empty filter as "cancel" would
+      // exit without restoring originalSlug even though a preview is still
+      // applied from before the filter narrowed to nothing.
+      const chosenSlug = visibleEntries[highlightedIndex]?.slug;
+      if (chosenSlug === undefined) return;
+      stopListening();
+      resolve(chosenSlug);
+    }
+
+    function onKeypress(inputChar: string | undefined, key: Key | undefined): void {
+      if (key?.ctrl && key.name === "c") return cancel();
+      if (key?.name === "escape") return cancel();
+      if (key?.name === "return") return commit();
+      if (key?.name === "up") return moveHighlight(-1);
+      if (key?.name === "down") return moveHighlight(1);
+      if (key?.name === "backspace") return applyFilter(filterText.slice(0, -1));
+      if (inputChar && /^[\x20-\x7e]$/.test(inputChar)) return applyFilter(filterText + inputChar);
+    }
+
+    emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("keypress", onKeypress);
+
+    process.stdout.write("\x1b[?25l");
+    previewHighlighted();
+    redraw();
+  });
+}
+
+/**
+ * `ch` with no argument — picks a pack with the interactive picker, cursor
+ * starting on whichever pack is currently applied. When stdin is not a TTY
+ * there is nobody to drive a picker, so this prints the same list `ch list`
+ * would and exits, rather than blocking on input that would never arrive.
  */
 async function runPick(): Promise<number> {
   const { packs, warnings } = loadAllThemePacks();
@@ -403,7 +591,12 @@ async function runPick(): Promise<number> {
     return 0;
   }
 
-  const chosenSlug = await promptForPackSlug(packs);
+  if (packs.length === 0) {
+    process.stderr.write("ch: no packs available\n");
+    return 1;
+  }
+
+  const chosenSlug = await runInteractivePicker(packs, currentPack()?.slug);
   if (chosenSlug === undefined) {
     process.stderr.write("ch: no pack chosen\n");
     return 1;
@@ -412,10 +605,10 @@ async function runPick(): Promise<number> {
 }
 
 /**
- * Entry point: `ch <slug>` applies that pack; `ch` with no argument picks
- * one interactively; the rest are the named commands below. An argument
- * that matches none of them is tried as a pack slug, so `ch catppuccin-dark`
- * needs no verb of its own.
+ * Entry point: `ch <slug>` applies that pack; `ch <n>` applies the pack at
+ * row `n` of `ch list`; `ch` with no argument picks one interactively; the
+ * rest are the named commands below. An argument that matches none of them
+ * is tried as a pack slug, so `ch catppuccin-dark` needs no verb of its own.
  */
 async function main(argv: string[]): Promise<number> {
   if (argv.includes("--version") || argv.includes("-v")) {
@@ -431,8 +624,11 @@ async function main(argv: string[]): Promise<number> {
   if (command === "current") return runCurrent(rest);
   if (command === "undo") return runUndo();
   if (command === "next") return runNext();
+  if (command === "prev") return runPrev();
   if (command === "dark") return runFamilySwitch("dark");
   if (command === "light") return runFamilySwitch("light");
+  const packRowNumber = parsePackRowNumber(command);
+  if (packRowNumber !== undefined) return runApplyByRow(packRowNumber);
   return runApply(command);
 }
 
