@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { MIN_REPAIRED_CHROMA, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
-import { chromaOf, toHsl } from "../../src/palette/color.js";
+import { chromaOf, contrastRatio, toHsl } from "../../src/palette/color.js";
 import type { Palette } from "../../src/palette/palette.js";
-import { repairFailingRoles } from "../../src/palette/repair.js";
+import { repairFailingRoles, repairForegroundAgainstBackgrounds } from "../../src/palette/repair.js";
 import { assignRolesByContrast } from "../../src/palette/roles.js";
 import { loadVendoredSchemes } from "../../tools/vendor-scheme-library.js";
 
@@ -151,6 +151,45 @@ describe("repairFailingRoles", () => {
       expect(report.palette.muted.contrastRatio, `${palette.name}: muted below body`).toBeLessThan(
         report.palette.body.contrastRatio,
       );
+    }
+  });
+});
+
+// Real values from Chameleon's own pipeline, not invented: the chips.omp.json
+// fixture's "c-badge-text" foreground, and two of its own background keys,
+// recoloured against the vendored "everforest-dark" scheme (see
+// oh-my-posh.test.ts's CHIPS_FIXTURE_PATH). c-git-normal is what CHM-40's
+// git-segment regression rendered against; c-battery-state-error is the
+// pairing that actually failed its floor in that run, at 4.41 — this is
+// exactly the case CHM-37's own check missed by sampling only one segment.
+describe("repairForegroundAgainstBackgrounds", () => {
+  const CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK = "#363636";
+  const CHIPS_GIT_NORMAL_ON_EVERFOREST_DARK = "#66ffa6";
+  const CHIPS_BATTERY_STATE_ERROR_ON_EVERFOREST_DARK = "#e67e80";
+
+  it("leaves a foreground untouched when it already clears the floor against every background", () => {
+    expect(
+      repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, [CHIPS_GIT_NORMAL_ON_EVERFOREST_DARK]),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined, never a same-value repair, when there is no background to check against", () => {
+    expect(repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, [])).toBeUndefined();
+  });
+
+  it("repairs a foreground that fails against one of several real backgrounds, clearing the floor against all of them at once", () => {
+    // CHM-40's own regression: this exact foreground already cleared
+    // c-git-normal at 9.45, and CHM-37's check stopped there. Paired with
+    // c-battery-state-error too — the pairing it never actually renders
+    // without — it measured 4.41, under TEXT_MIN_RATIO.
+    const backgrounds = [CHIPS_GIT_NORMAL_ON_EVERFOREST_DARK, CHIPS_BATTERY_STATE_ERROR_ON_EVERFOREST_DARK];
+    expect(contrastRatio(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, CHIPS_BATTERY_STATE_ERROR_ON_EVERFOREST_DARK)).toBeLessThan(TEXT_MIN_RATIO);
+
+    const repaired = repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, backgrounds);
+
+    expect(repaired).toBeDefined();
+    for (const background of backgrounds) {
+      expect(contrastRatio(repaired!, background)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     }
   });
 });
