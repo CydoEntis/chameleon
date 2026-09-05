@@ -51,7 +51,8 @@ export interface HerdrAdapter {
   detect(): boolean;
   read(): HerdrConfig;
   apply(scheme: Scheme, slug: string): void;
-  reload(): void;
+  /** Returns a one-sentence notice when there was nothing running to reload — see reloadHerdr's own "server_not_running" handling (CHM-45) — or undefined once the reload actually took. */
+  reload(): string | undefined;
 }
 
 /**
@@ -712,12 +713,14 @@ function parseHerdrCliError(stderr: string): HerdrCliError | undefined {
   }
 }
 
-function describeReloadFailure(result: SpawnSyncReturns<string>): string {
+/** Herdr's own CLI error code for "no server listening on the control socket" — the one reload failure CHM-45 treats as informational rather than broken, since it means there is nothing running to tell, not that Herdr rejected anything. See reloadHerdr. */
+const SERVER_NOT_RUNNING_CODE = "server_not_running";
+
+function describeReloadFailure(result: SpawnSyncReturns<string>, herdrError: HerdrCliError | undefined): string {
   if (result.error) {
     return `could not run "${HERDR_BINARY_NAME} ${RELOAD_CONFIG_ARGS.join(" ")}": ${result.error.message}`;
   }
 
-  const herdrError = parseHerdrCliError(result.stderr);
   if (herdrError) {
     const detail = herdrError.message ? `: ${herdrError.message}` : "";
     return `herdr reported "${herdrError.code}"${detail}`;
@@ -774,19 +777,28 @@ function describeReloadDiagnostics(reloadResult: HerdrReloadResult): string {
  * A failed reload shows up three different ways, and all three must be
  * checked: `result.error` when the binary could not even be started, a
  * non-zero `result.status` when it ran and Herdr's own CLI reported failure
- * over stderr — most commonly `server_not_running`, a stale environment
- * pointed at a server that is no longer listening — and, since CHM-22, a
- * zero exit status whose stdout JSON payload itself says
- * `"status":"failed"`, which is exactly what Herdr returns for a
- * config.toml it refused to parse: the process succeeded at making the
- * call, and Herdr succeeded at rejecting the config. Checking only the exit
- * code would call that last case a success and claim every pane repainted
- * when Herdr silently kept the previous config.
+ * over stderr, and, since CHM-22, a zero exit status whose stdout JSON
+ * payload itself says `"status":"failed"`, which is exactly what Herdr
+ * returns for a config.toml it refused to parse: the process succeeded at
+ * making the call, and Herdr succeeded at rejecting the config. Checking
+ * only the exit code would call that last case a success and claim every
+ * pane repainted when Herdr silently kept the previous config.
+ *
+ * One non-zero-status case is not a failure at all (CHM-45): `server_not_running`,
+ * a stale environment pointed at a server that is no longer listening, or
+ * simply no Herdr running right now. `apply` has already written a correct
+ * config.toml by the time this runs — Herdr will read it the next time it
+ * starts — so this reports it back as a detail, the same way
+ * applyOhMyPoshScheme's profile-creation notice reports something worth
+ * telling the user without failing the apply, rather than throwing and
+ * turning a config that landed correctly into a reported failure.
  */
-function reloadHerdr(): void {
+function reloadHerdr(): string | undefined {
   const result = spawnSync(HERDR_BINARY_NAME, [...RELOAD_CONFIG_ARGS], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
-    throw new Error(`Herdr did not reload: ${describeReloadFailure(result)}`);
+    const herdrError = result.error ? undefined : parseHerdrCliError(result.stderr);
+    if (herdrError?.code === SERVER_NOT_RUNNING_CODE) return "Herdr is not running — nothing to reload";
+    throw new Error(`Herdr did not reload: ${describeReloadFailure(result, herdrError)}`);
   }
 
   const reloadResult = parseHerdrReloadResult(result.stdout);

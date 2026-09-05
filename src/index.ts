@@ -262,30 +262,62 @@ function adapterForTarget(target: Target): DetectableTargetAdapter {
 }
 
 /**
- * Applies `scheme` to `target`. Herdr's own `apply` also takes the pack's
- * `slug` — unlike the raw scheme, Herdr needs pack identity to pick a real
+ * Applies `scheme` to `target` and then reloads it, so the running program
+ * actually shows what was just written — see CHM-45: before this, `apply`
+ * wrote the config and nothing ever called the adapter's own `reload`,
+ * which is why Herdr's sidebar never changed until something unrelated
+ * (a restart, a manual `reload-config`) happened to re-read the file for
+ * it. Windows Terminal and Oh My Posh's own `reload` are no-ops — the
+ * former watches settings.json itself, the latter repaints through the
+ * live-reload hook `apply` already wired into the shell's profile — so
+ * calling them here costs nothing and keeps the same write-then-reload
+ * shape for every target. Herdr's own `apply` also takes the pack's `slug`
+ * — unlike the raw scheme, Herdr needs pack identity to pick a real
  * built-in theme name, see adapters/herdr.ts's herdrThemeNameFor — so this,
  * not a shared single-argument interface, is what lets that adapter's apply
- * differ in shape from windows-terminal's and oh-my-posh's. Only Oh My
- * Posh's own `apply` has anything worth reporting back — see CHM-39's
- * profile-creation notice — so it is the only one whose return value this
- * passes through.
+ * differ in shape from windows-terminal's and oh-my-posh's.
+ *
+ * Both `apply` and `reload` can return a detail worth telling the user
+ * without failing anything — Oh My Posh's own profile-creation notice
+ * (CHM-39) and Herdr's own "nothing running to reload" notice (CHM-45) —
+ * and neither ever fires alongside the other, so returning whichever one
+ * is defined never silently drops a message.
  */
 function applyToTarget(target: Target, scheme: Scheme, slug: string): string | undefined {
-  if (target === "oh-my-posh") return createDefaultOhMyPoshAdapter().apply(scheme);
-  if (target === "windows-terminal") {
-    createWindowsTerminalAdapter().apply(scheme);
-    return undefined;
+  if (target === "oh-my-posh") {
+    const adapter = createDefaultOhMyPoshAdapter();
+    const applyDetail = adapter.apply(scheme);
+    const reloadDetail = adapter.reload();
+    return applyDetail ?? reloadDetail;
   }
-  createHerdrAdapter().apply(scheme, slug);
-  return undefined;
+  if (target === "windows-terminal") {
+    const adapter = createWindowsTerminalAdapter();
+    adapter.apply(scheme);
+    return adapter.reload();
+  }
+  const adapter = createHerdrAdapter();
+  adapter.apply(scheme, slug);
+  return adapter.reload();
 }
 
-/** `target`'s own `undo*` function — undoWindowsTerminal, undoOhMyPosh or undoHerdr — restoring it from the backup its adapter's most recent `apply` wrote. */
-function undoTarget(target: Target): void {
-  if (target === "windows-terminal") return undoWindowsTerminal();
-  if (target === "oh-my-posh") return undoOhMyPosh();
-  return undoHerdr();
+/**
+ * `target`'s own `undo*` function — undoWindowsTerminal, undoOhMyPosh or
+ * undoHerdr — restoring it from the backup its adapter's most recent
+ * `apply` wrote, then reloading it the same way applyToTarget does: a
+ * restored config that nothing ever re-reads leaves the exact CHM-45 gap
+ * `ch undo` would otherwise share with `ch <theme>`.
+ */
+function undoTarget(target: Target): string | undefined {
+  if (target === "windows-terminal") {
+    undoWindowsTerminal();
+    return createWindowsTerminalAdapter().reload();
+  }
+  if (target === "oh-my-posh") {
+    undoOhMyPosh();
+    return createDefaultOhMyPoshAdapter().reload();
+  }
+  undoHerdr();
+  return createHerdrAdapter().reload();
 }
 
 /**
@@ -295,7 +327,8 @@ function undoTarget(target: Target): void {
  * so one target's problem never stops the targets after it from being tried.
  * `action`'s own return value, when it gives one back, is carried as the
  * result's `detail` even on success — see applyToTarget's Oh My Posh
- * profile-creation notice (CHM-39).
+ * profile-creation notice (CHM-39) and Herdr's "nothing running to reload"
+ * notice (CHM-45).
  */
 function runOnInstalledTarget(target: Target, succeededStatus: PackActionStatus, action: () => string | undefined): PackActionResult {
   if (!detectSafely(() => adapterForTarget(target).detect())) {
@@ -370,12 +403,7 @@ export function applyThemePack(slug: string, userThemeDir?: string, statePath?: 
 
 /** Restores every detected target from the backup its own adapter's most recent `apply` wrote — the counterpart to applyThemePack. */
 export function undoAppliedPack(): readonly PackActionResult[] {
-  return TARGETS.map((target) =>
-    runOnInstalledTarget(target, "restored", () => {
-      undoTarget(target);
-      return undefined;
-    }),
-  );
+  return TARGETS.map((target) => runOnInstalledTarget(target, "restored", () => undoTarget(target)));
 }
 
 /**
