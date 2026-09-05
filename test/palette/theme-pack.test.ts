@@ -23,11 +23,18 @@ describe("buildThemePack", () => {
     expect(pack.manifest.attribution).toEqual(ATTRIBUTION);
   });
 
-  it("ships the raw scheme as the windows-terminal payload, unmodified", () => {
+  it("ships the raw scheme as the windows-terminal payload, except selectionBackground — CHM-26: that one comes from the repaired role", () => {
     const scheme = readVendoredScheme("Dracula.json");
     const pack = buildThemePack(scheme, "Dracula", ATTRIBUTION);
 
-    expect(pack.payloads["windows-terminal"]).toEqual(scheme);
+    expect(pack.payloads["windows-terminal"]).toEqual({
+      ...scheme,
+      selectionBackground: pack.payloads["oh-my-posh"].selection,
+    });
+    // Dracula's own shipped selectionBackground (#44475a) is not what a
+    // repaired one measures as — proving this is genuinely repaired, not
+    // coincidentally identical to the raw scheme's own value.
+    expect(pack.payloads["windows-terminal"].selectionBackground).not.toBe(scheme.selectionBackground);
   });
 
   it("resolves a role hex table for oh-my-posh and herdr, matching each other", () => {

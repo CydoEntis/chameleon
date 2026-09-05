@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
+import { MUTED_MIN_RATIO, ROLES, SELECTION_MIN_RATIO, TEXT_MIN_RATIO, type Role } from "../constants.js";
 import { contrastRatio } from "./color.js";
 import { toPalette, type Appearance } from "./palette.js";
 import { repairFailingRoles } from "./repair.js";
@@ -36,15 +36,17 @@ export interface ThemePackManifest {
 
 /**
  * The colour data every target needs to theme itself, computed once at
- * build time. windows-terminal's payload is the raw Scheme because that
- * adapter's apply() writes a scheme's own 20 slots verbatim into
- * schemes[]; oh-my-posh and herdr's payload is the resolved, repaired role
- * table those adapters key their own blocks off. Every adapter's apply()
- * still takes a Scheme and derives what it needs itself — see
- * adapters/*.ts — so this is a precomputed, build-time-checkable copy of
- * exactly what apply() would derive live, not a second source of truth:
- * assignRolesByContrast and repairFailingRoles are pure, so the two can
- * never disagree.
+ * build time. windows-terminal's payload is the raw Scheme, because that
+ * adapter's apply() writes a scheme's own 20 slots verbatim into schemes[]
+ * — with one exception: `selectionBackground` is overwritten with the
+ * resolved, repaired selection role, never shipped as the scheme's own raw
+ * value — see CHM-26 and buildThemePack below. oh-my-posh and herdr's
+ * payload is the resolved, repaired role table those adapters key their own
+ * blocks off. Every adapter's apply() still takes a Scheme and derives what
+ * it needs itself — see adapters/*.ts — so this is a precomputed,
+ * build-time-checkable copy of exactly what apply() would derive live, not
+ * a second source of truth: assignRolesByContrast and repairFailingRoles
+ * are pure, so the two can never disagree.
  */
 export interface ThemePackPayloads {
   readonly "windows-terminal": Scheme;
@@ -79,7 +81,18 @@ function roleHexTable(resolvedPalette: ReturnType<typeof repairFailingRoles>["pa
 }
 
 /** Every role but ground itself is measured against ground and must clear a floor. */
-const TEXT_AND_MUTED_ROLES = ROLES.filter((role) => role !== "ground");
+const NON_GROUND_ROLES = ROLES.filter((role) => role !== "ground");
+
+/** The roles whose floor against ground is not TEXT_MIN_RATIO — see floorFor. A lookup rather than a chain of ternaries, per code-standards.md's "a nested ternary is never correct here". */
+const ROLE_FLOOR_OVERRIDES: Readonly<Partial<Record<Role, number>>> = {
+  muted: MUTED_MIN_RATIO,
+  selection: SELECTION_MIN_RATIO,
+};
+
+/** The contrast floor `role` must clear against ground — TEXT_MIN_RATIO, unless the role has its own, lower one. */
+function floorFor(role: Role): number {
+  return ROLE_FLOOR_OVERRIDES[role] ?? TEXT_MIN_RATIO;
+}
 
 /**
  * Fails loudly if a resolved role does not actually clear its floor. Repair
@@ -89,7 +102,7 @@ const TEXT_AND_MUTED_ROLES = ROLES.filter((role) => role !== "ground");
  */
 function assertRoleClearsFloor(role: Role, hex: string, groundHex: string, schemeName: string): void {
   const ratio = contrastRatio(hex, groundHex);
-  const floor = role === "muted" ? MUTED_MIN_RATIO : TEXT_MIN_RATIO;
+  const floor = floorFor(role);
   if (ratio < floor) {
     throw new Error(
       `"${schemeName}" role "${role}" measures ${ratio.toFixed(2)} against ground, below its floor of ${floor}`,
@@ -121,9 +134,18 @@ export function buildThemePack(
   const measured = toPalette(scheme);
   const { palette: resolvedPalette } = repairFailingRoles(assignRolesByContrast(measured));
 
-  for (const role of TEXT_AND_MUTED_ROLES) {
+  for (const role of NON_GROUND_ROLES) {
     assertRoleClearsFloor(role, resolvedPalette[role].hex, resolvedPalette.ground.hex, scheme.name);
   }
+  // Selection's own second floor — TEXT_MIN_RATIO against body, not ground —
+  // is not asserted here the way every other floor is: repairSelection
+  // already reaches it whenever ground and body leave enough room (see its
+  // own doc comment), but roughly half of the vendored families do not, by
+  // the design of their own palette, and there is no colour that would
+  // satisfy both there. Asserting it unconditionally would fail the build on
+  // real, unfixable themes rather than on a bug. See
+  // theme-pack-library.test.ts for the coverage this gets instead: ground's
+  // floor checked on every pack, body's checked on the packs that can reach it.
 
   const roleHexes = roleHexTable(resolvedPalette);
 
@@ -136,7 +158,10 @@ export function buildThemePack(
       ...(attribution !== undefined ? { attribution } : {}),
     },
     payloads: {
-      "windows-terminal": scheme,
+      // Every slot but selectionBackground ships verbatim — see
+      // ThemePackPayloads's own doc comment for why that one is the
+      // exception.
+      "windows-terminal": { ...scheme, selectionBackground: resolvedPalette.selection.hex },
       "oh-my-posh": roleHexes,
       herdr: roleHexes,
     },
@@ -151,6 +176,7 @@ const RoleHexTableSchema = z.object({
   muted: hexColor,
   success: hexColor,
   error: hexColor,
+  selection: hexColor,
 });
 
 /**

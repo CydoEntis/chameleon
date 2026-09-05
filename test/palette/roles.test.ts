@@ -71,4 +71,16 @@ describe("assignRolesByContrast", () => {
     expect(assignment.accent.hex).toBe("#403f53");
     expect(assignment.body.hex).toBe("#403f53");
   });
+
+  // CHM-26: one-half-light's shipped selection was the bug report itself —
+  // #bfceff on #fafafa, measured at 1.49, invisible in practice. Assignment
+  // takes it straight from the scheme's own selectionBackground slot,
+  // unrepaired — proving it is measured like every other role rather than
+  // silently passed through at a passing ratio.
+  it("assigns selection from the scheme's own selectionBackground slot, measured rather than trusted", () => {
+    const assignment = assignRolesByContrast(paletteNamed("One Half Light"));
+    expect(assignment.selection.slot).toBe("selectionBackground");
+    expect(assignment.selection.hex).toBe("#bfceff");
+    expect(assignment.selection.contrastRatio).toBeCloseTo(1.49, 2);
+  });
 });

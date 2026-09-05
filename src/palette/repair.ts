@@ -2,6 +2,7 @@ import {
   MIN_REPAIRED_CHROMA,
   MUTED_MIN_RATIO,
   ROLES,
+  SELECTION_MIN_RATIO,
   TEXT_MIN_RATIO,
   WCAG_CONTRAST_OFFSET,
   type Role,
@@ -61,12 +62,19 @@ function poleWithMoreHeadroom(groundHex: string): boolean {
   return maxRatioGoingLighter >= maxRatioGoingDarker;
 }
 
-/** The relative luminance `targetRatio` against ground demands, clamped to the [0, 1] a luminance can actually take. */
-function targetLuminanceFor(groundHex: string, targetRatio: number, isLighterThanGround: boolean): number {
-  const groundLuminance = relativeLuminance(groundHex);
-  const rawTargetLuminance = isLighterThanGround
-    ? targetRatio * (groundLuminance + WCAG_CONTRAST_OFFSET) - WCAG_CONTRAST_OFFSET
-    : (groundLuminance + WCAG_CONTRAST_OFFSET) / targetRatio - WCAG_CONTRAST_OFFSET;
+/**
+ * The relative luminance `targetRatio` against a reference at
+ * `referenceLuminance` demands, clamped to the [0, 1] a luminance can
+ * actually take. Takes the reference's luminance directly, rather than its
+ * hex, so the same formula serves both a single-reference repair (ground,
+ * for every ordinary role) and a candidate luminance being checked against
+ * two references at once — see selectionLuminanceRange, which is the second
+ * real use.
+ */
+function targetLuminanceFor(referenceLuminance: number, targetRatio: number, isLighterThanReference: boolean): number {
+  const rawTargetLuminance = isLighterThanReference
+    ? targetRatio * (referenceLuminance + WCAG_CONTRAST_OFFSET) - WCAG_CONTRAST_OFFSET
+    : (referenceLuminance + WCAG_CONTRAST_OFFSET) / targetRatio - WCAG_CONTRAST_OFFSET;
   return Math.min(1, Math.max(0, rawTargetLuminance));
 }
 
@@ -104,7 +112,7 @@ function colourAtRatio(
   targetRatio: number,
   isLighterThanGround: boolean,
 ): ChromaRepair {
-  const targetLuminance = targetLuminanceFor(groundHex, targetRatio, isLighterThanGround);
+  const targetLuminance = targetLuminanceFor(relativeLuminance(groundHex), targetRatio, isLighterThanGround);
   const matchValue = matchValueForLuminance(hue, chroma, targetLuminance);
   return { hex: fromHueChromaMatch({ hue, chroma, matchValue }), chroma };
 }
@@ -312,6 +320,155 @@ function repairMuted(
   return repairCandidate(candidate, groundHex, idealTargetRatio, minAcceptableRatio, isLighterThanGround, takenHexes);
 }
 
+/** Which side of ground, and which side of body, a candidate selection luminance sits on — see selectionLuminanceRange. */
+interface SelectionDirection {
+  readonly isLighterThanGround: boolean;
+  readonly isLighterThanBody: boolean;
+}
+
+/** All four combinations of "lighter or darker than ground" and "lighter or darker than body" — see selectionLuminanceRange, which turns each into a feasible interval or nothing. */
+const SELECTION_DIRECTIONS: readonly SelectionDirection[] = [
+  { isLighterThanGround: true, isLighterThanBody: true },
+  { isLighterThanGround: true, isLighterThanBody: false },
+  { isLighterThanGround: false, isLighterThanBody: true },
+  { isLighterThanGround: false, isLighterThanBody: false },
+];
+
+/**
+ * The interval of relative luminance that clears both of selection's floors
+ * at once — SELECTION_MIN_RATIO against ground and TEXT_MIN_RATIO against
+ * body — while committing to `direction`'s side of each reference.
+ * `undefined` when that combination is self-contradictory (e.g. "darker
+ * than ground" and "lighter than body" when body is already darker than
+ * ground) or falls entirely outside [0, 1].
+ *
+ * Selection is the only role checked against two references, because it is
+ * read against two things at once: the ground behind it (is the highlight
+ * visible?) and the body drawn on top of it (does the selected text stay
+ * legible?). Every ordinary role's repair (repairTowardFloor, repairMuted)
+ * only ever has one reference — ground — so this is the one place that
+ * shape does not fit.
+ */
+function selectionLuminanceRange(
+  direction: SelectionDirection,
+  groundLuminance: number,
+  bodyLuminance: number,
+  minAcceptableGroundRatio: number,
+  minAcceptableBodyRatio: number,
+): { low: number; high: number } | undefined {
+  const groundBoundLuminance = targetLuminanceFor(groundLuminance, minAcceptableGroundRatio, direction.isLighterThanGround);
+  const bodyBoundLuminance = targetLuminanceFor(bodyLuminance, minAcceptableBodyRatio, direction.isLighterThanBody);
+
+  const lowerBounds = [
+    ...(direction.isLighterThanGround ? [groundBoundLuminance] : []),
+    ...(direction.isLighterThanBody ? [bodyBoundLuminance] : []),
+  ];
+  const upperBounds = [
+    ...(direction.isLighterThanGround ? [] : [groundBoundLuminance]),
+    ...(direction.isLighterThanBody ? [] : [bodyBoundLuminance]),
+  ];
+  const low = lowerBounds.length > 0 ? Math.max(...lowerBounds) : 0;
+  const high = upperBounds.length > 0 ? Math.min(...upperBounds) : 1;
+
+  return low <= high ? { low, high } : undefined;
+}
+
+/** The WCAG contrast ratio between two relative luminances directly — contrastRatio without the hex-parsing detour, for checking a candidate luminance before it has been turned into a colour at all. */
+function ratioBetweenLuminances(luminanceA: number, luminanceB: number): number {
+  const lighter = Math.max(luminanceA, luminanceB);
+  const darker = Math.min(luminanceA, luminanceB);
+  return (lighter + WCAG_CONTRAST_OFFSET) / (darker + WCAG_CONTRAST_OFFSET);
+}
+
+/**
+ * The luminance, among every direction that clears both of selection's
+ * floors, closest to the candidate's own — the smallest nudge that still
+ * satisfies both. `undefined` when no direction is feasible at all — not
+ * rare, see repairSelection's own doc comment for when and why, and for
+ * what happens instead.
+ *
+ * A direction's own bound can demand a luminance below 0 or above 1 — e.g.
+ * "darker than ground" when ground is already near-black — and
+ * targetLuminanceFor clamps that back into range rather than reporting it
+ * as unreachable. Clamping the candidate into a range built from clamped
+ * bounds can therefore land on a luminance that reads as "in range" while
+ * still failing the very floor that produced the bound (there is no room
+ * left to satisfy it at all). The explicit re-check below is what catches
+ * that rather than shipping a selection that still fails its own floor.
+ */
+function selectionTargetLuminance(candidateLuminance: number, groundLuminance: number, bodyLuminance: number): number | undefined {
+  const minAcceptableGroundRatio = SELECTION_MIN_RATIO * RATIO_CLEARANCE_MARGIN;
+  const minAcceptableBodyRatio = TEXT_MIN_RATIO * RATIO_CLEARANCE_MARGIN;
+
+  const reachableLuminances = SELECTION_DIRECTIONS.map((direction) =>
+    selectionLuminanceRange(direction, groundLuminance, bodyLuminance, minAcceptableGroundRatio, minAcceptableBodyRatio),
+  )
+    .filter((range): range is { low: number; high: number } => range !== undefined)
+    .map((range) => Math.min(Math.max(candidateLuminance, range.low), range.high))
+    .filter(
+      (luminance) =>
+        ratioBetweenLuminances(luminance, groundLuminance) >= minAcceptableGroundRatio &&
+        ratioBetweenLuminances(luminance, bodyLuminance) >= minAcceptableBodyRatio,
+    );
+
+  if (reachableLuminances.length === 0) return undefined;
+  return reachableLuminances.reduce((closest, luminance) =>
+    Math.abs(luminance - candidateLuminance) < Math.abs(closest - candidateLuminance) ? luminance : closest,
+  );
+}
+
+/**
+ * Repairs selection against both of its floors at once: SELECTION_MIN_RATIO
+ * against ground (the highlight must be visible) and TEXT_MIN_RATIO against
+ * body (the text drawn on top of it must stay legible) — see CHM-26. Holds
+ * the candidate's own hue and chroma where that already clears both floors,
+ * the same "hold chroma" rule every other role's repair follows (CHM-20);
+ * falls back to a computed grey, at the same target luminance, only when
+ * chroma gets in the way.
+ *
+ * The two floors are not always simultaneously reachable: they are
+ * multiplicative (a colour sitting between ground and body needs to be
+ * SELECTION_MIN_RATIO times as far from one and TEXT_MIN_RATIO times as far
+ * from the other, at once), so a theme whose own body sits less than
+ * roughly SELECTION_MIN_RATIO × TEXT_MIN_RATIO away from ground — and is not
+ * itself pinned near white or black, which would open a third option beyond
+ * body — has no luminance, of any hue or chroma, that clears both. This is
+ * not a corner case: about half of the vendored families hit it (Solarized
+ * Dark's body sits only 4.75 from ground, deliberately, as part of its own
+ * low-contrast design). When that happens, ground's floor wins — it is the
+ * one guarantee every other role also makes (CLAUDE.md's "never ship a
+ * colour that fails its contrast floor") — and selection falls back to an
+ * ordinary single-reference repair against ground alone, the same one
+ * accent/success/error get from repairTowardFloor.
+ */
+function repairSelection(candidate: RoleColor, groundHex: string, body: RepairedRoleColor, takenHexes: ReadonlySet<string>): RepairedRoleColor {
+  const isVisibleAgainstGround = contrastRatio(candidate.hex, groundHex) >= SELECTION_MIN_RATIO;
+  const doesBodyStayLegible = contrastRatio(candidate.hex, body.hex) >= TEXT_MIN_RATIO;
+  const isCollision = isTaken(candidate.hex, takenHexes);
+  if (isVisibleAgainstGround && doesBodyStayLegible && !isCollision) return finalize(candidate, false, false);
+
+  const groundLuminance = relativeLuminance(groundHex);
+  const bodyLuminance = relativeLuminance(body.hex);
+  const candidateLuminance = relativeLuminance(candidate.hex);
+  const targetLuminance = selectionTargetLuminance(candidateLuminance, groundLuminance, bodyLuminance);
+  if (targetLuminance === undefined) {
+    return repairTowardFloor(candidate, groundHex, SELECTION_MIN_RATIO, takenHexes);
+  }
+
+  const { hue } = toHsl(candidate.hex);
+  const ceilingChroma = chromaOf(candidate.hex);
+  const atCeilingChroma = fromHueChromaMatch({ hue, chroma: ceilingChroma, matchValue: matchValueForLuminance(hue, ceilingChroma, targetLuminance) });
+  const clearsBothAtCeilingChroma =
+    contrastRatio(atCeilingChroma, groundHex) >= SELECTION_MIN_RATIO && contrastRatio(atCeilingChroma, body.hex) >= TEXT_MIN_RATIO;
+
+  if (clearsBothAtCeilingChroma && !isTaken(atCeilingChroma, takenHexes)) {
+    return finalize({ hex: atCeilingChroma, slot: candidate.slot, contrastRatio: contrastRatio(atCeilingChroma, groundHex) }, true, false);
+  }
+
+  const grey = fromHueChromaMatch({ hue, chroma: 0, matchValue: matchValueForLuminance(hue, 0, targetLuminance) });
+  return finalize({ hex: grey, slot: candidate.slot, contrastRatio: contrastRatio(grey, groundHex) }, true, true);
+}
+
 /**
  * Repairs every assigned role that fails its floor, and every role that
  * collides with one resolved before it. This is the second half of the
@@ -319,14 +476,15 @@ function repairMuted(
  * safe to ship.
  *
  * Roles resolve in a fixed order — ground, body, accent, success, error,
- * muted — because later roles must avoid colliding with earlier ones, and
- * muted's own floor depends on body's final ratio.
+ * muted, selection — because later roles must avoid colliding with earlier
+ * ones, muted's own floor depends on body's final ratio, and selection's
+ * two floors depend on both ground and body's final colours.
  */
 export function repairFailingRoles(assignment: RoleAssignment): ContrastReport {
   const groundHex = assignment.ground.hex;
   const takenHexes = new Set<string>([groundHex.toLowerCase()]);
 
-  const repairTextRole = (role: Exclude<Role, "ground" | "muted">): RepairedRoleColor => {
+  const repairTextRole = (role: Exclude<Role, "ground" | "muted" | "selection">): RepairedRoleColor => {
     const repaired = repairTowardFloor(assignment[role], groundHex, TEXT_MIN_RATIO, takenHexes);
     takenHexes.add(repaired.hex.toLowerCase());
     return repaired;
@@ -338,8 +496,10 @@ export function repairFailingRoles(assignment: RoleAssignment): ContrastReport {
   const success = repairTextRole("success");
   const error = repairTextRole("error");
   const muted = repairMuted(assignment.muted, groundHex, body, takenHexes);
+  takenHexes.add(muted.hex.toLowerCase());
+  const selection = repairSelection(assignment.selection, groundHex, body, takenHexes);
 
-  const resolvedPalette: ResolvedPalette = Object.freeze({ ground, body, accent, muted, success, error });
+  const resolvedPalette: ResolvedPalette = Object.freeze({ ground, body, accent, muted, success, error, selection });
   const repairedRoles = ROLES.filter((role) => resolvedPalette[role].wasRepaired);
   const fallbackRoles = ROLES.filter((role) => resolvedPalette[role].isFallback);
 
@@ -365,5 +525,6 @@ export function resolveRoleHexes(scheme: Scheme): Record<Role, string> {
     muted: palette.muted.hex,
     success: palette.success.hex,
     error: palette.error.hex,
+    selection: palette.selection.hex,
   };
 }

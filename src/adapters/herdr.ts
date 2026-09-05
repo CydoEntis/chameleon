@@ -103,16 +103,18 @@ function herdrThemeNameFor(slug: string, appearance: Appearance): string {
 }
 
 /**
- * Chameleon's own six roles → the real [theme.custom] tokens Herdr's own
+ * Chameleon's own roles → the real [theme.custom] tokens Herdr's own
  * default config documents. Herdr does not recognise `ground`, `body`,
  * `muted`, `success` or `error` — those were invented, and Herdr silently
- * dropped all five (see CHM-21). Only `accent` was ever a real token.
+ * dropped all five (see CHM-21). `accent` was always a real token, and
+ * `selection_bg` joined it in CHM-26, once Chameleon gained a repaired
+ * selection role to give it.
  *
  * Ideally sourced from `herdr --default-config` rather than hand-maintained,
  * per the ticket, but that requires a live Herdr install — not something
  * this adapter, or its tests, can depend on. Herdr's own docs list these as
  * the tokens a config's [theme.custom] honours, alongside ones Chameleon has
- * no role for (active_row_bg, selection_bg, panel_bg, surface_dim).
+ * no role for (active_row_bg, panel_bg, surface_dim).
  */
 const ROLE_TO_HERDR_TOKEN: Readonly<Record<Role, string>> = {
   ground: "sidebar_bg",
@@ -121,6 +123,7 @@ const ROLE_TO_HERDR_TOKEN: Readonly<Record<Role, string>> = {
   muted: "subtext0",
   success: "green",
   error: "red",
+  selection: "selection_bg",
 };
 
 /**

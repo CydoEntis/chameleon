@@ -38,18 +38,20 @@
     "oh-my-posh": {
       "ground": "#f8f9fa",
       "body": "#5c6166",
-      "accent": "#8a58bb",
+      "accent": "#875eb0",
       "muted": "#686868",
-      "success": "#2e7d63",
-      "error": "#da1f21"
+      "success": "#0c805a",
+      "error": "#c34546",
+      "selection": "#035bd6"
     },
     "herdr": {
       "ground": "#f8f9fa",
       "body": "#5c6166",
-      "accent": "#8a58bb",
+      "accent": "#875eb0",
       "muted": "#686868",
-      "success": "#2e7d63",
-      "error": "#da1f21"
+      "success": "#0c805a",
+      "error": "#c34546",
+      "selection": "#035bd6"
     }
   }
 }

@@ -20,11 +20,11 @@ export const APPEARANCE_LUMINANCE_THRESHOLD = 0.5;
 export const WCAG_CONTRAST_OFFSET = 0.05;
 
 /**
- * Chameleon's six roles, resolved from a scheme's slots by measured
+ * Chameleon's seven roles, resolved from a scheme's slots by measured
  * contrast rather than by trusting a slot's name. See the three-word model
  * in CLAUDE.md: a "palette" is these roles, not the raw scheme slots.
  */
-export const ROLES = ["ground", "body", "accent", "muted", "success", "error"] as const;
+export const ROLES = ["ground", "body", "accent", "muted", "success", "error", "selection"] as const;
 
 export type Role = (typeof ROLES)[number];
 
@@ -47,6 +47,18 @@ export const TEXT_MIN_RATIO = 4.5;
  * as more prominent than the text it is meant to recede behind.
  */
 export const MUTED_MIN_RATIO = 3.0;
+
+/**
+ * Minimum contrast a selection background must clear against ground, so a
+ * selection highlight is visible at all — CHM-26 measured 19 of 26 bundled
+ * packs failing even this lower bar (one-half-light's shipped selection
+ * measured 1.49 against its own ground). Lower than TEXT_MIN_RATIO because
+ * this floor is about a highlight being *present*, not about reading fine
+ * glyphs — the text drawn on top of it has its own floor, TEXT_MIN_RATIO,
+ * checked separately against selection rather than against ground; see
+ * repairSelection in palette/repair.ts.
+ */
+export const SELECTION_MIN_RATIO = 2.0;
 
 /**
  * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must

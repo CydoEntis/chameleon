@@ -109,8 +109,8 @@ const OTHER_MAPPED_DARK_HERDR_THEME = "dracula";
 const UNMAPPED_DARK_SLUG = "monokai-dark";
 const UNMAPPED_LIGHT_SLUG = "github-light";
 
-/** Herdr's own [theme.custom] token names for Chameleon's six roles, in role order — see ROLE_TO_HERDR_TOKEN in adapters/herdr.ts. */
-const HERDR_TOKENS_IN_ROLE_ORDER = ["sidebar_bg", "text", "accent", "subtext0", "green", "red"];
+/** Herdr's own [theme.custom] token names for Chameleon's roles, in role order — see ROLE_TO_HERDR_TOKEN in adapters/herdr.ts. */
+const HERDR_TOKENS_IN_ROLE_ORDER = ["sidebar_bg", "text", "accent", "subtext0", "green", "red", "selection_bg"];
 
 /**
  * True when every line of `original`, in order, appears verbatim somewhere
@@ -403,6 +403,24 @@ describe("herdr adapter — theme name and token mapping", () => {
 
     const config = createHerdrAdapter(configPath).read();
     expect(config.theme.name).toBe("one-light");
+  });
+
+  // CHM-26: Herdr's own selection stayed whatever the base theme had —
+  // [theme.custom] never carried a selection_bg token at all, so applying a
+  // pack never touched it. This pins the fix: selection_bg carries the
+  // pack's own repaired selection role, and changes when a different pack
+  // is applied.
+  it("writes selection_bg from the repaired selection role, and it changes with the theme", () => {
+    createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+    const firstConfig = createHerdrAdapter(configPath).read();
+    const firstSelection = resolveRoleHexes(ZEROX96F_SCHEME).selection;
+    expect(firstConfig.theme.custom["selection_bg"]).toBe(firstSelection);
+
+    createHerdrAdapter(configPath).apply(AARDVARK_BLUE_SCHEME, OTHER_MAPPED_DARK_SLUG);
+    const secondConfig = createHerdrAdapter(configPath).read();
+    const secondSelection = resolveRoleHexes(AARDVARK_BLUE_SCHEME).selection;
+    expect(secondConfig.theme.custom["selection_bg"]).toBe(secondSelection);
+    expect(secondConfig.theme.custom["selection_bg"]).not.toBe(firstSelection);
   });
 
   it("never writes the invented tokens this ticket exists to fix", () => {

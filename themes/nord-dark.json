@@ -39,17 +39,19 @@
       "ground": "#2e3440",
       "body": "#d8dee9",
       "accent": "#88c0d0",
-      "muted": "#758097",
+      "muted": "#778195",
       "success": "#a3be8c",
-      "error": "#d18d94"
+      "error": "#e3858e",
+      "selection": "#eceff4"
     },
     "herdr": {
       "ground": "#2e3440",
       "body": "#d8dee9",
       "accent": "#88c0d0",
-      "muted": "#758097",
+      "muted": "#778195",
       "success": "#a3be8c",
-      "error": "#d18d94"
+      "error": "#e3858e",
+      "selection": "#eceff4"
     }
   }
 }

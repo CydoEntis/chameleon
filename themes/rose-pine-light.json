@@ -33,23 +33,25 @@
       "background": "#faf4ed",
       "foreground": "#575279",
       "cursorColor": "#575279",
-      "selectionBackground": "#dfdad9"
+      "selectionBackground": "#b0abaa"
     },
     "oh-my-posh": {
       "ground": "#faf4ed",
       "body": "#575279",
       "accent": "#286983",
-      "muted": "#8d889b",
-      "success": "#246077",
-      "error": "#c0413c"
+      "muted": "#8d889a",
+      "success": "#1e5f79",
+      "error": "#a95450",
+      "selection": "#b0abaa"
     },
     "herdr": {
       "ground": "#faf4ed",
       "body": "#575279",
       "accent": "#286983",
-      "muted": "#8d889b",
-      "success": "#246077",
-      "error": "#c0413c"
+      "muted": "#8d889a",
+      "success": "#1e5f79",
+      "error": "#a95450",
+      "selection": "#b0abaa"
     }
   }
 }

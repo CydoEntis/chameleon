@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { MIN_REPAIRED_CHROMA, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
-import { chromaOf, toHsl } from "../../src/palette/color.js";
+import { MIN_REPAIRED_CHROMA, MUTED_MIN_RATIO, ROLES, SELECTION_MIN_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { chromaOf, contrastRatio, toHsl } from "../../src/palette/color.js";
 import type { Palette } from "../../src/palette/palette.js";
 import { repairFailingRoles } from "../../src/palette/repair.js";
 import { assignRolesByContrast } from "../../src/palette/roles.js";
@@ -151,6 +151,39 @@ describe("repairFailingRoles", () => {
       expect(report.palette.muted.contrastRatio, `${palette.name}: muted below body`).toBeLessThan(
         report.palette.body.contrastRatio,
       );
+      // Selection's ground-visibility floor is the one guarantee every
+      // vendored scheme gets, same as every other role — see
+      // repairSelection's own doc comment for why its second floor, body
+      // legibility, cannot make the same unconditional promise.
+      expect(report.palette.selection.contrastRatio, `${palette.name}: selection vs ground`).toBeGreaterThanOrEqual(
+        SELECTION_MIN_RATIO,
+      );
     }
+  });
+
+  // CHM-26: one-half-light's shipped selection (#bfceff on #fafafa) was the
+  // bug report itself, measured at 1.49 — invisible in practice.
+  it("repairs one-half-light's selection to clear both floors: visible against ground, and keeps body legible on top of it", () => {
+    const assignment = assignRolesByContrast(paletteNamed("One Half Light"));
+    const report = repairFailingRoles(assignment);
+
+    expect(report.repairedRoles).toContain("selection");
+    expect(report.palette.selection.contrastRatio).toBeGreaterThanOrEqual(SELECTION_MIN_RATIO);
+    expect(contrastRatio(report.palette.body.hex, report.palette.selection.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+  });
+
+  // Solarized Dark's own body (#839496) sits only 4.75 from ground
+  // (#002b36) — its own deliberately low-contrast design, and below
+  // SELECTION_MIN_RATIO × TEXT_MIN_RATIO, the contrast a selection colour
+  // between the two would need to clear both floors at once (see
+  // repairSelection's own doc comment). No colour clears both here; ground's
+  // floor — the one guarantee every other role also makes — still holds.
+  it("still clears selection's ground floor for Solarized Dark, whose body sits too close to ground to also keep it legible", () => {
+    const assignment = assignRolesByContrast(paletteNamed("iTerm2 Solarized Dark"));
+    const report = repairFailingRoles(assignment);
+
+    expect(report.repairedRoles).toContain("selection");
+    expect(report.palette.selection.contrastRatio).toBeGreaterThanOrEqual(SELECTION_MIN_RATIO);
+    expect(contrastRatio(report.palette.body.hex, report.palette.selection.hex)).toBeLessThan(TEXT_MIN_RATIO);
   });
 });

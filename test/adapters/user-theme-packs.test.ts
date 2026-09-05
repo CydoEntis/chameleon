@@ -52,7 +52,13 @@ describe("loadUserThemePacks", () => {
     expect(result.packs).toHaveLength(1);
     expect(result.packs[0]?.manifest.name).toBe("My Dracula");
     expect(result.packs[0]?.manifest.slug).toBe("my-dracula-dark");
-    expect(result.packs[0]?.payloads["windows-terminal"]).toEqual(MY_DRACULA_SCHEME);
+    // Every slot but selectionBackground survives verbatim — a user pack
+    // gets the same CHM-26 treatment as a bundled one, so that one slot
+    // comes from the repaired role instead of the scheme's own raw value.
+    expect(result.packs[0]?.payloads["windows-terminal"]).toEqual({
+      ...MY_DRACULA_SCHEME,
+      selectionBackground: result.packs[0]?.payloads["oh-my-posh"].selection,
+    });
   });
 
   it("never derives a slug from name or family when one is declared, even if it disagrees with them", () => {

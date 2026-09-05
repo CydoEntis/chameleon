@@ -74,14 +74,17 @@ function strongestInCategory(measured: Palette, groundHex: string, category: Hue
 }
 
 /**
- * Assigns Chameleon's six roles from a measured scheme's slots, by
+ * Assigns Chameleon's seven roles from a measured scheme's slots, by
  * measured contrast against ground rather than by trusting a slot's name.
  *
  * Ground and body are structural — the scheme's background and foreground
  * are always what they claim to be. Muted follows the terminal convention
- * of `brightBlack` as the dim/secondary text slot. Accent, success and
- * error are drawn from whichever base ANSI slot actually measures as
- * cool-, green- or red-hued, then ranked by contrast within that hue.
+ * of `brightBlack` as the dim/secondary text slot, and selection follows the
+ * same structural pattern from `selectionBackground` — CHM-26: measured like
+ * every other role, never shipped on the strength of its own slot name.
+ * Accent, success and error are drawn from whichever base ANSI slot actually
+ * measures as cool-, green- or red-hued, then ranked by contrast within that
+ * hue.
  *
  * This is assignment only — the result can still fail its floor (see
  * repairFailingRoles in repair.ts, the next stage).
@@ -91,11 +94,12 @@ export function assignRolesByContrast(measured: Palette): RoleAssignment {
   const ground = toRoleColor(measured, "background", groundHex);
   const body = toRoleColor(measured, "foreground", groundHex);
   const muted = toRoleColor(measured, "brightBlack", groundHex);
+  const selection = toRoleColor(measured, "selectionBackground", groundHex);
   const accent = strongestInCategory(measured, groundHex, "cool");
   const success = strongestInCategory(measured, groundHex, "green");
   const error = strongestInCategory(measured, groundHex, "red");
 
-  const assignment: Record<Role, RoleColor> = { ground, body, muted, accent, success, error };
+  const assignment: Record<Role, RoleColor> = { ground, body, muted, accent, success, error, selection };
   for (const role of ROLES) Object.freeze(assignment[role]);
   return Object.freeze(assignment);
 }
