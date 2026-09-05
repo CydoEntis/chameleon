@@ -11,15 +11,16 @@
   "bin": { "chm": "dist/cli.js", "chameleon": "dist/cli.js" },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "themes"],
+  "files": ["dist", "themes", "prompts"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run lint:prompts && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:linux": "vitest run --config vitest.config.linux.ts",
     "test:darwin": "vitest run --config vitest.config.darwin.ts",
     "test:watch": "vitest",
-    "generate:themes": "tsc -p tsconfig.tools.json && node .theme-pack-build/tools/build-theme-packs.js"
+    "generate:themes": "tsc -p tsconfig.tools.json && node .theme-pack-build/tools/build-theme-packs.js",
+    "lint:prompts": "tsc -p tsconfig.tools.json && node .theme-pack-build/tools/lint-prompt-packs.js"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1",
