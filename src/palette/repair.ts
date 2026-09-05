@@ -1,6 +1,7 @@
 import {
   MIN_REPAIRED_CHROMA,
   MUTED_MIN_RATIO,
+  RATIO_CLEARANCE_MARGIN,
   ROLES,
   TEXT_MIN_RATIO,
   WCAG_CONTRAST_OFFSET,
@@ -29,9 +30,6 @@ export interface ContrastReport {
    */
   readonly fallbackRoles: readonly Role[];
 }
-
-/** Ratio a repair targets past its floor, so integer-RGB rounding on the repaired hex never lands it back under the floor. */
-const RATIO_CLEARANCE_MARGIN = 1.05;
 
 /** Fraction of body's ratio a repaired muted targets, so it reads as clearly secondary rather than barely so — proportional, not a fixed gap, so it still holds when body's ratio is large. */
 const MUTED_BELOW_BODY_FRACTION = 0.9;
@@ -74,9 +72,12 @@ function targetLuminanceFor(groundHex: string, targetRatio: number, isLighterTha
  * The matchValue, for a fixed hue and chroma, whose relative luminance is
  * closest to target. Luminance rises monotonically with matchValue over its
  * full valid domain [0, 1 - chroma] regardless of which pole is being aimed
- * at — see {@link HueChromaMatch} — so this is a plain bisection.
+ * at — see {@link HueChromaMatch} — so this is a plain bisection. Exported
+ * for palette/selection.ts, which needs the same hue/chroma-preserving
+ * luminance search to resolve the selection highlight and its rare body
+ * nudge — see resolveSelectionAndBody.
  */
-function matchValueForLuminance(hue: number, chroma: number, targetLuminance: number): number {
+export function matchValueForLuminance(hue: number, chroma: number, targetLuminance: number): number {
   let low = 0;
   let high = 1 - chroma;
   for (let iteration = 0; iteration < SEARCH_ITERATIONS; iteration += 1) {

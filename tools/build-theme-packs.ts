@@ -1,5 +1,6 @@
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { contrastRatio } from "../src/palette/color.js";
 import { buildThemePack, type PackAttribution, type ThemePack } from "../src/palette/theme-pack.js";
 import type { Appearance } from "../src/palette/palette.js";
 import { readVendoredScheme } from "./vendor-scheme-library.js";
@@ -127,6 +128,21 @@ function writeThemesDir(packs: readonly ThemePack[]): void {
 }
 
 /**
+ * One line per pack naming the selection trade-off resolveSelectionAndBody
+ * made for it — CHM-30's "report the achieved pair per pack so the
+ * trade-off is inspectable rather than hidden", printed at the one point a
+ * human actually looks at these 26 packs together. Read from herdr's own
+ * payload, the one CHM-30 wires selection into, rather than recomputed —
+ * so this can never report something other than what actually shipped.
+ */
+function describeSelectionTradeoff(pack: ThemePack): string {
+  const { ground, body, selection_bg: selectionHex } = pack.payloads.herdr;
+  const selectionVsGround = contrastRatio(selectionHex, ground).toFixed(2);
+  const bodyOnSelection = contrastRatio(body, selectionHex).toFixed(2);
+  return `  ${pack.manifest.slug.padEnd(24)} selection-vs-ground ${selectionVsGround}  body-on-selection ${bodyOnSelection}`;
+}
+
+/**
  * Generates the twelve curated theme families (light + dark) plus Dracula
  * and Monokai (dark only) under themes/ — see CHM-6. Run with
  * `npm run generate:themes`; the output is committed, not built on every
@@ -147,6 +163,7 @@ function main(): void {
 
   writeThemesDir(packs);
   process.stdout.write(`wrote ${packs.length} theme packs to ${path.relative(process.cwd(), THEMES_DIR)}\n`);
+  process.stdout.write(`${packs.map(describeSelectionTradeoff).join("\n")}\n`);
 }
 
 main();
