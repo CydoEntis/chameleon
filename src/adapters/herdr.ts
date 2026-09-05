@@ -6,6 +6,7 @@ import { ROLES, type Role } from "../constants.js";
 import { mix, rgbDistance } from "../palette/color.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import { resolveSelectionAndBody } from "../palette/selection.js";
+import { repairSurface } from "../palette/surfaces.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
 import { herdrConfigPath } from "./platform.js";
@@ -279,10 +280,9 @@ function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, stri
 
 /**
  * Fractions of the way from ground to body (see mix in palette/color.ts)
- * that make up Herdr's neutral surface scale — its token names borrow
- * Catppuccin's, running from nearest ground to nearest body. Evenly spaced
- * rather than tuned per theme: these tokens never carry text, so the scale
- * only needs to read as a ramp, not clear any particular contrast ratio.
+ * that make up Herdr's neutral surface scale before repair — its token
+ * names borrow Catppuccin's, running from nearest ground to nearest body,
+ * evenly spaced so the scale reads as a ramp.
  */
 const SURFACE_DIM_FRACTION = 1 / 6;
 const SURFACE_0_FRACTION = 2 / 6;
@@ -290,15 +290,51 @@ const SURFACE_1_FRACTION = 3 / 6;
 const OVERLAY_0_FRACTION = 4 / 6;
 const OVERLAY_1_FRACTION = 5 / 6;
 
-/** Herdr's neutral surface scale, walking from ground toward body — see SURFACE_DIM_FRACTION and friends. */
-function surfaceScale(groundHex: string, bodyHex: string): Record<string, string> {
-  return {
-    surface_dim: mix(groundHex, bodyHex, SURFACE_DIM_FRACTION),
-    surface0: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
-    surface1: mix(groundHex, bodyHex, SURFACE_1_FRACTION),
-    overlay0: mix(groundHex, bodyHex, OVERLAY_0_FRACTION),
-    overlay1: mix(groundHex, bodyHex, OVERLAY_1_FRACTION),
-  };
+/**
+ * Every one of Herdr's surface-ramp tokens, keyed to its own ideal fraction
+ * — the single list this adapter enumerates from, rather than hand-writing
+ * each mix() call, so a token added here is a token repairSurface (CHM-48)
+ * automatically checks against text and subtext0. active_row_bg shares
+ * surface0's own fraction: an active row reads as a slightly raised
+ * surface, the same tone as surface0, not a colour of its own — and it is
+ * this token, not surface0 itself, that CHM-48 was filed against: Herdr's
+ * selected sidebar row paints subtext0 directly on top of it.
+ */
+const SURFACE_SCALE_IDEAL_FRACTIONS: Readonly<Record<string, number>> = {
+  active_row_bg: SURFACE_0_FRACTION,
+  surface_dim: SURFACE_DIM_FRACTION,
+  surface0: SURFACE_0_FRACTION,
+  surface1: SURFACE_1_FRACTION,
+  overlay0: OVERLAY_0_FRACTION,
+  overlay1: OVERLAY_1_FRACTION,
+};
+
+/**
+ * Every background token this adapter derives from ground and body
+ * directly, rather than from a resolved role or `resolveSelectionAndBody` —
+ * the surfaces CHM-48 exists to check text and subtext0 against. Exported so
+ * a test enumerates this exact set instead of a hand-picked subset of it
+ * (see herdr.test.ts's own "surface tokens vs text and subtext0" suite):
+ * before CHM-48, nothing measured any of them against the text Herdr
+ * actually paints on top, and a check that quietly covered only some of
+ * them would be the same bug with different names.
+ */
+export const HERDR_DERIVED_SURFACE_TOKENS: readonly string[] = ["panel_bg", ...Object.keys(SURFACE_SCALE_IDEAL_FRACTIONS)];
+
+/**
+ * Herdr's neutral surface scale, walking from ground toward body — see
+ * SURFACE_SCALE_IDEAL_FRACTIONS — repaired against text and subtext0 rather
+ * than mixed and shipped unchecked (CHM-48): a surface this adapter mixes
+ * for itself is mid-tone by construction, exactly the hardest background
+ * either can sit on, and nothing before this ever measured it.
+ */
+function surfaceScale(groundHex: string, bodyHex: string, mutedHex: string): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(SURFACE_SCALE_IDEAL_FRACTIONS).map(([token, idealFraction]) => [
+      token,
+      repairSurface(groundHex, bodyHex, mutedHex, idealFraction).hex,
+    ]),
+  );
 }
 
 /**
@@ -314,14 +350,11 @@ function surfaceScale(groundHex: string, bodyHex: string): Record<string, string
  * and passing that straight through would ship the same bug into Herdr
  * that CHM-30 exists to fix.
  */
-function structuralTokenValues(groundHex: string, bodyHex: string, selectionHex: string): Record<string, string> {
+function structuralTokenValues(groundHex: string, bodyHex: string, mutedHex: string, selectionHex: string): Record<string, string> {
   return {
     panel_bg: groundHex,
-    // An active row reads as a slightly raised surface — the same tone as
-    // surface0, not a colour of its own.
-    active_row_bg: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
     selection_bg: selectionHex,
-    ...surfaceScale(groundHex, bodyHex),
+    ...surfaceScale(groundHex, bodyHex, mutedHex),
   };
 }
 
@@ -630,7 +663,7 @@ function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenV
 function customTokenValues(scheme: Scheme, colorTable: Readonly<Record<Role, string>>, selectionHex: string): Record<string, string> {
   const tokenValues = {
     ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
-    ...structuralTokenValues(colorTable.ground, colorTable.body, selectionHex),
+    ...structuralTokenValues(colorTable.ground, colorTable.body, colorTable.muted, selectionHex),
     ...extraAccentTokenValues(scheme),
   };
   assertOnlyAcceptedHerdrTokens(tokenValues);
