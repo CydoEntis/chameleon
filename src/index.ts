@@ -266,12 +266,19 @@ function adapterForTarget(target: Target): DetectableTargetAdapter {
  * `slug` — unlike the raw scheme, Herdr needs pack identity to pick a real
  * built-in theme name, see adapters/herdr.ts's herdrThemeNameFor — so this,
  * not a shared single-argument interface, is what lets that adapter's apply
- * differ in shape from windows-terminal's and oh-my-posh's.
+ * differ in shape from windows-terminal's and oh-my-posh's. Only Oh My
+ * Posh's own `apply` has anything worth reporting back — see CHM-39's
+ * profile-creation notice — so it is the only one whose return value this
+ * passes through.
  */
-function applyToTarget(target: Target, scheme: Scheme, slug: string): void {
-  if (target === "windows-terminal") return createWindowsTerminalAdapter().apply(scheme);
+function applyToTarget(target: Target, scheme: Scheme, slug: string): string | undefined {
   if (target === "oh-my-posh") return createDefaultOhMyPoshAdapter().apply(scheme);
-  return createHerdrAdapter().apply(scheme, slug);
+  if (target === "windows-terminal") {
+    createWindowsTerminalAdapter().apply(scheme);
+    return undefined;
+  }
+  createHerdrAdapter().apply(scheme, slug);
+  return undefined;
 }
 
 /** `target`'s own `undo*` function — undoWindowsTerminal, undoOhMyPosh or undoHerdr — restoring it from the backup its adapter's most recent `apply` wrote. */
@@ -286,14 +293,17 @@ function undoTarget(target: Target): void {
  * completes and skipping the target outright — never a failure — when it is
  * not installed. Anything `action` throws is caught and reported by message,
  * so one target's problem never stops the targets after it from being tried.
+ * `action`'s own return value, when it gives one back, is carried as the
+ * result's `detail` even on success — see applyToTarget's Oh My Posh
+ * profile-creation notice (CHM-39).
  */
-function runOnInstalledTarget(target: Target, succeededStatus: PackActionStatus, action: () => void): PackActionResult {
+function runOnInstalledTarget(target: Target, succeededStatus: PackActionStatus, action: () => string | undefined): PackActionResult {
   if (!detectSafely(() => adapterForTarget(target).detect())) {
     return { target, status: "skipped", detail: "not installed" };
   }
   try {
-    action();
-    return { target, status: succeededStatus };
+    const detail = action();
+    return { target, status: succeededStatus, detail };
   } catch (error) {
     return { target, status: "failed", detail: error instanceof Error ? error.message : String(error) };
   }
@@ -360,7 +370,12 @@ export function applyThemePack(slug: string, userThemeDir?: string, statePath?: 
 
 /** Restores every detected target from the backup its own adapter's most recent `apply` wrote — the counterpart to applyThemePack. */
 export function undoAppliedPack(): readonly PackActionResult[] {
-  return TARGETS.map((target) => runOnInstalledTarget(target, "restored", () => undoTarget(target)));
+  return TARGETS.map((target) =>
+    runOnInstalledTarget(target, "restored", () => {
+      undoTarget(target);
+      return undefined;
+    }),
+  );
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { SpawnSyncReturns } from "node:child_process";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1043,6 +1043,49 @@ describe("shell-specific live-reload hooks (CHM-25)", () => {
   });
 });
 
+// CHM-39: a hook written to a profile file nothing loads is silent breakage
+// — the bug this ticket exists to fix was Chameleon creating exactly that
+// kind of orphan file without ever saying so. `apply`'s own return value is
+// the one place left to say it: undefined when the profile already existed,
+// a one-sentence notice naming the path when `apply` had to create it.
+describe("profile-creation notice (CHM-39)", () => {
+  let stateDir: string;
+  let configPath: string;
+  let pointerPath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-profile-notice-"));
+    configPath = path.join(stateDir, "theme.omp.json");
+    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+    writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("names the path and the reason when the profile did not exist before apply", () => {
+    // Nested and never created ahead of time — apply must create every
+    // missing parent directory itself, the same as backupBeforeEdit already
+    // does for the config.
+    const profilePath = path.join(stateDir, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
+
+    const notice = createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    expect(notice).toContain(profilePath);
+    expect(existsSync(profilePath)).toBe(true);
+  });
+
+  it("returns undefined — nothing new to say — when the profile already existed", () => {
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(profilePath, "", "utf8");
+
+    const notice = createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    expect(notice).toBeUndefined();
+  });
+});
+
 // CHM-36: current Oh My Posh (31.x) sets POSH_CONFIG, not POSH_THEME, and a
 // normal shell that simply has not run `oh-my-posh init` yet this session —
 // the state every freshly opened, genuinely configured shell starts in —
@@ -1164,5 +1207,48 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
 
     const adapter = createOhMyPoshAdapter(undefined, profilePath, pointerPath, "bash");
     expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_CONFIG/);
+  });
+
+  // CHM-39: Chameleon's own Set-PoshContext hook contains the literal text
+  // "oh-my-posh init pwsh --config $chameleonPointer.configPath" — which,
+  // before this fix, matched this exact fallback's own pattern and got read
+  // back as if it were the user's config path, producing
+  // `ENOENT ... \$chameleonPointer.configPath` on every later run that had
+  // to fall back to the profile.
+  it("never reads its own reload hook's init line back as the user's config", () => {
+    const firstAppliedConfigPath = path.join(stateDir, "first-applied.omp.json");
+    writeTargetConfig(firstAppliedConfigPath);
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(profilePath, "", "utf8");
+
+    // configPath is given directly here, so the profile fallback is never
+    // consulted — this step only exists to write Chameleon's own hook block
+    // into the profile, the same as a real `ch apply` would.
+    createOhMyPoshAdapter(firstAppliedConfigPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    expect(readFileSync(profilePath, "utf8")).toContain("$chameleonPointer.configPath");
+
+    // A later run with neither POSH_CONFIG nor POSH_THEME set (a fresh
+    // shell) must fall back to parsing the same profile, and must find
+    // nothing — not the literal string "$chameleonPointer.configPath".
+    const laterAdapter = createOhMyPoshAdapter(undefined, profilePath, pointerPath);
+    expect(() => laterAdapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_CONFIG/);
+  });
+
+  it("still resolves a real user init line that sits outside Chameleon's own hook block", () => {
+    const realConfigPath = path.join(stateDir, "user-theme.omp.json");
+    writeTargetConfig(realConfigPath);
+    const firstAppliedConfigPath = path.join(stateDir, "first-applied.omp.json");
+    writeTargetConfig(firstAppliedConfigPath);
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${realConfigPath}' | Invoke-Expression\n`, "utf8");
+
+    // Appends Chameleon's own hook block underneath the user's real line —
+    // the profile now carries two lines that could plausibly match.
+    createOhMyPoshAdapter(firstAppliedConfigPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    const laterAdapter = createOhMyPoshAdapter(undefined, profilePath, pointerPath);
+    laterAdapter.apply(AARDVARK_BLUE_SCHEME);
+
+    expect(appliedAccent(realConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
   });
 });
