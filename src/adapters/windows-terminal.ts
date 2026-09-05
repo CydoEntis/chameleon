@@ -89,7 +89,7 @@ export interface WindowsTerminalAdapter {
   detect(): boolean;
   read(): WindowsTerminalSettings;
   apply(scheme: Scheme): void;
-  reload(): void;
+  reload(): string | undefined;
 }
 
 /**
@@ -295,10 +295,13 @@ function applyWindowsTerminalScheme(settingsPath: string, scheme: Scheme): void 
 /**
  * Windows Terminal watches its own settings.json and reloads live the
  * moment it changes, so there is nothing left for Chameleon to trigger —
- * this exists only because the adapter interface requires it.
+ * this exists only because the adapter interface requires it. Returns
+ * undefined, never a detail: unlike Herdr (CHM-45), there is no "nothing
+ * running to tell" case here worth surfacing.
  */
-function reloadWindowsTerminal(): void {
+function reloadWindowsTerminal(): string | undefined {
   // Intentional no-op — see the doc comment above.
+  return undefined;
 }
 
 /**

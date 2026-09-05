@@ -347,14 +347,15 @@ function runEdit(argv: string[]): number {
 
 /**
  * One line of `chm <theme>`/`chm undo`'s per-target report — plain text, no
- * Nerd Font glyph. An "applied" result can still carry a `detail` — see
- * CHM-39's profile-creation notice — which is shown rather than dropped,
- * since it is exactly the "says which path it would create and why" this
- * ticket asks for.
+ * Nerd Font glyph. An "applied" or "restored" result can still carry a
+ * `detail` — CHM-39's profile-creation notice, or CHM-45's "Herdr is not
+ * running, nothing to reload" — which is shown rather than dropped, since
+ * both are exactly the kind of thing worth telling the user without
+ * failing the command.
  */
 function formatPackActionLine(result: PackActionResult): string {
   if (result.status === "applied") return result.detail ? `${result.target}: applied — ${result.detail}` : `${result.target}: applied`;
-  if (result.status === "restored") return `${result.target}: restored`;
+  if (result.status === "restored") return result.detail ? `${result.target}: restored — ${result.detail}` : `${result.target}: restored`;
   if (result.status === "skipped") return `${result.target}: skipped (${result.detail})`;
   return `${result.target}: failed — ${result.detail}`;
 }
