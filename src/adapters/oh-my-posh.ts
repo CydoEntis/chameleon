@@ -3,8 +3,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import path from "node:path";
 import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
-import { isKnownRole, type Role } from "../constants.js";
+import { isKnownRole, ROLES, type Role } from "../constants.js";
 import { resolveRoleHexes } from "../palette/repair.js";
+import { nearestRoleFor } from "../palette/role-mapping.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
   buildPropertyBlockContent,
@@ -162,10 +163,59 @@ function dedupeRootProperty(configPath: string, text: string, key: string): { de
  * segment already resolves its colour through a `p:` reference, so a new
  * palette table alone is enough to repaint it.
  */
-function upsertPaletteTable(configPath: string, text: string, paletteTable: Record<Role, string>): string {
+function upsertPaletteTable(configPath: string, text: string, paletteTable: Record<string, string>): string {
   const eol = detectLineEnding(text);
   const { dedupedText, container } = dedupeRootProperty(configPath, text, "palette");
   return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("palette", paletteTable, eol), eol, "palette");
+}
+
+/**
+ * Recolours every key the config's existing palette already carries to the
+ * new theme, and adds whichever of Chameleon's own six roles it does not
+ * carry yet — never removing a key. See CHM-31: a real prompt defines its
+ * own semantic keys and its segments reference those keys by name, not by
+ * Chameleon's role names, so replacing the table with just the six roles
+ * deleted every key the prompt actually used and left it colourless.
+ *
+ * A key that is already one of Chameleon's own roles (from a layout `ch
+ * edit` built, or a previous apply) is recoloured by that same role, never
+ * reclassified by its current colour — its name already says exactly what
+ * it is.
+ */
+function recoloredPaletteTable(existingPalette: Record<string, string> | undefined, resolvedRoleHexes: Record<Role, string>): Record<string, string> {
+  const recoloredExisting = Object.fromEntries(
+    Object.entries(existingPalette ?? {}).map(([key, hex]) => [
+      key,
+      resolvedRoleHexes[isKnownRole(key) ? key : nearestRoleFor(key, hex)],
+    ]),
+  );
+  const missingRoles = ROLES.filter((role) => !(role in recoloredExisting));
+  const additions = Object.fromEntries(missingRoles.map((role) => [role, resolvedRoleHexes[role]]));
+  return { ...recoloredExisting, ...additions };
+}
+
+/** Every distinct role name a `p:role` reference names, anywhere in `configText` — segments, transient_prompt, secondary_prompt, and any template string a theme author wrote one into. A plain text scan, not a JSON walk, because a reference can sit inside a Go template string (see chips.omp.json's background_templates) that a JSON parser sees only as opaque text. */
+function palettesReferencedIn(configText: string): ReadonlySet<string> {
+  const referencePattern = new RegExp(`${PALETTE_REF_PREFIX}([A-Za-z0-9_-]+)`, "g");
+  const referencedRoles = new Set<string>();
+  for (const match of configText.matchAll(referencePattern)) {
+    const referencedRole = match[1];
+    if (referencedRole !== undefined) referencedRoles.add(referencedRole);
+  }
+  return referencedRoles;
+}
+
+/**
+ * Throws, naming every offending key, when `configText` references a
+ * palette key `paletteTable` does not define. This is the assertion CHM-31
+ * asks for: an undefined `p:` reference is exactly the failure mode that
+ * left a real prompt colourless, and it must never reach disk silently.
+ */
+function assertNoDanglingPaletteReferences(configPath: string, configText: string, paletteTable: Record<string, string>): void {
+  const undefinedReferences = [...palettesReferencedIn(configText)].filter((referencedRole) => !(referencedRole in paletteTable));
+  if (undefinedReferences.length > 0) {
+    throw new Error(`${configPath} would reference undefined palette key(s): ${undefinedReferences.join(", ")}`);
+  }
 }
 
 /**
@@ -294,7 +344,10 @@ function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string
 
   copyFileSync(configPath, backupPathFor(configPath));
   const originalText = readFileSync(configPath, "utf8");
-  const updatedConfigText = upsertPaletteTable(configPath, originalText, resolveRoleHexes(scheme));
+  const existingPalette = readOhMyPoshConfig(configPath).palette;
+  const paletteTable = recoloredPaletteTable(existingPalette, resolveRoleHexes(scheme));
+  const updatedConfigText = upsertPaletteTable(configPath, originalText, paletteTable);
+  assertNoDanglingPaletteReferences(configPath, updatedConfigText, paletteTable);
   writeFileSync(configPath, updatedConfigText, "utf8");
 
   upsertSetPoshContext(profilePath, pointerPath);
