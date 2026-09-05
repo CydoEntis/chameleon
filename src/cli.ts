@@ -53,21 +53,14 @@ export function formatThemeLine(loaded: LoadedThemePack): string {
 }
 
 /**
- * Lists every pack `chm` can apply right now: the bundled library plus
- * anything dropped into the user's own theme directory, and a pack that
- * overrides a bundled one shown only once. A malformed user pack is
- * reported by name on stderr and does not stop the rest of the list from
- * printing.
+ * Prints one line per pack, in `chm themes`' own order: the plain,
+ * scriptable form that `--list` forces and that a non-interactive terminal
+ * or a pipe falls back to automatically.
  */
-function runThemes(): number {
-  const { packs, warnings } = loadAllThemePacks();
-  for (const warning of warnings) {
-    process.stderr.write(`${warning}\n`);
-  }
+function printThemeList(packs: readonly LoadedThemePack[]): void {
   for (const loaded of packs) {
     process.stdout.write(`${formatThemeLine(loaded)}\n`);
   }
-  return 0;
 }
 
 /**
@@ -669,21 +662,34 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
 }
 
 /**
- * `chm pick` — picks a pack with the interactive picker, cursor starting on
- * whichever pack is currently applied. When stdin is not a TTY there is
- * nobody to drive a picker, so this prints the same list `chm themes` would
- * and exits, rather than blocking on input that would never arrive.
+ * Whether `chm themes` should print the plain list rather than open the
+ * picker: an explicit `--list`, or either stream not being a real TTY — a
+ * pipe on stdout, or no keyboard behind stdin. See CHM-44's "chm themes
+ * --list, and the same output automatically when stdout is not a TTY, so
+ * piping still works."
  */
-async function runPick(): Promise<number> {
+export function wantsPlainThemeList(args: readonly string[], isStdinTTY: boolean, isStdoutTTY: boolean): boolean {
+  return args.includes("--list") || !isStdinTTY || !isStdoutTTY;
+}
+
+/**
+ * `chm themes` (aliased as `chm pick`) — opens the interactive picker, cursor
+ * starting on whichever pack is currently applied, so the live preview that
+ * makes this tool worth having is what the obvious command does (CHM-44:
+ * CHM-42 had put it behind the less-obvious `chm pick` instead). Falls back
+ * to the plain list whenever `wantsPlainThemeList` says so — reading arrow
+ * keys needs a real stdin, and repainting frames needs a real stdout, so a
+ * pipe on either end must print the scriptable list rather than block on
+ * input that will never arrive or spray escape codes into it.
+ */
+async function runThemes(args: readonly string[]): Promise<number> {
   const { packs, warnings } = loadAllThemePacks();
   for (const warning of warnings) {
     process.stderr.write(`${warning}\n`);
   }
 
-  if (!process.stdin.isTTY) {
-    for (const loaded of packs) {
-      process.stdout.write(`${formatThemeLine(loaded)}\n`);
-    }
+  if (wantsPlainThemeList(args, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY))) {
+    printThemeList(packs);
     return 0;
   }
 
@@ -820,8 +826,9 @@ function runApplyByQuery(rawTokens: readonly string[]): number {
 
 export const USAGE = `usage: chm <command> [args]
 
-chm themes             list every theme, with swatches
-chm pick               pick a theme interactively
+chm themes             browse and pick a theme interactively, with live preview
+chm themes --list      list every theme, with swatches, instead of picking
+chm pick               alias for \`chm themes\`
 chm <theme>            apply a theme, by slug or by name
 chm dark / chm light   flip mode, same family
 chm next / chm prev    cycle either way
@@ -833,7 +840,7 @@ chm edit ...           edit the Oh My Posh prompt layout
 run \`chm themes\` to browse what you can apply
 `;
 
-/** `chm` with no argument — prints usage and exits non-zero, applying nothing. CHM-42 makes the subcommand required; the interactive picker moved to the explicit `chm pick`. */
+/** `chm` with no argument — prints usage and exits non-zero, applying nothing. CHM-42 makes the subcommand required; CHM-44 put the interactive picker back on `chm themes`, the one the usage text tells people to run first. */
 function runUsage(): number {
   process.stderr.write(USAGE);
   return 1;
@@ -853,8 +860,7 @@ async function main(argv: string[]): Promise<number> {
 
   const [command, ...rest] = argv;
   if (command === undefined) return runUsage();
-  if (command === "themes") return runThemes();
-  if (command === "pick") return runPick();
+  if (command === "themes" || command === "pick") return runThemes(rest);
   if (command === "doctor") return runDoctor();
   if (command === "edit") return runEdit(rest);
   if (command === "current") return runCurrent(rest);
