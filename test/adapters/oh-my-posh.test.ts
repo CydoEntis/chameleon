@@ -11,6 +11,7 @@ import {
   buildLayoutSegment,
   createDefaultOhMyPoshAdapter,
   createOhMyPoshAdapter,
+  ensureOhMyPoshOwnedConfigSeeded,
   isSegmentType,
   layoutBlocksOnSide,
   moveSegmentBetweenBlocks,
@@ -289,13 +290,11 @@ describe.each([
   let stateDir: string;
   let configPath: string;
   let profilePath: string;
-  let pointerPath: string;
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-"));
     configPath = path.join(stateDir, "theme.omp.json");
     profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     writeFileSync(configPath, configFixture, "utf8");
     writeFileSync(profilePath, profileFixture, "utf8");
   });
@@ -310,21 +309,21 @@ describe.each([
     // as "not found" even with Oh My Posh fully installed and configured
     // elsewhere. Detection must succeed here regardless of configPath.
     vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ status: 0, stdout: "v3.100.0" }));
-    expect(createOhMyPoshAdapter(undefined, profilePath, pointerPath).detect()).toBe(true);
+    expect(createOhMyPoshAdapter(configPath, profilePath).detect()).toBe(true);
 
     vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ error: new Error("ENOENT"), status: null }));
-    expect(createOhMyPoshAdapter(configPath, profilePath, pointerPath).detect()).toBe(false);
+    expect(createOhMyPoshAdapter(configPath, profilePath).detect()).toBe(false);
   });
 
   it("reads a hostile config — comments and trailing commas included", () => {
-    const config = createOhMyPoshAdapter(configPath, profilePath, pointerPath).read();
+    const config = createOhMyPoshAdapter(configPath, profilePath).read();
     expect(config.palette?.["accent"]).toBe("#89b4fa");
     expect(Array.isArray(config.blocks)).toBe(true);
     expect(config["final_space"]).toBe(true);
   });
 
   it("round-trips every config line byte-identical outside the palette block, its own line endings included", () => {
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(everyOriginalLineSurvivesInOrder(configLinesUnrelatedToChameleonEdits(configFixture, eol), resultText)).toBe(true);
@@ -332,7 +331,7 @@ describe.each([
   });
 
   it("leaves the segment list byte-identical when swapping themes", () => {
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
     const originalBlocks = (parseWritten(configFixture) as { blocks: unknown }).blocks;
 
     adapter.apply(ZEROX96F_SCHEME);
@@ -343,7 +342,7 @@ describe.each([
   });
 
   it("leaves exactly one palette key, with every Chameleon role resolved to a hex colour", () => {
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(countOccurrences(resultText, '"palette"')).toBe(1);
@@ -354,7 +353,7 @@ describe.each([
   });
 
   it("preserves unrelated comments and settings untouched by any edit", () => {
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(configPath, "utf8");
     expect(resultText).toContain("// Oh My Posh config");
@@ -366,7 +365,7 @@ describe.each([
   });
 
   it("is idempotent — applying the same theme twice produces the same config", () => {
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
 
     adapter.apply(ZEROX96F_SCHEME);
     const afterFirstApply = readFileSync(configPath, "utf8");
@@ -378,7 +377,7 @@ describe.each([
   });
 
   it("writes a backup of the config before every apply, and undo restores it exactly", () => {
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
     expect(readFileSync(configPath, "utf8")).not.toBe(configFixture);
     expect(readFileSync(`${configPath}.chameleon-backup`, "utf8")).toBe(configFixture);
 
@@ -386,29 +385,32 @@ describe.each([
     expect(readFileSync(configPath, "utf8")).toBe(configFixture);
   });
 
-  it("reloads without touching the config or profile — the Set-PoshContext hook is what repaints, not this process", () => {
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).reload();
+  it("reloads without touching the config or profile — Oh My Posh's own prompt command re-reads the fixed config path on every render, not this process", () => {
+    createOhMyPoshAdapter(configPath, profilePath).reload();
     expect(readFileSync(configPath, "utf8")).toBe(configFixture);
     expect(readFileSync(profilePath, "utf8")).toBe(profileFixture);
   });
 
-  describe("the Set-PoshContext hook", () => {
-    it("chains the user's own Set-PoshContext instead of clobbering it", () => {
-      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+  describe("the profile init line (CHM-59)", () => {
+    it("writes the one init line naming configPath, never a reload hook", () => {
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
       const resultText = readFileSync(profilePath, "utf8");
-      // The user's own function is never edited in place — it is captured
-      // at runtime via ${function:Set-PoshContext} before Chameleon's own
-      // block redefines the name — so every original line, including the
-      // user's Set-PoshContext body, survives verbatim.
+      // The user's own profile content is never edited in place — Chameleon's
+      // own block is appended, so every original line survives verbatim.
       expect(everyOriginalLineSurvivesInOrder(profileFixture, resultText)).toBe(true);
-      expect(resultText).toContain("$ChameleonPreviousSetPoshContext");
-      expect(resultText).toContain("& $ChameleonPreviousSetPoshContext");
+      expect(resultText).toContain("oh-my-posh init pwsh --config");
+      expect(resultText).toContain(configPath);
+      // There is nothing left to re-run mid-session — the old design's own
+      // reload hook is gone along with the pointer it needed. The user's own,
+      // unrelated Set-PoshContext function (see the fixture) still survives —
+      // this only asserts Chameleon never wrote a hook redefining it.
+      expect(resultText).not.toContain("chameleonPointer");
       expect(usesOnlyLineEnding(resultText, eol)).toBe(true);
     });
 
     it("is marker-scoped, backed up, and undoable", () => {
-      const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+      const adapter = createOhMyPoshAdapter(configPath, profilePath);
       adapter.apply(ZEROX96F_SCHEME);
 
       const resultText = readFileSync(profilePath, "utf8");
@@ -420,8 +422,8 @@ describe.each([
       expect(readFileSync(profilePath, "utf8")).toBe(profileFixture);
     });
 
-    it("upserts in place on a second apply — one hook, never accumulating", () => {
-      const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    it("upserts in place on a second apply — one line, never accumulating", () => {
+      const adapter = createOhMyPoshAdapter(configPath, profilePath);
       adapter.apply(ZEROX96F_SCHEME);
       adapter.apply(AARDVARK_BLUE_SCHEME);
 
@@ -429,31 +431,30 @@ describe.each([
       expect(countOccurrences(resultText, "# ch:begin")).toBe(1);
       expect(everyOriginalLineSurvivesInOrder(profileFixture, resultText)).toBe(true);
     });
-  });
 
-  describe("the pointer file", () => {
-    beforeEach(() => {
-      vi.useFakeTimers();
-    });
+    it("migrates a profile still carrying the old reload hook, replacing it in place rather than leaving both (CHM-59)", () => {
+      // Simulates a profile from before this ticket: Chameleon's own marker
+      // block, but carrying the old Set-PoshContext hook rather than a plain
+      // init line.
+      const oldHookBlock = [
+        "# ch:begin",
+        "function Set-PoshContext {",
+        "    oh-my-posh init pwsh --config $chameleonPointer.configPath | Invoke-Expression",
+        "}",
+        "# ch:end",
+      ].join(eol);
+      writeFileSync(profilePath, `${profileFixture}${eol}${oldHookBlock}${eol}`, "utf8");
 
-    afterEach(() => {
-      vi.useRealTimers();
-    });
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
-    it("records the active config path and a timestamp that moves on every apply", () => {
-      const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
-
-      vi.setSystemTime(1_000);
-      adapter.apply(ZEROX96F_SCHEME);
-      const firstPointer = JSON.parse(readFileSync(pointerPath, "utf8")) as { configPath: string; updatedAtMs: number };
-      expect(firstPointer.configPath).toBe(configPath);
-      expect(firstPointer.updatedAtMs).toBe(1_000);
-
-      vi.setSystemTime(2_000);
-      adapter.apply(AARDVARK_BLUE_SCHEME);
-      const secondPointer = JSON.parse(readFileSync(pointerPath, "utf8")) as { configPath: string; updatedAtMs: number };
-      expect(secondPointer.updatedAtMs).toBe(2_000);
-      expect(secondPointer.updatedAtMs).toBeGreaterThan(firstPointer.updatedAtMs);
+      const resultText = readFileSync(profilePath, "utf8");
+      expect(countOccurrences(resultText, "# ch:begin")).toBe(1);
+      // The old hook's own tell-tale reference is gone — not "Set-PoshContext"
+      // itself, which the user's own, unrelated function in the fixture
+      // legitimately still carries and must survive untouched.
+      expect(resultText).not.toContain("chameleonPointer");
+      expect(resultText).toContain("oh-my-posh init pwsh --config");
+      expect(everyOriginalLineSurvivesInOrder(profileFixture, resultText)).toBe(true);
     });
   });
 
@@ -525,7 +526,7 @@ describe.each([
     });
 
     it("survives a theme swap — a layout edit made before applying a theme is still there after", () => {
-      const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+      const adapter = createOhMyPoshAdapter(configPath, profilePath);
       const layout = addSegment(readOhMyPoshLayout(configPath), "right", 0, buildLayoutSegment("battery", "success"));
       writeOhMyPoshLayout(layout, configPath);
 
@@ -538,7 +539,7 @@ describe.each([
     });
 
     it("a theme swap survives a later layout edit — apply first, then edit, and the palette holds", () => {
-      const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+      const adapter = createOhMyPoshAdapter(configPath, profilePath);
       adapter.apply(ZEROX96F_SCHEME);
       const appliedPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
 
@@ -790,7 +791,6 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
   let stateDir: string;
   let configPath: string;
   let profilePath: string;
-  let pointerPath: string;
   let originalChipsText: string;
   let originalPalette: Record<string, string>;
 
@@ -798,7 +798,6 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm31-"));
     configPath = path.join(stateDir, "chips.omp.json");
     profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     originalChipsText = readFileSync(CHIPS_FIXTURE_PATH, "utf8");
     originalPalette = (parseWritten(originalChipsText) as { palette: Record<string, string> }).palette;
     writeFileSync(configPath, originalChipsText, "utf8");
@@ -811,7 +810,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
   it("leaves all 47 of chips's own palette keys defined, recoloured, after applying a theme", () => {
     expect(Object.keys(originalPalette)).toHaveLength(47);
 
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
     for (const key of Object.keys(originalPalette)) {
@@ -820,7 +819,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
   });
 
   it("adds Chameleon's own six roles alongside chips's keys, never in place of them", () => {
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
     // At least the original 47 plus Chameleon's six roles — CHM-40 may add
@@ -840,7 +839,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
     const originalBlocks = (parseWritten(originalChipsText) as { blocks: Array<{ segments: Array<Record<string, unknown>> }> }).blocks;
     const originalConsoleTitle = (parseWritten(originalChipsText) as { console_title_template: unknown }).console_title_template;
 
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(configPath, "utf8");
     const resultParsed = parseWritten(resultText) as {
@@ -881,7 +880,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
   });
 
   it("undoes back to chips's exact original palette", () => {
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
     expect(readFileSync(configPath, "utf8")).not.toBe(originalChipsText);
 
     undoOhMyPosh(configPath, profilePath);
@@ -899,7 +898,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
 
     for (const pack of curatedPacks) {
       writeFileSync(configPath, originalChipsText, "utf8");
-      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+      createOhMyPoshAdapter(configPath, profilePath).apply(pack.payloads["windows-terminal"]);
 
       const resultText = readFileSync(configPath, "utf8");
       const resultPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
@@ -920,7 +919,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
 
     for (const pack of curatedPacks) {
       writeFileSync(configPath, originalChipsText, "utf8");
-      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+      createOhMyPoshAdapter(configPath, profilePath).apply(pack.payloads["windows-terminal"]);
 
       const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
       const recolouredValues = Object.keys(originalPalette).map((key) => resultPalette[key]!.toLowerCase());
@@ -946,7 +945,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
 
     for (const pack of curatedPacks) {
       writeFileSync(configPath, originalChipsText, "utf8");
-      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+      createOhMyPoshAdapter(configPath, profilePath).apply(pack.payloads["windows-terminal"]);
 
       const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
       for (const [foregroundKey, backgroundKey] of pairs) {
@@ -974,7 +973,7 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
 
     for (const pack of curatedPacks) {
       writeFileSync(configPath, originalChipsText, "utf8");
-      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+      createOhMyPoshAdapter(configPath, profilePath).apply(pack.payloads["windows-terminal"]);
 
       // Checked from the RESULT config, not the original — a segment CHM-40
       // had to repair now names a different foreground key than chips
@@ -1028,74 +1027,66 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
 });
 
 // CHM-57's own reproduction: `ch prompt half-life` switches a bundled layout
-// in, pointing the pointer at Chameleon's own bundled-prompt config; a plain
-// createOhMyPoshAdapter().apply() (what every theme apply used to call
-// unconditionally) has no idea that happened and writes `configPath` — the
-// user's own file — right back over the pointer, silently reverting the
-// layout while prompt-state.json still claims it is active. withActiveLayoutRespected
+// in; a plain createOhMyPoshAdapter().apply() (what every theme apply used to
+// call unconditionally) has no idea that happened and recolours a plain
+// palette table into Chameleon's owned config, silently reverting the layout
+// while prompt-state.json still claims it is active. withActiveLayoutRespected
 // is the fix: it wraps an ordinary adapter's own `apply` and, whenever
-// prompt-state.json names an active layout, recolours that layout instead of
-// touching `configPath` at all.
+// prompt-state.json names an active layout, re-resolves that layout into the
+// owned config instead of running the palette recolor. Under CHM-59 there is
+// only ever the one owned config file — a layout switch and a theme recolor
+// both write it, so there is no separate bundled file or pointer left to
+// name here.
 describe("withActiveLayoutRespected — a theme apply must not clobber an active bundled layout (CHM-57)", () => {
   let stateDir: string;
-  let configPath: string;
+  let ownedConfigPath: string;
   let profilePath: string;
-  let pointerPath: string;
   let promptStatePath: string;
-  let bundledConfigPath: string;
-
-  function readPointerConfigPath(): string {
-    return (JSON.parse(readFileSync(pointerPath, "utf8")) as { configPath: string }).configPath;
-  }
 
   function buildAdapter() {
-    const baseAdapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
-    return withActiveLayoutRespected(baseAdapter, profilePath, pointerPath, "pwsh", promptStatePath, bundledConfigPath);
+    const baseAdapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+    return withActiveLayoutRespected(baseAdapter, ownedConfigPath, profilePath, "pwsh", promptStatePath);
   }
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm57-"));
-    configPath = path.join(stateDir, "my-prompt.omp.json");
+    ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
     profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     promptStatePath = path.join(stateDir, "prompt-state.json");
-    bundledConfigPath = path.join(stateDir, "bundled-prompt.omp.json");
-    writeFileSync(configPath, JSON.stringify({ palette: { accent: "#ffffff" }, blocks: [] }, null, 2), "utf8");
+    writeFileSync(ownedConfigPath, JSON.stringify({ palette: { accent: "#ffffff" }, blocks: [] }, null, 2), "utf8");
   });
 
   afterEach(() => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("reproduces the ticket's own sequence: apply a layout, then a theme — the pointer still names the bundled layout, never the user's own config", () => {
+  it("reproduces the ticket's own sequence: apply a layout, then a theme — the owned config still renders the layout, never a plain palette recolor", () => {
     // Simulates `ch prompt half-life` having already run: prompt-state.json
-    // records it active, and the pointer names the bundled file it wrote.
-    writePromptState({ originalConfigPath: configPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
-    writeFileSync(bundledConfigPath, "{}", "utf8");
-    writeFileSync(pointerPath, JSON.stringify({ configPath: bundledConfigPath, updatedAtMs: 1 }), "utf8");
+    // records it active.
+    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
 
     buildAdapter().apply(ZEROX96F_SCHEME); // `ch nord-dark`, in the ticket's own words
 
-    expect(readPointerConfigPath()).toBe(bundledConfigPath);
-    // The user's own config, at whatever the pointer named before the
-    // layout was ever switched in, is never opened by this apply either.
-    expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ palette: { accent: "#ffffff" }, blocks: [] });
+    const written: unknown = JSON.parse(readFileSync(ownedConfigPath, "utf8"));
+    // The layout replaced the owned config wholesale — it no longer carries
+    // the plain palette table the fixture started with.
+    expect(written).not.toHaveProperty("palette");
   });
 
-  it("recolours the active layout's own p:<role> references to the new theme, not just repoints the pointer", () => {
-    writePromptState({ originalConfigPath: configPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
+  it("recolours the active layout's own p:<role> references to the new theme, not just leaves the config as-is", () => {
+    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
 
     buildAdapter().apply(ZEROX96F_SCHEME);
 
-    const written: unknown = JSON.parse(readFileSync(bundledConfigPath, "utf8"));
+    const written: unknown = JSON.parse(readFileSync(ownedConfigPath, "utf8"));
     const halfLife = loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === "half-life")!;
     const expected = resolvePromptLayoutRoleReferences(halfLife.layout, resolveRoleHexes(ZEROX96F_SCHEME));
     expect(written).toEqual(expected);
     expect(JSON.stringify(written)).not.toContain("p:");
   });
 
-  it("recolours the active layout for every one of the 26 bundled themes, leaving it active and the pointer correct every time", () => {
-    writePromptState({ originalConfigPath: configPath, activeSlug: "spaceship", updatedAtMs: 1 }, promptStatePath);
+  it("recolours the active layout for every one of the 26 bundled themes, leaving it active every time", () => {
+    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: "spaceship", updatedAtMs: 1 }, promptStatePath);
     const adapter = buildAdapter();
     const curatedPacks = loadCuratedThemePacks();
     expect(curatedPacks.length).toBe(26);
@@ -1103,28 +1094,29 @@ describe("withActiveLayoutRespected — a theme apply must not clobber an active
     for (const pack of curatedPacks) {
       adapter.apply(pack.payloads["windows-terminal"]);
 
-      expect(readPointerConfigPath()).toBe(bundledConfigPath);
-      const written = JSON.stringify(JSON.parse(readFileSync(bundledConfigPath, "utf8")));
+      const written = JSON.stringify(JSON.parse(readFileSync(ownedConfigPath, "utf8")));
       expect(written).not.toContain("p:");
     }
   });
 
   it("falls back to the ordinary config-swap path once no layout is active — 'mine' is untouched by this fix", () => {
-    // No prompt-state.json at all — the common case, nothing has ever
-    // switched a bundled layout in.
+    // A real init line already names ownedConfigPath, so the very first
+    // seeding call finds it rather than needing to discover anything else.
+    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${ownedConfigPath}' | Invoke-Expression\n`, "utf8");
+
     buildAdapter().apply(ZEROX96F_SCHEME);
 
-    expect(readPointerConfigPath()).toBe(configPath);
-    expect(existsSync(bundledConfigPath)).toBe(false);
+    const parsed = parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> };
+    expect(parsed.palette["accent"]).toMatch(/^#[0-9a-f]{6}$/i);
   });
 
   it("falls back to the ordinary config-swap path once `ch prompt mine` cleared the active slug", () => {
-    writePromptState({ originalConfigPath: configPath, activeSlug: undefined, updatedAtMs: 1 }, promptStatePath);
+    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: undefined, updatedAtMs: 1 }, promptStatePath);
 
     buildAdapter().apply(ZEROX96F_SCHEME);
 
-    expect(readPointerConfigPath()).toBe(configPath);
-    expect(existsSync(bundledConfigPath)).toBe(false);
+    const parsed = parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> };
+    expect(parsed.palette["accent"]).toMatch(/^#[0-9a-f]{6}$/i);
   });
 });
 
@@ -1132,7 +1124,6 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
   let stateDir: string;
   let configPath: string;
   let profilePath: string;
-  let pointerPath: string;
   let originalChipsText: string;
   let originalPaletteKeys: string[];
 
@@ -1140,7 +1131,6 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm43-"));
     configPath = path.join(stateDir, "chips.omp.json");
     profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     originalChipsText = readFileSync(CHIPS_FIXTURE_PATH, "utf8");
     originalPaletteKeys = Object.keys((parseWritten(originalChipsText) as { palette: Record<string, string> }).palette);
     writeFileSync(configPath, originalChipsText, "utf8");
@@ -1160,7 +1150,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
     // this bug in the first place.
     const curatedPacks = loadCuratedThemePacks();
     expect(curatedPacks.length).toBe(26);
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
 
     for (const pack of curatedPacks) {
       adapter.apply(pack.payloads["windows-terminal"]);
@@ -1181,7 +1171,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
 
   it("never mints a key name that carries -legible more than once, across two full passes", () => {
     const curatedPacks = loadCuratedThemePacks();
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
 
     for (const pack of [...curatedPacks, ...curatedPacks]) {
       adapter.apply(pack.payloads["windows-terminal"]);
@@ -1195,7 +1185,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
 
   it("leaves no generated key that no segment references, across two full passes", () => {
     const curatedPacks = loadCuratedThemePacks();
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
 
     for (const pack of [...curatedPacks, ...curatedPacks]) {
       adapter.apply(pack.payloads["windows-terminal"]);
@@ -1216,7 +1206,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
 
   it("keeps every one of chips's own original 47 keys defined after two full passes, never dropping one (CHM-31)", () => {
     const curatedPacks = loadCuratedThemePacks();
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
     expect(originalPaletteKeys).toHaveLength(47);
 
     for (const pack of [...curatedPacks, ...curatedPacks]) {
@@ -1231,7 +1221,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
 
   it("clears TEXT_MIN_RATIO between every segment's own resolved foreground and background after two full passes (CHM-40)", () => {
     const curatedPacks = loadCuratedThemePacks();
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
 
     for (const pack of [...curatedPacks, ...curatedPacks]) {
       adapter.apply(pack.payloads["windows-terminal"]);
@@ -1280,7 +1270,6 @@ describe("recolouring reflects the destination theme, not the source (CHM-53)", 
   let stateDir: string;
   let configPath: string;
   let profilePath: string;
-  let pointerPath: string;
   let originalChipsText: string;
   let originalPaletteKeys: string[];
 
@@ -1288,7 +1277,6 @@ describe("recolouring reflects the destination theme, not the source (CHM-53)", 
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm53-"));
     configPath = path.join(stateDir, "chips.omp.json");
     profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     originalChipsText = readFileSync(CHIPS_FIXTURE_PATH, "utf8");
     originalPaletteKeys = Object.keys((parseWritten(originalChipsText) as { palette: Record<string, string> }).palette);
     writeFileSync(configPath, originalChipsText, "utf8");
@@ -1301,7 +1289,7 @@ describe("recolouring reflects the destination theme, not the source (CHM-53)", 
   /** Recolours the pristine chips fixture under `scheme` and returns just the original 47 keys' resolved hexes — never a "-legible" override CHM-40 minted only for one of the two themes being compared, which would not be a shared key at all. */
   function recolouredOriginalKeys(scheme: Scheme): Record<string, string> {
     writeFileSync(configPath, originalChipsText, "utf8");
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(scheme);
+    createOhMyPoshAdapter(configPath, profilePath).apply(scheme);
     const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
     return Object.fromEntries(originalPaletteKeys.map((key) => [key, resultPalette[key]!]));
   }
@@ -1343,13 +1331,11 @@ describe("ohMyPoshMatchesRoleHexes", () => {
   let stateDir: string;
   let configPath: string;
   let profilePath: string;
-  let pointerPath: string;
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-drift-"));
     configPath = path.join(stateDir, "theme.omp.json");
     profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
     writeFileSync(profilePath, LF_PROFILE_FIXTURE, "utf8");
   });
@@ -1359,21 +1345,21 @@ describe("ohMyPoshMatchesRoleHexes", () => {
   });
 
   it("matches right after apply", () => {
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
     adapter.apply(ZEROX96F_SCHEME);
 
     expect(ohMyPoshMatchesRoleHexes(adapter.read(), resolveRoleHexes(ZEROX96F_SCHEME))).toBe(true);
   });
 
   it("does not match a scheme other than the one last applied", () => {
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath);
     adapter.apply(ZEROX96F_SCHEME);
 
     expect(ohMyPoshMatchesRoleHexes(adapter.read(), resolveRoleHexes(AARDVARK_BLUE_SCHEME))).toBe(false);
   });
 
   it("does not match a config that was never themed by Chameleon at all", () => {
-    const config = createOhMyPoshAdapter(configPath, profilePath, pointerPath).read();
+    const config = createOhMyPoshAdapter(configPath, profilePath).read();
 
     expect(ohMyPoshMatchesRoleHexes(config, resolveRoleHexes(ZEROX96F_SCHEME))).toBe(false);
   });
@@ -1402,9 +1388,7 @@ describe("oh my posh adapter — edge cases", () => {
   it("names the file and the problem when a config it must edit is shaped wrong", () => {
     const malformedPath = path.join(stateDir, "malformed.omp.json");
     writeFileSync(malformedPath, JSON.stringify({ palette: "not an object" }), "utf8");
-    expect(() => createOhMyPoshAdapter(malformedPath, path.join(stateDir, "profile.ps1"), path.join(stateDir, "pointer.json")).read()).toThrow(
-      malformedPath,
-    );
+    expect(() => createOhMyPoshAdapter(malformedPath, path.join(stateDir, "profile.ps1")).read()).toThrow(malformedPath);
   });
 
   it("names everything it tried — not just POSH_THEME — when no config can be discovered anywhere, env or profile (CHM-36)", () => {
@@ -1412,22 +1396,22 @@ describe("oh my posh adapter — edge cases", () => {
     // absent file and not the host's own real profile — CHM-36's own
     // complaint about the previous version of this test was that it "also
     // depends on the host machine having no usable Oh My Posh profile,
-    // which makes it environment-dependent." This one does not.
+    // which makes it environment-dependent." This one does not. Discovery
+    // now lives in ensureOhMyPoshOwnedConfigSeeded, the seeding step every
+    // real apply runs before the very first theme or layout switch.
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, "Set-Alias ll Get-ChildItem\n", "utf8");
-    const adapter = createOhMyPoshAdapter(undefined, profilePath, path.join(stateDir, "pointer.json"));
+    const ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
+    const promptStatePath = path.join(stateDir, "prompt-state.json");
 
-    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_CONFIG/);
-    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_THEME/);
-    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(profilePath);
+    const seed = () => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+    expect(seed).toThrow(/POSH_CONFIG/);
+    expect(seed).toThrow(/POSH_THEME/);
+    expect(seed).toThrow(profilePath);
   });
 
   it("refuses to apply when there is no config at the given path", () => {
-    const adapter = createOhMyPoshAdapter(
-      path.join(stateDir, "missing.omp.json"),
-      path.join(stateDir, "profile.ps1"),
-      path.join(stateDir, "pointer.json"),
-    );
+    const adapter = createOhMyPoshAdapter(path.join(stateDir, "missing.omp.json"), path.join(stateDir, "profile.ps1"));
     expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow();
   });
 
@@ -1435,12 +1419,11 @@ describe("oh my posh adapter — edge cases", () => {
     const configPath = path.join(stateDir, "theme.omp.json");
     writeFileSync(configPath, JSON.stringify({ blocks: [] }), "utf8");
     const profilePath = path.join(stateDir, "nested", "Microsoft.PowerShell_profile.ps1");
-    const pointerPath = path.join(stateDir, "pointer.json");
 
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(profilePath, "utf8");
-    expect(resultText).toContain("function Set-PoshContext");
+    expect(resultText).toContain("oh-my-posh init pwsh --config");
     expect(resultText).not.toMatch(/,\s*[\]}]/);
   });
 
@@ -1448,9 +1431,8 @@ describe("oh my posh adapter — edge cases", () => {
     const configPath = path.join(stateDir, "theme.omp.json");
     writeFileSync(configPath, JSON.stringify({ blocks: [] }), "utf8");
     const profilePath = path.join(stateDir, "profile.ps1");
-    const pointerPath = path.join(stateDir, "pointer.json");
 
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(configPath, "utf8");
     const parsed = parseWritten(resultText) as { palette: Record<string, string> };
@@ -1461,19 +1443,19 @@ describe("oh my posh adapter — edge cases", () => {
 
 // CHM-25: Oh My Posh's live reload worked only from PowerShell — the
 // Set-PoshContext hook was written into a PowerShell profile regardless of
-// which shell `ch` was actually run from. bash and zsh each get their own
-// hook, written into their own rc file; cmd.exe has no rc file at all, so
-// its hook is a Clink Lua script instead, and refuses to write one when
-// Clink itself is not on PATH rather than silently doing nothing.
-describe("shell-specific live-reload hooks (CHM-25)", () => {
+// which shell `ch` was actually run from. Under CHM-59 there is no reload
+// hook left at all for pwsh/bash/zsh — just the one `oh-my-posh init <shell>
+// --config` line, in each shell's own rc file. cmd.exe still has no rc file
+// of its own, so its "profile" is a Clink Lua script instead, and Chameleon
+// still refuses to write one when Clink itself is not on PATH rather than
+// silently doing nothing.
+describe("shell-specific profile lines (CHM-25, CHM-59)", () => {
   let stateDir: string;
   let configPath: string;
-  let pointerPath: string;
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-shells-"));
     configPath = path.join(stateDir, "theme.omp.json");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
   });
 
@@ -1481,55 +1463,56 @@ describe("shell-specific live-reload hooks (CHM-25)", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("writes a PROMPT_COMMAND-chaining hook into bash's own rc file", () => {
+  it("writes a plain init line into bash's own rc file, chaining nothing", () => {
     const profilePath = path.join(stateDir, ".bashrc");
     writeFileSync(profilePath, 'export EDITOR="nvim"\n', "utf8");
 
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath, "bash").apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath, "bash").apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(profilePath, "utf8");
     expect(resultText).toContain('export EDITOR="nvim"'); // the user's own line survives untouched
-    expect(resultText).toContain("__chameleon_ohmyposh_precmd");
     expect(resultText).toContain("oh-my-posh init bash");
-    expect(resultText).toContain("PROMPT_COMMAND");
+    expect(resultText).toContain(configPath);
+    // Nothing left to re-run mid-session — no precmd hook of Chameleon's own.
+    expect(resultText).not.toContain("PROMPT_COMMAND");
   });
 
-  it("writes a precmd_functions hook into zsh's own rc file", () => {
+  it("writes a plain init line into zsh's own rc file", () => {
     const profilePath = path.join(stateDir, ".zshrc");
     writeFileSync(profilePath, "", "utf8");
 
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath, "zsh").apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath, "zsh").apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(profilePath, "utf8");
-    expect(resultText).toContain("__chameleon_ohmyposh_precmd");
     expect(resultText).toContain("oh-my-posh init zsh");
-    expect(resultText).toContain("precmd_functions");
+    expect(resultText).toContain(configPath);
+    expect(resultText).not.toContain("precmd_functions");
   });
 
-  it("re-applying replaces its own bash block in place rather than chaining PROMPT_COMMAND twice", () => {
+  it("re-applying replaces its own bash line in place rather than duplicating it", () => {
     const profilePath = path.join(stateDir, ".bashrc");
     writeFileSync(profilePath, "", "utf8");
-    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath, "bash");
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, "bash");
 
     adapter.apply(ZEROX96F_SCHEME);
     adapter.apply(ZEROX96F_SCHEME);
 
-    const occurrences = readFileSync(profilePath, "utf8").split("__chameleon_ohmyposh_precmd() {").length - 1;
+    const occurrences = readFileSync(profilePath, "utf8").split("oh-my-posh init bash").length - 1;
     expect(occurrences).toBe(1);
   });
 
-  it("refuses cmd.exe's Clink hook plainly when Clink is not installed, rather than skipping it silently", () => {
+  it("refuses cmd.exe's Clink script plainly when Clink is not installed, rather than skipping it silently", () => {
     const profilePath = path.join(stateDir, "chameleon-oh-my-posh.lua");
     vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ error: new Error("ENOENT"), status: null }));
 
-    expect(() => createOhMyPoshAdapter(configPath, profilePath, pointerPath, "cmd").apply(ZEROX96F_SCHEME)).toThrow(/Clink/);
+    expect(() => createOhMyPoshAdapter(configPath, profilePath, "cmd").apply(ZEROX96F_SCHEME)).toThrow(/Clink/);
   });
 
-  it("writes a Clink prompt-filter script when Clink is installed", () => {
+  it("writes a Clink prompt-filter script naming the fixed config path when Clink is installed", () => {
     const profilePath = path.join(stateDir, "chameleon-oh-my-posh.lua");
     vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ status: 0, stdout: "1.6.5" }));
 
-    createOhMyPoshAdapter(configPath, profilePath, pointerPath, "cmd").apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(configPath, profilePath, "cmd").apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(profilePath, "utf8");
     expect(resultText).toContain("clink.promptfilter");
@@ -1546,12 +1529,10 @@ describe("shell-specific live-reload hooks (CHM-25)", () => {
 describe("profile-creation notice (CHM-39)", () => {
   let stateDir: string;
   let configPath: string;
-  let pointerPath: string;
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-profile-notice-"));
     configPath = path.join(stateDir, "theme.omp.json");
-    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
     writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
   });
 
@@ -1565,7 +1546,7 @@ describe("profile-creation notice (CHM-39)", () => {
     // does for the config.
     const profilePath = path.join(stateDir, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
 
-    const notice = createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    const notice = createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     expect(notice).toContain(profilePath);
     expect(existsSync(profilePath)).toBe(true);
@@ -1575,7 +1556,7 @@ describe("profile-creation notice (CHM-39)", () => {
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, "", "utf8");
 
-    const notice = createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    const notice = createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
 
     expect(notice).toBeUndefined();
   });
@@ -1584,16 +1565,20 @@ describe("profile-creation notice (CHM-39)", () => {
 // CHM-36: current Oh My Posh (31.x) sets POSH_CONFIG, not POSH_THEME, and a
 // normal shell that simply has not run `oh-my-posh init` yet this session —
 // the state every freshly opened, genuinely configured shell starts in —
-// has neither set at all. This is the fallback that makes `ch <theme>`
-// still work then: parsing the profile's own init line for the --config
-// argument it already carries, the same path Oh My Posh itself would read.
+// has neither set at all. This is the fallback that makes the very first
+// theme or layout switch still find the user's own config then: parsing the
+// profile's own init line for the --config argument it already carries, the
+// same path Oh My Posh itself would read. Under CHM-59 this discovery runs
+// once, inside ensureOhMyPoshOwnedConfigSeeded, rather than on every apply.
 describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is set (CHM-36)", () => {
   let stateDir: string;
-  let pointerPath: string;
+  let ownedConfigPath: string;
+  let promptStatePath: string;
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-fallback-"));
-    pointerPath = path.join(stateDir, "pointer.json");
+    ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
+    promptStatePath = path.join(stateDir, "prompt-state.json");
     vi.stubEnv("POSH_CONFIG", "");
     vi.stubEnv("POSH_THEME", "");
   });
@@ -1607,10 +1592,6 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
   function writeTargetConfig(configPath: string): void {
     mkdirSync(path.dirname(configPath), { recursive: true });
     writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
-  }
-
-  function appliedAccent(configPath: string): string | undefined {
-    return (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette["accent"];
   }
 
   it("resolves a pwsh init line that routes the binary through a variable, expanding $env: in the --config path", () => {
@@ -1632,9 +1613,10 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
       "utf8",
     );
 
-    createOhMyPoshAdapter(undefined, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
 
-    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
+    expect(readFileSync(ownedConfigPath, "utf8")).toBe(LF_CONFIG_FIXTURE);
   });
 
   it("resolves a plain 'oh-my-posh init pwsh --config' line naming the binary literally", () => {
@@ -1643,9 +1625,9 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, `oh-my-posh init pwsh --config '${targetConfigPath}' | Invoke-Expression\n`, "utf8");
 
-    createOhMyPoshAdapter(undefined, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
 
-    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
   });
 
   it("resolves a bash init line, expanding $HOME in an unquoted --config path", () => {
@@ -1660,9 +1642,9 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     // capture during review.
     writeFileSync(profilePath, 'eval "$(oh-my-posh init bash --config $HOME/.poshthemes/theme.omp.json)"\n', "utf8");
 
-    createOhMyPoshAdapter(undefined, profilePath, pointerPath, "bash").apply(ZEROX96F_SCHEME);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "bash", promptStatePath);
 
-    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
   });
 
   it("resolves a zsh init line, expanding a leading ~ in an unquoted --config path", () => {
@@ -1677,9 +1659,9 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     const profilePath = path.join(stateDir, ".zshrc");
     writeFileSync(profilePath, 'eval "$(oh-my-posh init zsh --config ~/.cache/oh-my-posh/theme.omp.json)"\n', "utf8");
 
-    createOhMyPoshAdapter(undefined, profilePath, pointerPath, "zsh").apply(ZEROX96F_SCHEME);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "zsh", promptStatePath);
 
-    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
   });
 
   it("never falls back to the profile once POSH_CONFIG (or POSH_THEME) is actually set — the environment wins", () => {
@@ -1689,47 +1671,46 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     writeTargetConfig(profileConfigPath);
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, `oh-my-posh init pwsh --config '${profileConfigPath}' | Invoke-Expression\n`, "utf8");
+    vi.stubEnv("POSH_CONFIG", envConfigPath);
 
-    createOhMyPoshAdapter(envConfigPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
 
+    expect(discovered).toBe(envConfigPath);
     expect(readFileSync(profileConfigPath, "utf8")).toBe(LF_CONFIG_FIXTURE);
-    expect(appliedAccent(envConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
   });
 
   it("finds nothing in a profile whose only init line is for a different shell", () => {
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, `oh-my-posh init pwsh --config '${path.join(stateDir, "theme.omp.json")}' | Invoke-Expression\n`, "utf8");
 
-    const adapter = createOhMyPoshAdapter(undefined, profilePath, pointerPath, "bash");
-    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_CONFIG/);
+    expect(() => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "bash", promptStatePath)).toThrow(/POSH_CONFIG/);
   });
 
-  // CHM-39: Chameleon's own Set-PoshContext hook contains the literal text
-  // "oh-my-posh init pwsh --config $chameleonPointer.configPath" — which,
-  // before this fix, matched this exact fallback's own pattern and got read
-  // back as if it were the user's config path, producing
-  // `ENOENT ... \$chameleonPointer.configPath` on every later run that had
-  // to fall back to the profile.
-  it("never reads its own reload hook's init line back as the user's config", () => {
+  // CHM-39: Chameleon's own reload hook used to contain the literal text
+  // "oh-my-posh init pwsh --config $chameleonPointer.configPath" — which
+  // matched this exact fallback's own pattern and got read back as if it
+  // were the user's config path. Under CHM-59 there is no separate hook, but
+  // the profile's own single init line (naming ownedConfigPath) must be
+  // excluded from discovery the same way — see withoutOwnedMarkerBlocks.
+  it("never reads its own marker-scoped init line back as the user's config", () => {
     const firstAppliedConfigPath = path.join(stateDir, "first-applied.omp.json");
     writeTargetConfig(firstAppliedConfigPath);
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, "", "utf8");
 
     // configPath is given directly here, so the profile fallback is never
-    // consulted — this step only exists to write Chameleon's own hook block
-    // into the profile, the same as a real `ch apply` would.
-    createOhMyPoshAdapter(firstAppliedConfigPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
-    expect(readFileSync(profilePath, "utf8")).toContain("$chameleonPointer.configPath");
+    // consulted — this step only exists to write Chameleon's own marker
+    // block into the profile, the same as a real `ch apply` would.
+    createOhMyPoshAdapter(firstAppliedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
+    expect(readFileSync(profilePath, "utf8")).toContain(firstAppliedConfigPath);
 
     // A later run with neither POSH_CONFIG nor POSH_THEME set (a fresh
     // shell) must fall back to parsing the same profile, and must find
-    // nothing — not the literal string "$chameleonPointer.configPath".
-    const laterAdapter = createOhMyPoshAdapter(undefined, profilePath, pointerPath);
-    expect(() => laterAdapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_CONFIG/);
+    // nothing — Chameleon's own marker-scoped line is excluded.
+    expect(() => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath)).toThrow(/POSH_CONFIG/);
   });
 
-  it("still resolves a real user init line that sits outside Chameleon's own hook block", () => {
+  it("still resolves a real user init line that sits outside Chameleon's own marker block", () => {
     const realConfigPath = path.join(stateDir, "user-theme.omp.json");
     writeTargetConfig(realConfigPath);
     const firstAppliedConfigPath = path.join(stateDir, "first-applied.omp.json");
@@ -1737,14 +1718,13 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, `oh-my-posh init pwsh --config '${realConfigPath}' | Invoke-Expression\n`, "utf8");
 
-    // Appends Chameleon's own hook block underneath the user's real line —
+    // Appends Chameleon's own marker block underneath the user's real line —
     // the profile now carries two lines that could plausibly match.
-    createOhMyPoshAdapter(firstAppliedConfigPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    createOhMyPoshAdapter(firstAppliedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
 
-    const laterAdapter = createOhMyPoshAdapter(undefined, profilePath, pointerPath);
-    laterAdapter.apply(AARDVARK_BLUE_SCHEME);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
 
-    expect(appliedAccent(realConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(discovered).toBe(realConfigPath);
   });
 });
 

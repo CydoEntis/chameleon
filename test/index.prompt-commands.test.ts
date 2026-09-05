@@ -6,26 +6,18 @@ import { writeActivePackState } from "../src/adapters/state.js";
 import { loadCuratedThemePacks } from "../src/palette/theme-pack-library.js";
 
 // CHM-47's own orchestration (applyPromptPack/restorePromptToMine/
-// currentPromptPack) never touches a real profile, pointer or bundled-prompt
-// file directly — it delegates every bit of that to adapters/oh-my-posh.js,
+// currentPromptPack) never touches a real profile or owned config file
+// directly — it delegates every bit of that to adapters/oh-my-posh.js,
 // which is mocked here the same way test/index.pack-commands.test.ts mocks
 // it for applyThemePack: real file I/O is that module's own, already-tested
-// concern (see test/adapters/oh-my-posh-prompt-layout.test.ts), not this
-// orchestration layer's. Windows Terminal and the Nerd Font detector are
-// mocked too, so listPromptPacks' own Nerd Font flag is deterministic rather
-// than depending on this machine's real fonts and settings.json.
+// concern (see test/adapters/oh-my-posh.test.ts), not this orchestration
+// layer's. Windows Terminal and the Nerd Font detector are mocked too, so
+// listPromptPacks' own Nerd Font flag is deterministic rather than depending
+// on this machine's real fonts and settings.json.
 const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
-const applyPromptLayoutForCurrentShellMock = vi.fn();
-const currentPromptTrackingConfigPathMock = vi.fn();
-const restoreOriginalPromptMock = vi.fn();
-// CHM-57: currentPromptPack now checks the pointer, never prompt-state.json
-// alone — see index.ts's own doc comment. applyPromptLayoutForCurrentShell/
-// restoreOriginalPrompt are mocked above and never touch a real pointer
-// file, so this mock stands in for "what the pointer would say": true once
-// a layout has been applied, flipped back to false by the tests that
-// exercise `chm prompt mine`'s own "pointer no longer names the bundled
-// config" outcome.
-const pointerNamesBundledPromptConfigMock = vi.fn();
+const writeOwnedPromptConfigForCurrentShellMock = vi.fn();
+const ensureOhMyPoshOwnedConfigSeededForCurrentShellMock = vi.fn();
+const restoreOriginalPromptForCurrentShellMock = vi.fn();
 
 vi.mock("../src/adapters/oh-my-posh.js", () => ({
   createDefaultOhMyPoshAdapter: () => ohMyPoshAdapter,
@@ -33,10 +25,9 @@ vi.mock("../src/adapters/oh-my-posh.js", () => ({
   ohMyPoshMatchesRoleHexes: () => true,
   OH_MY_POSH_WINGET_PACKAGE_ID: "JanDeDobbeleer.OhMyPosh",
   undoOhMyPosh: vi.fn(),
-  applyPromptLayoutForCurrentShell: (...args: unknown[]) => applyPromptLayoutForCurrentShellMock(...args),
-  currentPromptTrackingConfigPath: (...args: unknown[]) => currentPromptTrackingConfigPathMock(...args),
-  restoreOriginalPrompt: (...args: unknown[]) => restoreOriginalPromptMock(...args),
-  pointerNamesBundledPromptConfig: (...args: unknown[]) => pointerNamesBundledPromptConfigMock(...args),
+  writeOwnedPromptConfigForCurrentShell: (...args: unknown[]) => writeOwnedPromptConfigForCurrentShellMock(...args),
+  ensureOhMyPoshOwnedConfigSeededForCurrentShell: (...args: unknown[]) => ensureOhMyPoshOwnedConfigSeededForCurrentShellMock(...args),
+  restoreOriginalPromptForCurrentShell: (...args: unknown[]) => restoreOriginalPromptForCurrentShellMock(...args),
 }));
 vi.mock("../src/adapters/windows-terminal.js", () => ({
   createWindowsTerminalAdapter: () => ({ detect: () => false, read: vi.fn(), apply: vi.fn(), reload: vi.fn() }),
@@ -73,14 +64,9 @@ beforeEach(() => {
   promptStatePath = path.join(scratchDir, "prompt-state.json");
 
   ohMyPoshAdapter.detect.mockReset().mockReturnValue(true);
-  applyPromptLayoutForCurrentShellMock.mockReset().mockReturnValue(undefined);
-  currentPromptTrackingConfigPathMock.mockReset().mockReturnValue("C:\\Users\\me\\my-real-prompt.omp.json");
-  restoreOriginalPromptMock.mockReset();
-  // Every applyPromptPack in this file is a real, single apply — the
-  // pointer agrees with prompt-state.json's own activeSlug by default, the
-  // same as adapters/oh-my-posh.ts's real applyPromptLayout always leaves
-  // it. Only restorePromptToMine's own tests flip this back to false.
-  pointerNamesBundledPromptConfigMock.mockReset().mockReturnValue(true);
+  writeOwnedPromptConfigForCurrentShellMock.mockReset().mockReturnValue(undefined);
+  ensureOhMyPoshOwnedConfigSeededForCurrentShellMock.mockReset().mockReturnValue("C:\\Users\\me\\my-real-prompt.omp.json");
+  restoreOriginalPromptForCurrentShellMock.mockReset();
 
   // A theme must already be applied — a bundled layout is authored purely
   // against Chameleon's roles and has no colour of its own to fall back to.
@@ -105,33 +91,35 @@ describe("applyPromptPack", () => {
   it("resolves the layout's own p:<role> references before handing it to the adapter — no reference survives", () => {
     applyPromptPack("lambda", promptStatePath, userThemeDir, statePath);
 
-    expect(applyPromptLayoutForCurrentShellMock).toHaveBeenCalledTimes(1);
-    const [resolvedConfig] = applyPromptLayoutForCurrentShellMock.mock.calls[0]!;
+    expect(writeOwnedPromptConfigForCurrentShellMock).toHaveBeenCalledTimes(1);
+    const [resolvedConfig] = writeOwnedPromptConfigForCurrentShellMock.mock.calls[0]!;
     expect(JSON.stringify(resolvedConfig)).not.toContain("p:");
   });
 
   it("records the currently active config as 'original' on the very first switch", () => {
     applyPromptPack("lambda", promptStatePath, userThemeDir, statePath);
 
-    expect(currentPromptTrackingConfigPathMock).toHaveBeenCalledTimes(1);
+    expect(ensureOhMyPoshOwnedConfigSeededForCurrentShellMock).toHaveBeenCalledTimes(1);
     expect(currentPromptPack(promptStatePath)?.slug).toBe("lambda");
   });
 
-  it("carries the same 'original' config path forward across several switches, never re-recording it", () => {
+  it("carries the same 'original' config path forward across several switches, re-seeding (a no-op once already recorded) every time", () => {
     applyPromptPack("lambda", promptStatePath, userThemeDir, statePath);
     applyPromptPack("spaceship", promptStatePath, userThemeDir, statePath);
     applyPromptPack("avit", promptStatePath, userThemeDir, statePath);
 
-    // Only the very first switch has nothing recorded yet to read back —
-    // every switch after that reuses it instead of asking again.
-    expect(currentPromptTrackingConfigPathMock).toHaveBeenCalledTimes(1);
+    // ensureOhMyPoshOwnedConfigSeededForCurrentShell itself is what decides
+    // whether there is anything left to discover — see the adapter's own
+    // tests for that contract; this orchestration layer just calls it every
+    // time and trusts its answer.
+    expect(ensureOhMyPoshOwnedConfigSeededForCurrentShellMock).toHaveBeenCalledTimes(3);
     expect(currentPromptPack(promptStatePath)?.slug).toBe("avit");
   });
 
   it("flags, but does not block, a layout that needs a Nerd Font when none is selected", () => {
     const result = applyPromptPack("lambda", promptStatePath, userThemeDir, statePath);
     expect(result.nerdFontWarning).toMatch(/Nerd Font/);
-    expect(applyPromptLayoutForCurrentShellMock).toHaveBeenCalledTimes(1);
+    expect(writeOwnedPromptConfigForCurrentShellMock).toHaveBeenCalledTimes(1);
   });
 
   it("never warns for a layout that renders with no Nerd Font at all", () => {
@@ -145,15 +133,14 @@ describe("restorePromptToMine", () => {
     expect(() => restorePromptToMine(promptStatePath)).toThrow(/no bundled prompt layout has ever been applied/);
   });
 
-  it("repoints at the recorded original path, and clears the active slug so ch current reports 'mine'", () => {
+  it("recolors the recorded original path against the current theme, and clears the active slug so ch current reports 'mine'", () => {
     applyPromptPack("lambda", promptStatePath, userThemeDir, statePath);
 
-    restorePromptToMine(promptStatePath);
-    // restoreOriginalPrompt is mocked and never writes a real pointer — this
-    // is what stands in for it no longer naming the bundled config.
-    pointerNamesBundledPromptConfigMock.mockReturnValue(false);
+    restorePromptToMine(promptStatePath, userThemeDir, statePath);
 
-    expect(restoreOriginalPromptMock).toHaveBeenCalledWith("C:\\Users\\me\\my-real-prompt.omp.json");
+    expect(restoreOriginalPromptForCurrentShellMock).toHaveBeenCalledTimes(1);
+    const [originalConfigPath] = restoreOriginalPromptForCurrentShellMock.mock.calls[0]!;
+    expect(originalConfigPath).toBe("C:\\Users\\me\\my-real-prompt.omp.json");
     expect(currentPromptPack(promptStatePath)).toEqual({ slug: undefined, name: undefined });
   });
 
@@ -162,9 +149,10 @@ describe("restorePromptToMine", () => {
     applyPromptPack("spaceship", promptStatePath, userThemeDir, statePath);
     applyPromptPack("avit", promptStatePath, userThemeDir, statePath);
 
-    restorePromptToMine(promptStatePath);
+    restorePromptToMine(promptStatePath, userThemeDir, statePath);
 
-    expect(restoreOriginalPromptMock).toHaveBeenCalledWith("C:\\Users\\me\\my-real-prompt.omp.json");
+    const [originalConfigPath] = restoreOriginalPromptForCurrentShellMock.mock.calls[0]!;
+    expect(originalConfigPath).toBe("C:\\Users\\me\\my-real-prompt.omp.json");
   });
 });
 
@@ -176,18 +164,6 @@ describe("currentPromptPack", () => {
   it("names the active bundled layout after a switch", () => {
     applyPromptPack("spaceship", promptStatePath, userThemeDir, statePath);
     expect(currentPromptPack(promptStatePath)).toEqual({ slug: "spaceship", name: "Spaceship" });
-  });
-
-  // CHM-57's own reproduction: applying a theme used to clobber the pointer
-  // back to the user's own config while prompt-state.json still recorded a
-  // layout as active. This is the read side of that fix — chm current must
-  // report what a shell would actually load (the pointer), never what
-  // prompt-state.json alone still believes.
-  it("reports 'mine', not the recorded slug, once the pointer no longer names the bundled config", () => {
-    applyPromptPack("spaceship", promptStatePath, userThemeDir, statePath);
-    pointerNamesBundledPromptConfigMock.mockReturnValue(false);
-
-    expect(currentPromptPack(promptStatePath)).toEqual({ slug: undefined, name: undefined });
   });
 });
 
