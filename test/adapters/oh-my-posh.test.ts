@@ -23,6 +23,7 @@ import {
 } from "../../src/adapters/oh-my-posh.js";
 import { ROLES } from "../../src/constants.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
+import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
@@ -145,6 +146,16 @@ function configLinesUnrelatedToChameleonEdits(text: string, eol: string): string
 
 function countOccurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
+}
+
+/** Every distinct role name referenced as "p:role" anywhere in `configText` that `paletteTable` does not define — CHM-31's failure mode, checked from the test side independently of the adapter's own internal assertion. */
+function undefinedPaletteReferences(configText: string, paletteTable: Record<string, string>): string[] {
+  const referencedRoles = new Set<string>();
+  for (const match of configText.matchAll(/p:([A-Za-z0-9_-]+)/g)) {
+    const referencedRole = match[1];
+    if (referencedRole !== undefined) referencedRoles.add(referencedRole);
+  }
+  return [...referencedRoles].filter((referencedRole) => !(referencedRole in paletteTable));
 }
 
 function usesOnlyLineEnding(text: string, eol: string): boolean {
@@ -667,6 +678,92 @@ describe("layout — the real, unmodified chips community theme (CHM-16)", () =>
     // untouched — ch edit never touches "palette", only "blocks".
     expect(parsed.palette["c-badge-text"]).toBeDefined();
     expect(parsed.palette["c-git-normal"]).toBeDefined();
+  });
+});
+
+describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
+  let stateDir: string;
+  let configPath: string;
+  let profilePath: string;
+  let pointerPath: string;
+  let originalChipsText: string;
+  let originalPalette: Record<string, string>;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm31-"));
+    configPath = path.join(stateDir, "chips.omp.json");
+    profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
+    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+    originalChipsText = readFileSync(CHIPS_FIXTURE_PATH, "utf8");
+    originalPalette = (parseWritten(originalChipsText) as { palette: Record<string, string> }).palette;
+    writeFileSync(configPath, originalChipsText, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("leaves all 47 of chips's own palette keys defined, recoloured, after applying a theme", () => {
+    expect(Object.keys(originalPalette)).toHaveLength(47);
+
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+    for (const key of Object.keys(originalPalette)) {
+      expect(resultPalette[key]).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it("adds Chameleon's own six roles alongside chips's keys, never in place of them", () => {
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+    expect(Object.keys(resultPalette)).toHaveLength(47 + ROLES.length);
+    for (const key of Object.keys(originalPalette)) {
+      expect(resultPalette[key]).toBeDefined();
+    }
+    for (const role of ROLES) {
+      expect(resultPalette[role]).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it("leaves every segment, block and non-colour field byte-identical", () => {
+    const originalBlocks = (parseWritten(originalChipsText) as { blocks: unknown }).blocks;
+    const originalConsoleTitle = (parseWritten(originalChipsText) as { console_title_template: unknown }).console_title_template;
+
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    const resultText = readFileSync(configPath, "utf8");
+    const resultParsed = parseWritten(resultText) as { blocks: unknown; console_title_template: unknown };
+    expect(resultParsed.blocks).toEqual(originalBlocks);
+    expect(resultParsed.console_title_template).toEqual(originalConsoleTitle);
+  });
+
+  it("undoes back to chips's exact original palette", () => {
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+    expect(readFileSync(configPath, "utf8")).not.toBe(originalChipsText);
+
+    undoOhMyPosh(configPath, profilePath);
+    expect(readFileSync(configPath, "utf8")).toBe(originalChipsText);
+  });
+
+  it("leaves no \"p:\" reference in the config undefined, across every bundled theme", () => {
+    // CHM-31's own regression: this used to delete every key chips's
+    // segments and templates reference by name and replace them with
+    // Chameleon's six role names, leaving those references dangling and the
+    // rendered prompt colourless. Checked against the full curated library —
+    // every theme `ch <slug>` can actually apply — not just one scheme.
+    const curatedPacks = loadCuratedThemePacks();
+    expect(curatedPacks.length).toBeGreaterThan(0);
+
+    for (const pack of curatedPacks) {
+      writeFileSync(configPath, originalChipsText, "utf8");
+      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+
+      const resultText = readFileSync(configPath, "utf8");
+      const resultPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
+      expect(undefinedPaletteReferences(resultText, resultPalette)).toEqual([]);
+    }
   });
 });
 
