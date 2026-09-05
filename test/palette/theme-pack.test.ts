@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_MIN_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { ANSI_SLOT_NAMES } from "../../src/palette/ansi.js";
-import { contrastRatio } from "../../src/palette/color.js";
+import { chromaOf, contrastRatio } from "../../src/palette/color.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src/palette/theme-pack.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
@@ -78,6 +78,32 @@ describe("buildThemePack", () => {
       // mathematically unreachable alongside the hard floor above (see
       // CHM-30's own worked proof, e.g. tokyo-night-light's 4.52).
       expect(contrastRatio(selectionHex, groundHex)).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
+    }
+  });
+
+  it("gives every pack whose ground carries meaningful chroma a selection that keeps some too, rather than collapsing to a hue-free grey (CHM-38)", () => {
+    // The real 26 committed under themes/ — 25 of them shipped a selection
+    // with essentially zero chroma before this fix, gruvbox-dark's own
+    // untouched candidate being the one exception.
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const groundHex = pack.payloads.herdr.ground;
+      const selectionHex = pack.payloads.herdr.selection_bg;
+      if (chromaOf(groundHex) > SELECTION_MIN_CHROMA) {
+        expect(chromaOf(selectionHex)).toBeGreaterThan(SELECTION_MIN_CHROMA);
+      }
+    }
+  });
+
+  it("never ships a pure black or pure white selection (CHM-38 fixture: Solarized Dark shipped #000000)", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      expect(pack.payloads.herdr.selection_bg).not.toBe("#000000");
+      expect(pack.payloads.herdr.selection_bg).not.toBe("#ffffff");
     }
   });
 

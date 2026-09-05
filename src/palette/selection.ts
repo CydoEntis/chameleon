@@ -14,9 +14,20 @@
  * SELECTION_MIN_VISIBLE_RATIO — the highlight would be there but invisible —
  * body itself moves further from ground instead, just enough to open up
  * room for one, and that is reported back rather than done silently.
+ *
+ * CHM-38: a repaired selection used to search a hue-free grey for whichever
+ * luminance hit the ratio above — legal, since WCAG contrast is a function
+ * of luminance alone, but it meant 25 of the 26 bundled packs shipped a
+ * selection with essentially zero chroma, and Solarized Dark's search
+ * landed on pure black. The search now tints ground's own hue instead (see
+ * groundTintedAtLuminance), at a chroma related to ground's own but clamped
+ * between SELECTION_MIN_CHROMA and SELECTION_MAX_CHROMA — the achieved
+ * ratio matches what a grey would reach whenever that clamped chroma still
+ * leaves the target luminance reachable, which is the case for all 26
+ * bundled packs (see theme-pack.test.ts).
  */
 
-import { RATIO_CLEARANCE_MARGIN, SELECTION_IDEAL_RATIO, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET } from "../constants.js";
+import { RATIO_CLEARANCE_MARGIN, SELECTION_IDEAL_RATIO, SELECTION_MAX_CHROMA, SELECTION_MIN_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET } from "../constants.js";
 import { chromaOf, contrastRatio, fromHueChromaMatch, relativeLuminance, toHsl } from "./color.js";
 import { matchValueForLuminance } from "./repair.js";
 
@@ -146,10 +157,22 @@ function nearestLuminanceReaching(
   );
 }
 
-/** A neutral grey (chroma 0 — hue is meaningless once chroma is 0) at the given relative luminance. */
-function greyAtLuminance(targetLuminance: number): string {
-  const matchValue = matchValueForLuminance(0, 0, targetLuminance);
-  return fromHueChromaMatch({ hue: 0, chroma: 0, matchValue });
+/**
+ * Ground's own hue, tinted to `targetLuminance` at a chroma clamped between
+ * SELECTION_MIN_CHROMA and SELECTION_MAX_CHROMA — CHM-38's replacement for a
+ * hue-free grey search. Contrast is a function of luminance alone (see
+ * contrastRatio), so whenever that luminance is reachable at this chroma
+ * this lands on the same ratio a grey would; it only changes which colour
+ * gets there, favouring one that still reads as the theme's own rather than
+ * a fill borrowed from a greyscale. The ceiling matters more than it looks:
+ * see SELECTION_MAX_CHROMA's own doc comment for why holding ground's full
+ * chroma can otherwise pin the result back onto ground itself.
+ */
+function groundTintedAtLuminance(groundHex: string, targetLuminance: number): string {
+  const { hue } = toHsl(groundHex);
+  const chroma = Math.min(Math.max(chromaOf(groundHex), SELECTION_MIN_CHROMA), SELECTION_MAX_CHROMA);
+  const matchValue = matchValueForLuminance(hue, chroma, targetLuminance);
+  return fromHueChromaMatch({ hue, chroma, matchValue });
 }
 
 /** `bodyHex`, pushed toward `targetLuminance` while holding its own hue and chroma — a stronger version of the same colour, not a different one. */
@@ -204,7 +227,7 @@ function resolveSelectionAgainstBody(
   }
 
   const targetLuminance = nearestLuminanceReaching(groundLuminance, bodyLuminance, bodyFloorRatio, targetRatio);
-  const hex = greyAtLuminance(targetLuminance);
+  const hex = groundTintedAtLuminance(groundHex, targetLuminance);
   return { hex, selectionVsGroundRatio: contrastRatio(hex, groundHex), wasRepaired: true };
 }
 

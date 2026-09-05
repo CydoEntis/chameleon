@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { SELECTION_IDEAL_RATIO, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
-import { contrastRatio } from "../../src/palette/color.js";
+import { SELECTION_IDEAL_RATIO, SELECTION_MIN_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { chromaOf, contrastRatio } from "../../src/palette/color.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
 
 // Real vendored/bundled values (mbadolato/iTerm2-Color-Schemes, via
@@ -37,6 +37,14 @@ const GITHUB_LIGHT = { ground: "#ffffff", body: "#1f2328", selection: "#1f2328" 
 // SELECTION_MIN_VISIBLE_RATIO once rounding safety is folded in, so body
 // itself must move — see themes/solarized-light.json's own selection_bg.
 const SOLARIZED_LIGHT = { ground: "#fdf6e3", body: "#5b7179", selection: "#eee8d5" };
+
+// Solarized Dark: this ticket's own named fixture. selectionBackground
+// measures 1.15 for selection-vs-ground and 4.11 for body-on-selection —
+// short of both floors, so repair kicks in. Ground carries plenty of its
+// own chroma (0.212, a saturated blue-cyan), but before CHM-38 the repair
+// searched a hue-free grey and landed on pure black (see themes/
+// solarized-dark.json's history) — a black slab on a blue-cyan background.
+const SOLARIZED_DARK = { ground: "#002b36", body: "#839496", selection: "#073642" };
 
 describe("resolveSelectionAndBody", () => {
   it("keeps a selection that already clears the hard floor and the ideal ratio untouched", () => {
@@ -108,5 +116,15 @@ describe("resolveSelectionAndBody", () => {
     expect(selection.hex).not.toBe(GITHUB_LIGHT.selection);
     expect(contrastRatio(selection.hex, GITHUB_LIGHT.ground)).toBeGreaterThan(SELECTION_IDEAL_RATIO - 0.05);
     expect(contrastRatio(GITHUB_LIGHT.body, selection.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+  });
+
+  it("repairs Solarized Dark's selection into a tint of ground's own hue rather than the pure black CHM-38 named (ground carries 0.212 of its own chroma)", () => {
+    const { selection } = resolveSelectionAndBody(SOLARIZED_DARK.selection, SOLARIZED_DARK.ground, SOLARIZED_DARK.body);
+
+    expect(selection.wasRepaired).toBe(true);
+    expect(selection.hex).not.toBe("#000000");
+    expect(chromaOf(selection.hex)).toBeGreaterThan(SELECTION_MIN_CHROMA);
+    expect(contrastRatio(SOLARIZED_DARK.body, selection.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(selection.selectionVsGroundRatio).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
   });
 });

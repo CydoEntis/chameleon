@@ -76,6 +76,40 @@ export const SELECTION_MIN_VISIBLE_RATIO = 1.25;
 export const RATIO_CLEARANCE_MARGIN = 1.05;
 
 /**
+ * Minimum chroma (see chromaOf in palette/color.ts) a repaired selection
+ * highlight holds onto, even when ground itself holds less. CHM-38:
+ * repairing a selection by searching a hue-free grey satisfies both
+ * contrast floors but throws away the theme's own colour identity — 25 of
+ * the 26 bundled packs shipped a selection with essentially zero chroma,
+ * and Solarized Dark's search landed exactly on pure black. A repaired
+ * selection now tints ground's own hue instead (see
+ * palette/selection.ts's groundTintedAtLuminance) at a chroma related to
+ * ground's own — this floor only bites when ground itself is this neutral
+ * or more so, in which case a near-neutral selection is correct, not a bug.
+ * Kept low and unrelated to MIN_REPAIRED_CHROMA on purpose: a selection is
+ * a background fill sitting behind ordinary body text, not a role that
+ * needs to read as strongly coloured, and a value this small still rules
+ * out a literal chroma-0 grey.
+ */
+export const SELECTION_MIN_CHROMA = 0.05;
+
+/**
+ * Ceiling on the chroma a repaired selection tints toward, even when ground
+ * itself holds more. Reusing ground's own chroma verbatim can pin the tint
+ * back onto ground itself: Solarized Dark's ground (chroma 0.212) already
+ * sits at the darkest RGB byte its own hue and chroma allow (one channel is
+ * 0), so searching "darker than ground" at that same hue and chroma has
+ * nowhere to go and returns ground unchanged — a selection identical to its
+ * own background, invisible rather than merely grey. A lower ceiling keeps
+ * enough of the reachable-luminance range open on both sides of ground for
+ * the search in palette/selection.ts's groundTintedAtLuminance to actually
+ * move away from it, while staying comfortably above SELECTION_MIN_CHROMA
+ * so the ticket's own floor (chroma above 0.05 whenever ground's is) still
+ * clears with rounding room to spare.
+ */
+export const SELECTION_MAX_CHROMA = 0.08;
+
+/**
  * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
  * clear before it still counts as its role's colour rather than a tinted
  * grey. Set below Fairyfloss's error candidate's own native chroma (0.24,
