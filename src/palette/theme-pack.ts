@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
+import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
 import { repairAnsiSlots, type AnsiSlotName } from "./ansi.js";
 import { contrastRatio } from "./color.js";
 import { toPalette, type Appearance } from "./palette.js";
 import { repairFailingRoles } from "./repair.js";
 import { assignRolesByContrast } from "./roles.js";
 import { resolveSelectionAndBody } from "./selection.js";
+import { ACTIVE_ROW_IDEAL_FRACTION, resolveActiveRowAndText } from "./surfaces.js";
 import { SchemeSchema, type Scheme } from "./scheme.js";
 
 /**
@@ -43,12 +44,15 @@ export interface ThemePackManifest {
  * body once, the same resolution herdr's `selection_bg` reuses, so the two
  * targets can never disagree about what selection is (see CHM-30's
  * resolveSelectionAndBody). oh-my-posh and herdr's payload is the resolved,
- * repaired role table those adapters key their own blocks off. Every
- * adapter's apply() still takes a Scheme and derives what it needs itself —
- * see adapters/*.ts — so this is a precomputed, build-time-checkable copy of
- * exactly what apply() would derive live, not a second source of truth:
- * assignRolesByContrast, repairFailingRoles and resolveSelectionAndBody are
- * all pure, so the two can never disagree.
+ * repaired role table those adapters key their own blocks off — herdr's own
+ * `body` and `muted` are resolved a second time against its selected-row
+ * background (see CHM-50's resolveActiveRowAndText), so they can differ from
+ * oh-my-posh's copy of the same two roles; every other role always matches.
+ * Every adapter's apply() still takes a Scheme and derives what it needs
+ * itself — see adapters/*.ts — so this is a precomputed, build-time-checkable
+ * copy of exactly what apply() would derive live, not a second source of
+ * truth: assignRolesByContrast, repairFailingRoles, resolveSelectionAndBody
+ * and resolveActiveRowAndText are all pure, so the two can never disagree.
  */
 export interface ThemePackPayloads {
   readonly "windows-terminal": Scheme;
@@ -119,6 +123,41 @@ function assertSelectionReadableUnderBody(selectionHex: string, bodyHex: string,
 }
 
 /**
+ * Fails loudly if the resolved active row and its text tokens do not
+ * actually clear their own floors — the same build-time gate as
+ * assertRoleClearsFloor and assertSelectionReadableUnderBody, this time on
+ * what resolveActiveRowAndText is expected to guarantee (CHM-50): row
+ * visibility against ground, and text/subtext0 against every surface
+ * `resolveActiveRowAndText` was given, ground and the active row alike.
+ */
+function assertActiveRowAndTextClearFloors(
+  activeRowBackgroundHex: string,
+  textHex: string,
+  subtextHex: string,
+  groundHex: string,
+  schemeName: string,
+): void {
+  const rowVisibilityRatio = contrastRatio(activeRowBackgroundHex, groundHex);
+  if (rowVisibilityRatio < ACTIVE_ROW_MIN_VISIBLE_RATIO) {
+    throw new Error(
+      `"${schemeName}" active row measures ${rowVisibilityRatio.toFixed(2)} against sidebar, below its visibility floor of ${ACTIVE_ROW_MIN_VISIBLE_RATIO}`,
+    );
+  }
+  for (const backgroundHex of [groundHex, activeRowBackgroundHex]) {
+    const textRatio = contrastRatio(textHex, backgroundHex);
+    if (textRatio < TEXT_MIN_RATIO) {
+      throw new Error(`"${schemeName}" active row text measures ${textRatio.toFixed(2)} against ${backgroundHex}, below its floor of ${TEXT_MIN_RATIO}`);
+    }
+    const subtextRatio = contrastRatio(subtextHex, backgroundHex);
+    if (subtextRatio < MUTED_MIN_RATIO) {
+      throw new Error(
+        `"${schemeName}" active row subtext0 measures ${subtextRatio.toFixed(2)} against ${backgroundHex}, below its floor of ${MUTED_MIN_RATIO}`,
+      );
+    }
+  }
+}
+
+/**
  * Fails loudly if a repaired ANSI slot does not actually clear
  * ANSI_MIN_RATIO — the same build-time gate as assertRoleClearsFloor and
  * assertSelectionReadableUnderBody, this time on what repairAnsiSlots is
@@ -171,6 +210,20 @@ export function buildThemePack(
   const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedPalette.ground.hex, resolvedPalette.body.hex);
   assertSelectionReadableUnderBody(selection.hex, body.hex, scheme.name);
 
+  // Herdr's selected-row background and its text tokens, resolved together
+  // (CHM-50) — see palette/surfaces.ts's own doc comment for why order and
+  // shared-value repair both matter. panel_bg is not passed as an "other"
+  // surface: it is definitionally ground (see adapters/herdr.ts's
+  // structuralTokenValues), so checking against ground already covers it.
+  const rowAndText = resolveActiveRowAndText(
+    resolvedPalette.ground.hex,
+    body.hex,
+    resolvedPalette.muted.hex,
+    [selection.hex],
+    ACTIVE_ROW_IDEAL_FRACTION,
+  );
+  assertActiveRowAndTextClearFloors(rowAndText.activeRowBackgroundHex, rowAndText.textHex, rowAndText.subtextHex, resolvedPalette.ground.hex, scheme.name);
+
   // The 16 ANSI slots an application paints text with directly, repaired
   // against ANSI_MIN_RATIO independently of the six roles above — see
   // palette/ansi.ts (CHM-32).
@@ -178,7 +231,11 @@ export function buildThemePack(
   assertAnsiSlotsClearFloor(ansiRepair.slots, resolvedPalette.ground.hex, scheme.name);
 
   const roleHexes = roleHexTable(resolvedPalette);
-  const herdrRoleHexes = { ...roleHexes, body: body.hex };
+  // herdr's own body/muted differ from oh-my-posh's here (CHM-30's selection
+  // nudge, and now CHM-50's active-row repair) — see ThemePackPayloads for
+  // why this is the one payload allowed to disagree with the plain role
+  // table on these two roles.
+  const herdrRoleHexes = { ...roleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
 
   return {
     manifest: {

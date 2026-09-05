@@ -110,6 +110,20 @@ export const SELECTION_MIN_CHROMA = 0.05;
 export const SELECTION_MAX_CHROMA = 0.08;
 
 /**
+ * The lowest active-row-background-vs-sidebar-background contrast that
+ * still reads as a distinct, selected row rather than an ordinary one.
+ * CHM-50: a prior fix chased subtext0's readability by moving
+ * active_row_bg almost onto sidebar_bg, and 17 of the 26 bundled packs
+ * measured under 1.15 for the pair — dracula-dark at 1.00, the same colour,
+ * so the "selected" row was not visibly selected at all. This floor is
+ * resolved first and never traded away for readability; see
+ * palette/surfaces.ts's resolveActiveRowAndText, which repairs the text
+ * tokens themselves against whatever this settles on, rather than pulling
+ * the row back toward invisibility to make them fit.
+ */
+export const ACTIVE_ROW_MIN_VISIBLE_RATIO = 2.0;
+
+/**
  * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
  * clear before it still counts as its role's colour rather than a tinted
  * grey. Set below Fairyfloss's error candidate's own native chroma (0.24,

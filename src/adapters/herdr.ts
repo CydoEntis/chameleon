@@ -6,6 +6,7 @@ import { ROLES, type Role } from "../constants.js";
 import { mix, rgbDistance } from "../palette/color.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import { resolveSelectionAndBody } from "../palette/selection.js";
+import { ACTIVE_ROW_IDEAL_FRACTION, resolveActiveRowAndText } from "../palette/surfaces.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
 import { herdrConfigPath } from "./platform.js";
@@ -283,9 +284,13 @@ function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, stri
  * Catppuccin's, running from nearest ground to nearest body. Evenly spaced
  * rather than tuned per theme: these tokens never carry text, so the scale
  * only needs to read as a ramp, not clear any particular contrast ratio.
+ * `SURFACE_0_FRACTION` is the one exception — it is also active_row_bg's own
+ * ideal fraction (see ACTIVE_ROW_IDEAL_FRACTION), since a selected row is
+ * meant to read as this same raised tone, not a colour of its own, so it is
+ * sourced from palette/surfaces.ts rather than redeclared here.
  */
 const SURFACE_DIM_FRACTION = 1 / 6;
-const SURFACE_0_FRACTION = 2 / 6;
+const SURFACE_0_FRACTION = ACTIVE_ROW_IDEAL_FRACTION;
 const SURFACE_1_FRACTION = 3 / 6;
 const OVERLAY_0_FRACTION = 4 / 6;
 const OVERLAY_1_FRACTION = 5 / 6;
@@ -313,13 +318,17 @@ function surfaceScale(groundHex: string, bodyHex: string): Record<string, string
  * colour, invisible as a highlight and unreadable underneath it at once,
  * and passing that straight through would ship the same bug into Herdr
  * that CHM-30 exists to fix.
+ *
+ * `activeRowBackgroundHex` is `resolveActiveRowAndText`'s own output
+ * (CHM-50), not a fresh mix computed here — it must be the exact background
+ * `bodyHex`/`mutedHex` (this file's `text`/`subtext0`) were just repaired
+ * against, or the two could disagree about what the selected row's own
+ * background is.
  */
-function structuralTokenValues(groundHex: string, bodyHex: string, selectionHex: string): Record<string, string> {
+function structuralTokenValues(groundHex: string, activeRowBackgroundHex: string, bodyHex: string, selectionHex: string): Record<string, string> {
   return {
     panel_bg: groundHex,
-    // An active row reads as a slightly raised surface — the same tone as
-    // surface0, not a colour of its own.
-    active_row_bg: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
+    active_row_bg: activeRowBackgroundHex,
     selection_bg: selectionHex,
     ...surfaceScale(groundHex, bodyHex),
   };
@@ -627,10 +636,15 @@ function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenV
  * config, so a future addition that invents a token fails immediately
  * instead of shipping a key Herdr silently ignores (CHM-21).
  */
-function customTokenValues(scheme: Scheme, colorTable: Readonly<Record<Role, string>>, selectionHex: string): Record<string, string> {
+function customTokenValues(
+  scheme: Scheme,
+  colorTable: Readonly<Record<Role, string>>,
+  activeRowBackgroundHex: string,
+  selectionHex: string,
+): Record<string, string> {
   const tokenValues = {
     ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
-    ...structuralTokenValues(colorTable.ground, colorTable.body, selectionHex),
+    ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, selectionHex),
     ...extraAccentTokenValues(scheme),
   };
   assertOnlyAcceptedHerdrTokens(tokenValues);
@@ -643,9 +657,10 @@ function upsertCustomBlock(
   eol: string,
   scheme: Scheme,
   colorTable: Readonly<Record<Role, string>>,
+  activeRowBackgroundHex: string,
   selectionHex: string,
 ): string {
-  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable, selectionHex));
+  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable, activeRowBackgroundHex, selectionHex));
 }
 
 /**
@@ -665,9 +680,10 @@ function upsertUiAccent(text: string, eol: string, accentHex: string): string {
  *
  * The selection highlight — and, on the rare pack where ground and body
  * leave no room for a visible one, body itself — is resolved once here via
- * resolveSelectionAndBody (CHM-30), the exact pipeline buildThemePack runs
- * at build time, so a pack's live apply can never disagree with its own
- * shipped payload.
+ * resolveSelectionAndBody (CHM-30). The active row's own background and its
+ * text/subtext0 tokens are then resolved together via resolveActiveRowAndText
+ * (CHM-50). Both are the exact pipeline buildThemePack runs at build time, so
+ * a pack's live apply can never disagree with its own shipped payload.
  */
 function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
   const resolvedConfigPath = requireConfigPath(configPath);
@@ -681,11 +697,15 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
   const eol = detectLineEnding(originalText);
   const resolvedRoleHexes = resolveRoleHexes(scheme);
   const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedRoleHexes.ground, resolvedRoleHexes.body);
-  const colorTable = { ...resolvedRoleHexes, body: body.hex };
+  // panel_bg is not passed as an "other" surface here: it is definitionally
+  // ground (see structuralTokenValues), so checking against ground already
+  // covers it.
+  const rowAndText = resolveActiveRowAndText(resolvedRoleHexes.ground, body.hex, resolvedRoleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
+  const colorTable = { ...resolvedRoleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
   const themeName = herdrThemeNameFor(slug, colorTable.ground);
 
   const withName = upsertThemeName(originalText, eol, themeName);
-  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable, selection.hex);
+  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable, rowAndText.activeRowBackgroundHex, selection.hex);
   const withUiAccent = upsertUiAccent(withCustom, eol, colorTable.accent);
 
   writeFileSync(resolvedConfigPath, withUiAccent, "utf8");
