@@ -9,15 +9,14 @@ import type { Role } from "./constants.js";
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
 import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters/herdr.js";
 import {
-  applyPromptLayoutForCurrentShell,
   createDefaultOhMyPoshAdapter,
   createOhMyPoshAdapter,
-  currentPromptTrackingConfigPath,
+  ensureOhMyPoshOwnedConfigSeededForCurrentShell,
   ohMyPoshMatchesRoleHexes,
   OH_MY_POSH_WINGET_PACKAGE_ID,
-  pointerNamesBundledPromptConfig,
-  restoreOriginalPrompt,
+  restoreOriginalPromptForCurrentShell,
   undoOhMyPosh,
+  writeOwnedPromptConfigForCurrentShell,
 } from "./adapters/oh-my-posh.js";
 import { isWindows } from "./adapters/platform.js";
 import { clearPreviewState, readPreviewState, writePreviewState } from "./adapters/preview-state.js";
@@ -308,9 +307,10 @@ function adapterForTarget(target: Target): DetectableTargetAdapter {
  * which is why Herdr's sidebar never changed until something unrelated
  * (a restart, a manual `reload-config`) happened to re-read the file for
  * it. Windows Terminal and Oh My Posh's own `reload` are no-ops — the
- * former watches settings.json itself, the latter repaints through the
- * live-reload hook `apply` already wired into the shell's profile — so
- * calling them here costs nothing and keeps the same write-then-reload
+ * former watches settings.json itself, the latter repaints on its own next
+ * render — Oh My Posh's own prompt command re-reads the fixed config path
+ * `apply` already wrote (CHM-59) — so calling them here costs nothing and
+ * keeps the same write-then-reload
  * shape for every target. Herdr's own `apply` also takes the pack's `slug`
  * — unlike the raw scheme, Herdr needs pack identity to pick a real
  * built-in theme name, see adapters/herdr.ts's herdrThemeNameFor — so this,
@@ -757,10 +757,10 @@ export function findFamilySibling(appearance: Appearance, userThemeDir?: string,
 // A prompt layout is Oh My Posh's own concern alone — Windows Terminal,
 // Herdr and Claude Code have no segment layout of their own to switch — so
 // unlike applyThemePack this never fans out across TARGETS. The load-bearing
-// rule is CHM-47's own: a bundled layout is written to Chameleon's own
-// config file and the pointer is repointed at it; the user's own .omp.json,
-// wherever it lives, is never opened, let alone written. See
-// adapters/oh-my-posh.ts's applyPromptLayout/restoreOriginalPrompt.
+// rule is CHM-47's own, kept under CHM-59's single owned config: a bundled
+// layout is written into Chameleon's one owned file; the user's own
+// .omp.json, wherever it lives, is never opened, let alone written. See
+// adapters/oh-my-posh.ts's writeOwnedPromptConfig/restoreOriginalPrompt.
 
 /** `ch doctor`'s own "not installed" message plus the one-line winget install command, reused wherever a prompt-layout command needs to explain Oh My Posh's absence rather than fail obscurely on it — see CHM-47's "This is the one moment a person has a concrete reason to install it." Windows-only, like every other winget offer in this file — see checkTarget. */
 export function ohMyPoshMissingMessage(): string {
@@ -801,8 +801,8 @@ function findBundledPromptPack(slug: string): BundledPromptPack {
   return bundled;
 }
 
-/** The oh-my-posh role table a prompt layout should be resolved against — the currently applied theme's own. Throws, naming `chm themes`, when no theme has ever been applied: a layout is authored purely in role references (CHM-46) and has no colour of its own to fall back to. */
-function currentThemeRoleHexesForPrompts(userThemeDir?: string, statePath?: string): Readonly<Record<Role, string>> {
+/** The currently applied theme's own loaded pack — what both a prompt layout's role table and `chm prompt mine`'s own recolor scheme are read from. Throws, naming `chm themes`, when no theme has ever been applied: a layout is authored purely in role references (CHM-46) and has no colour of its own to fall back to, and `chm prompt mine` has nothing to recolor the user's own config with either. */
+function currentLoadedThemePackForPrompts(userThemeDir?: string, statePath?: string): LoadedThemePack {
   const current = currentPack(userThemeDir, statePath);
   if (!current || current.name === undefined) {
     throw new Error("no theme has been applied yet — run `chm themes` first, so Chameleon has colours to paint a prompt layout with");
@@ -812,7 +812,17 @@ function currentThemeRoleHexesForPrompts(userThemeDir?: string, statePath?: stri
   if (!loaded) {
     throw new Error(`the active theme "${current.slug}" is no longer available — run \`chm themes\` and pick one`);
   }
-  return loaded.pack.payloads["oh-my-posh"];
+  return loaded;
+}
+
+/** The oh-my-posh role table a prompt layout should be resolved against — the currently applied theme's own. See currentLoadedThemePackForPrompts. */
+function currentThemeRoleHexesForPrompts(userThemeDir?: string, statePath?: string): Readonly<Record<Role, string>> {
+  return currentLoadedThemePackForPrompts(userThemeDir, statePath).pack.payloads["oh-my-posh"];
+}
+
+/** The currently applied theme's own full scheme — what `chm prompt mine` recolors the user's real config against, since that config can carry foreign palette keys a plain role table cannot repaint (see role-mapping.ts's nearestHueFamilyHue). See currentLoadedThemePackForPrompts. */
+function currentThemeSchemeForPrompts(userThemeDir?: string, statePath?: string): Scheme {
+  return currentLoadedThemePackForPrompts(userThemeDir, statePath).pack.payloads["windows-terminal"];
 }
 
 /** The one-sentence warning `chm prompt <name>` shows for a layout that needs a Nerd Font when none is currently selected — CHM-47's "picking it says what will look wrong and how to fix it." Never blocks the apply: the layout is still written and pointed at, exactly as picked. */
@@ -831,14 +841,14 @@ export interface PromptPackApplyResult {
 /**
  * Applies the bundled prompt layout named `slug`: resolves it against the
  * currently applied theme's own roles (currentThemeRoleHexesForPrompts) and
- * writes the result to Chameleon's own config file, repointing Oh My Posh's
- * pointer at it — see adapters/oh-my-posh.ts's applyPromptLayout. The
- * user's own config path is recorded once, the very first time this is
- * called (readPromptState returning undefined), and carried forward
- * unchanged on every switch after that — see prompt-state.ts's
- * originalConfigPath and this ticket's "so 'mine' is always recoverable
- * even after several changes." `promptStatePath`, like `userThemeDir` and
- * `statePath`, is only ever overridden by tests.
+ * writes the result into Chameleon's single owned config — see
+ * adapters/oh-my-posh.ts's writeOwnedPromptConfigForCurrentShell. The user's
+ * own config path is discovered and recorded once, the very first time
+ * anything is ever applied through Chameleon, and carried forward unchanged
+ * on every switch after that — see ensureOhMyPoshOwnedConfigSeededForCurrentShell
+ * and this ticket's "so 'mine' is always recoverable even after several
+ * changes." `promptStatePath`, like `userThemeDir` and `statePath`, is only
+ * ever overridden by tests.
  */
 export function applyPromptPack(
   slug: string,
@@ -853,10 +863,8 @@ export function applyPromptPack(
   const roleHexes = currentThemeRoleHexesForPrompts(userThemeDir, statePath);
   const resolvedConfig = resolvePromptLayoutRoleReferences(bundled.layout, roleHexes);
 
-  const existingState = readPromptState(promptStatePath);
-  const originalConfigPath = existingState?.originalConfigPath ?? currentPromptTrackingConfigPath();
-
-  const detail = applyPromptLayoutForCurrentShell(resolvedConfig);
+  const originalConfigPath = ensureOhMyPoshOwnedConfigSeededForCurrentShell(promptStatePath);
+  const detail = writeOwnedPromptConfigForCurrentShell(resolvedConfig);
   writePromptState({ originalConfigPath, activeSlug: bundled.manifest.slug, updatedAtMs: Date.now() }, promptStatePath);
 
   return {
@@ -868,14 +876,15 @@ export function applyPromptPack(
 }
 
 /**
- * `chm prompt mine` — repoints Oh My Posh back at the config path recorded
- * before the first bundled layout was ever applied, and only that: the
- * config itself was never touched, so there is nothing else to restore. See
- * this ticket's "chm prompt mine puts the pointer back." Throws when no
- * bundled layout has ever been applied — there is no recorded path to go
- * back to.
+ * `chm prompt mine` — copies the config path recorded before the first
+ * bundled layout was ever applied, fresh, into Chameleon's owned config and
+ * recolors it against the currently applied theme (see
+ * restoreOriginalPromptForCurrentShell): the recorded path itself is only
+ * ever read, never written, so it is exactly the config the user has always
+ * had, however it has changed since. Throws when no bundled layout has ever
+ * been applied — there is no recorded path to go back to.
  */
-export function restorePromptToMine(promptStatePath?: string): void {
+export function restorePromptToMine(promptStatePath?: string, userThemeDir?: string, statePath?: string): void {
   if (!createDefaultOhMyPoshAdapter().detect()) {
     throw new Error(ohMyPoshMissingMessage());
   }
@@ -883,7 +892,8 @@ export function restorePromptToMine(promptStatePath?: string): void {
   if (!state) {
     throw new Error("no bundled prompt layout has ever been applied — nothing to restore");
   }
-  restoreOriginalPrompt(state.originalConfigPath);
+  const scheme = currentThemeSchemeForPrompts(userThemeDir, statePath);
+  restoreOriginalPromptForCurrentShell(state.originalConfigPath, scheme);
   writePromptState({ ...state, activeSlug: undefined, updatedAtMs: Date.now() }, promptStatePath);
 }
 
@@ -898,17 +908,16 @@ export interface CurrentPromptReport {
  * The prompt layout `ch` last switched to, or undefined when no bundled
  * layout has ever been applied — `ch current`'s own prompt row (CHM-47).
  *
- * CHM-57: prompt-state.json alone is not trusted for this — it can still
- * name a layout active after some other write clobbered the pointer back to
- * the user's own config (this ticket's own reproduction), and a shell only
- * ever loads whatever the pointer names. Reporting "mine" whenever the
- * pointer disagrees is what keeps this in line with CLAUDE.md's "chm current
- * must never report a layout that is not the one in force."
+ * prompt-state.json's own `activeSlug` is trusted outright here — CHM-59
+ * removed the pointer file CHM-57 needed to cross-check it against: every
+ * theme or layout apply now writes the same single owned config, through
+ * this one module, so there is no longer a second writer that could move
+ * $POSH_CONFIG somewhere prompt-state.json does not know about.
  */
 export function currentPromptPack(promptStatePath?: string): CurrentPromptReport | undefined {
   const state = readPromptState(promptStatePath);
   if (!state) return undefined;
-  if (state.activeSlug === undefined || !pointerNamesBundledPromptConfig()) return { slug: undefined, name: undefined };
+  if (state.activeSlug === undefined) return { slug: undefined, name: undefined };
   const bundled = loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === state.activeSlug);
   return { slug: state.activeSlug, name: bundled?.manifest.name };
 }

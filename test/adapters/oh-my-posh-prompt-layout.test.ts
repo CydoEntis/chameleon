@@ -1,16 +1,19 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  activeConfigPathForPromptTracking,
-  applyPromptLayout,
+  ensureOhMyPoshOwnedConfigSeeded,
   restoreOriginalPrompt,
+  writeOwnedPromptConfig,
 } from "../../src/adapters/oh-my-posh.js";
+import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
 /**
- * CHM-47's own load-bearing guarantee: switching to a bundled prompt layout,
- * and back, must leave the user's own .omp.json byte-identical — this is a
+ * CHM-47's own load-bearing guarantee, kept under CHM-59's single owned
+ * config: switching to a bundled prompt layout, and back with `chm prompt
+ * mine`, must leave the user's own .omp.json byte-identical — this is a
  * hand-edited fixture carrying comments and an unrelated setting, the same
  * shape test/adapters/fixtures/oh-my-posh-config.omp.json uses for the
  * theme-swap case.
@@ -37,18 +40,45 @@ const USER_CONFIG_TEXT = `// My own prompt — please don't touch this file, Cha
 
 const PROFILE_TEXT = "# my profile\nSet-Alias ll Get-ChildItem\n";
 
+// A real, minimal scheme — never invented hex, see CLAUDE.md's colour-test
+// rule — used wherever a test needs to recolor rather than just write raw
+// JSON. Values from 0x96f (vendor/iterm2-color-schemes/windows-terminal).
+const ZEROX96F_SCHEME: Scheme = parseScheme({
+  name: "0x96f",
+  black: "#262427",
+  red: "#ff666d",
+  green: "#b3e03a",
+  yellow: "#ffc739",
+  blue: "#00cde8",
+  purple: "#a392e8",
+  cyan: "#9deaf6",
+  white: "#fcfcfa",
+  brightBlack: "#545452",
+  brightRed: "#ff7e83",
+  brightGreen: "#bee55e",
+  brightYellow: "#ffd05e",
+  brightBlue: "#1bd5eb",
+  brightPurple: "#b0a3eb",
+  brightCyan: "#acedf8",
+  brightWhite: "#fcfcfa",
+  background: "#262427",
+  foreground: "#fcfcfa",
+  cursorColor: "#fcfcfa",
+  selectionBackground: "#fcfcfa",
+});
+
 let stateDir: string;
 let userConfigPath: string;
-let bundledConfigPath: string;
+let ownedConfigPath: string;
 let profilePath: string;
-let pointerPath: string;
+let promptStatePath: string;
 
 beforeEach(() => {
   stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-prompt-layout-"));
   userConfigPath = path.join(stateDir, "my-prompt.omp.json");
-  bundledConfigPath = path.join(stateDir, "bundled-prompt.omp.json");
+  ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
   profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-  pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+  promptStatePath = path.join(stateDir, "prompt-state.json");
   writeFileSync(userConfigPath, USER_CONFIG_TEXT, "utf8");
   writeFileSync(profilePath, PROFILE_TEXT, "utf8");
 });
@@ -57,79 +87,78 @@ afterEach(() => {
   rmSync(stateDir, { recursive: true, force: true });
 });
 
-function readPointer(): { configPath: string; updatedAtMs: number } {
-  return JSON.parse(readFileSync(pointerPath, "utf8"));
-}
+describe("writeOwnedPromptConfig", () => {
+  it("writes the resolved config to Chameleon's own owned config, never the user's own config path", () => {
+    writeOwnedPromptConfig({ blocks: [{ segments: [{ foreground: "#ff0000" }] }] }, ownedConfigPath, profilePath, "pwsh");
 
-describe("applyPromptLayout", () => {
-  it("writes the resolved config to Chameleon's own bundled-prompt file, never the user's own config path", () => {
-    applyPromptLayout({ blocks: [{ segments: [{ foreground: "#ff0000" }] }] }, bundledConfigPath, profilePath, pointerPath, "pwsh");
-
-    expect(JSON.parse(readFileSync(bundledConfigPath, "utf8"))).toEqual({ blocks: [{ segments: [{ foreground: "#ff0000" }] }] });
+    expect(JSON.parse(readFileSync(ownedConfigPath, "utf8"))).toEqual({ blocks: [{ segments: [{ foreground: "#ff0000" }] }] });
     // CHM-47's own load-bearing rule: the user's file was never opened.
     expect(readFileSync(userConfigPath, "utf8")).toBe(USER_CONFIG_TEXT);
   });
 
-  it("repoints the pointer at the bundled config, not at whatever the pointer named before", () => {
-    applyPromptLayout({ blocks: [] }, bundledConfigPath, profilePath, pointerPath, "pwsh");
-    expect(readPointer().configPath).toBe(bundledConfigPath);
-  });
-
-  it("installs the live-reload hook when the profile has never had one, reporting the same creation notice CHM-39 asks for", () => {
+  it("installs the profile's init line when the profile has never had one, reporting the same creation notice CHM-39 asks for", () => {
     const freshProfilePath = path.join(stateDir, "fresh_profile.ps1");
-    const notice = applyPromptLayout({ blocks: [] }, bundledConfigPath, freshProfilePath, pointerPath, "pwsh");
+    const notice = writeOwnedPromptConfig({ blocks: [] }, ownedConfigPath, freshProfilePath, "pwsh");
     expect(notice).toContain(freshProfilePath);
     expect(readFileSync(freshProfilePath, "utf8")).toContain("ch:begin");
+    expect(readFileSync(freshProfilePath, "utf8")).toContain(ownedConfigPath);
   });
 
   it("leaves an already-hooked profile's own unrelated lines byte-identical outside Chameleon's own marker block", () => {
-    applyPromptLayout({ blocks: [] }, bundledConfigPath, profilePath, pointerPath, "pwsh");
+    writeOwnedPromptConfig({ blocks: [] }, ownedConfigPath, profilePath, "pwsh");
     const resultText = readFileSync(profilePath, "utf8");
     expect(resultText).toContain("# my profile");
     expect(resultText).toContain("Set-Alias ll Get-ChildItem");
   });
 });
 
-describe("activeConfigPathForPromptTracking", () => {
-  it("falls back to the given configPath when the pointer has never been written", () => {
-    const resolved = activeConfigPathForPromptTracking(userConfigPath, profilePath, pointerPath, "pwsh", bundledConfigPath);
-    expect(resolved).toBe(userConfigPath);
+describe("ensureOhMyPoshOwnedConfigSeeded", () => {
+  it("discovers the user's own config via the profile's own init line, and copies it into the owned path", () => {
+    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${userConfigPath}' | Invoke-Expression\n`, "utf8");
+
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+
+    expect(discovered).toBe(userConfigPath);
+    expect(readFileSync(ownedConfigPath, "utf8")).toBe(USER_CONFIG_TEXT);
+    // The user's own file was only ever read, never written.
+    expect(readFileSync(userConfigPath, "utf8")).toBe(USER_CONFIG_TEXT);
   });
 
-  it("prefers the pointer's own configPath once one exists, over the given configPath — the pointer is authoritative once anything has ever applied through it", () => {
-    writeFileSync(pointerPath, JSON.stringify({ configPath: userConfigPath, updatedAtMs: 1 }), "utf8");
-    const resolved = activeConfigPathForPromptTracking(undefined, profilePath, pointerPath, "pwsh", bundledConfigPath);
-    expect(resolved).toBe(userConfigPath);
-  });
+  it("is a no-op once prompt-state already records an origin — never re-discovers or re-copies", () => {
+    writeFileSync(ownedConfigPath, "{}", "utf8");
+    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${userConfigPath}' | Invoke-Expression\n`, "utf8");
+    ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+    writeFileSync(ownedConfigPath, "{}", "utf8"); // simulate a layout switch since the first seed
 
-  it("never adopts Chameleon's own bundled-prompt file as 'the user's own' — falls back to configPath instead", () => {
-    writeFileSync(pointerPath, JSON.stringify({ configPath: bundledConfigPath, updatedAtMs: 1 }), "utf8");
-    const resolved = activeConfigPathForPromptTracking(userConfigPath, profilePath, pointerPath, "pwsh", bundledConfigPath);
-    expect(resolved).toBe(userConfigPath);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+
+    expect(discovered).toBe(userConfigPath);
+    // Not re-copied over whatever a later layout switch left in place.
+    expect(readFileSync(ownedConfigPath, "utf8")).toBe("{}");
   });
 });
 
 describe("restoreOriginalPrompt", () => {
-  it("repoints the pointer at the original config path without ever opening the file at that path", () => {
-    applyPromptLayout({ blocks: [] }, bundledConfigPath, profilePath, pointerPath, "pwsh");
-    expect(readPointer().configPath).toBe(bundledConfigPath);
+  it("copies the original config's current content, recolors it into the owned config, and never opens it for writing", () => {
+    // A prior layout switch left something else in the owned config.
+    writeFileSync(ownedConfigPath, JSON.stringify({ blocks: [] }), "utf8");
 
-    restoreOriginalPrompt(userConfigPath, pointerPath);
+    restoreOriginalPrompt(userConfigPath, ZEROX96F_SCHEME, ownedConfigPath, profilePath, "pwsh");
 
-    expect(readPointer().configPath).toBe(userConfigPath);
     // CHM-47's own acceptance criterion: byte-identical, even after a
     // switch away and back.
     expect(readFileSync(userConfigPath, "utf8")).toBe(USER_CONFIG_TEXT);
+    const resultPalette = (parseJsonc(readFileSync(ownedConfigPath, "utf8"), [], { allowTrailingComma: true }) as {
+      palette: Record<string, string>;
+    }).palette;
+    expect(resultPalette["accent"]).toMatch(/^#[0-9a-f]{6}$/i);
   });
 
-  it("works after several switches, not only the first — chm prompt mine's own acceptance criterion", () => {
-    applyPromptLayout({ blocks: [{ segments: [{ foreground: "#111111" }] }] }, bundledConfigPath, profilePath, pointerPath, "pwsh");
-    applyPromptLayout({ blocks: [{ segments: [{ foreground: "#222222" }] }] }, bundledConfigPath, profilePath, pointerPath, "pwsh");
-    applyPromptLayout({ blocks: [{ segments: [{ foreground: "#333333" }] }] }, bundledConfigPath, profilePath, pointerPath, "pwsh");
+  it("re-reads the original file fresh every time — several restores in a row all reflect the same untouched original", () => {
+    restoreOriginalPrompt(userConfigPath, ZEROX96F_SCHEME, ownedConfigPath, profilePath, "pwsh");
+    restoreOriginalPrompt(userConfigPath, ZEROX96F_SCHEME, ownedConfigPath, profilePath, "pwsh");
+    restoreOriginalPrompt(userConfigPath, ZEROX96F_SCHEME, ownedConfigPath, profilePath, "pwsh");
 
-    restoreOriginalPrompt(userConfigPath, pointerPath);
-
-    expect(readPointer().configPath).toBe(userConfigPath);
     expect(readFileSync(userConfigPath, "utf8")).toBe(USER_CONFIG_TEXT);
   });
 });
