@@ -4,6 +4,7 @@ import { contrastRatio } from "./color.js";
 import { toPalette, type Appearance } from "./palette.js";
 import { repairFailingRoles } from "./repair.js";
 import { assignRolesByContrast } from "./roles.js";
+import { resolveSelectionAndBody } from "./selection.js";
 import { SchemeSchema, type Scheme } from "./scheme.js";
 
 /**
@@ -36,20 +37,22 @@ export interface ThemePackManifest {
 
 /**
  * The colour data every target needs to theme itself, computed once at
- * build time. windows-terminal's payload is the raw Scheme because that
- * adapter's apply() writes a scheme's own 20 slots verbatim into
- * schemes[]; oh-my-posh and herdr's payload is the resolved, repaired role
- * table those adapters key their own blocks off. Every adapter's apply()
- * still takes a Scheme and derives what it needs itself — see
- * adapters/*.ts — so this is a precomputed, build-time-checkable copy of
+ * build time. windows-terminal's payload is the scheme's own 20 slots,
+ * verbatim, apart from `selectionBackground` — resolved against ground and
+ * body once, the same resolution herdr's `selection_bg` reuses, so the two
+ * targets can never disagree about what selection is (see CHM-30's
+ * resolveSelectionAndBody). oh-my-posh and herdr's payload is the resolved,
+ * repaired role table those adapters key their own blocks off. Every
+ * adapter's apply() still takes a Scheme and derives what it needs itself —
+ * see adapters/*.ts — so this is a precomputed, build-time-checkable copy of
  * exactly what apply() would derive live, not a second source of truth:
- * assignRolesByContrast and repairFailingRoles are pure, so the two can
- * never disagree.
+ * assignRolesByContrast, repairFailingRoles and resolveSelectionAndBody are
+ * all pure, so the two can never disagree.
  */
 export interface ThemePackPayloads {
   readonly "windows-terminal": Scheme;
   readonly "oh-my-posh": Readonly<Record<Role, string>>;
-  readonly herdr: Readonly<Record<Role, string>>;
+  readonly herdr: Readonly<Record<Role, string>> & { readonly selection_bg: string };
 }
 
 export interface ThemePack {
@@ -98,6 +101,23 @@ function assertRoleClearsFloor(role: Role, hex: string, groundHex: string, schem
 }
 
 /**
+ * Fails loudly if a resolved selection cannot be read under body text — the
+ * one guarantee resolveSelectionAndBody always keeps, even on the pack
+ * where ground and body leave no colour able to also clear
+ * SELECTION_MIN_VISIBLE_RATIO against ground (see its own doc comment).
+ * Mirrors assertRoleClearsFloor: a build-time gate on what the resolver is
+ * expected to guarantee, not a second repair attempt.
+ */
+function assertSelectionReadableUnderBody(selectionHex: string, bodyHex: string, schemeName: string): void {
+  const ratio = contrastRatio(bodyHex, selectionHex);
+  if (ratio < TEXT_MIN_RATIO) {
+    throw new Error(
+      `"${schemeName}" selection measures ${ratio.toFixed(2)} for body-on-selection, below its floor of ${TEXT_MIN_RATIO}`,
+    );
+  }
+}
+
+/**
  * Runs a scheme through the full contrast engine — assign, then repair —
  * and packages the result as a shippable pack: a manifest carrying identity
  * and attribution, plus every target's payload. Pure: no file I/O, so the
@@ -125,7 +145,16 @@ export function buildThemePack(
     assertRoleClearsFloor(role, resolvedPalette[role].hex, resolvedPalette.ground.hex, scheme.name);
   }
 
+  // Resolved once, from the roles every other target already keys off, so
+  // Windows Terminal and Herdr — the only two targets a selection actually
+  // paints behind — can never disagree about what it is. See CHM-30's
+  // resolveSelectionAndBody for the rule and ThemePackPayloads for why this
+  // is the one case herdr's own role table can differ from oh-my-posh's.
+  const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedPalette.ground.hex, resolvedPalette.body.hex);
+  assertSelectionReadableUnderBody(selection.hex, body.hex, scheme.name);
+
   const roleHexes = roleHexTable(resolvedPalette);
+  const herdrRoleHexes = { ...roleHexes, body: body.hex };
 
   return {
     manifest: {
@@ -136,9 +165,9 @@ export function buildThemePack(
       ...(attribution !== undefined ? { attribution } : {}),
     },
     payloads: {
-      "windows-terminal": scheme,
+      "windows-terminal": { ...scheme, selectionBackground: selection.hex },
       "oh-my-posh": roleHexes,
-      herdr: roleHexes,
+      herdr: { ...herdrRoleHexes, selection_bg: selection.hex },
     },
   };
 }
@@ -179,7 +208,7 @@ export const ThemePackSchema = z.object({
   payloads: z.object({
     "windows-terminal": SchemeSchema,
     "oh-my-posh": RoleHexTableSchema,
-    herdr: RoleHexTableSchema,
+    herdr: RoleHexTableSchema.extend({ selection_bg: hexColor }),
   }),
 });
 

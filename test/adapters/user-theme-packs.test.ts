@@ -52,7 +52,11 @@ describe("loadUserThemePacks", () => {
     expect(result.packs).toHaveLength(1);
     expect(result.packs[0]?.manifest.name).toBe("My Dracula");
     expect(result.packs[0]?.manifest.slug).toBe("my-dracula-dark");
-    expect(result.packs[0]?.payloads["windows-terminal"]).toEqual(MY_DRACULA_SCHEME);
+    // Apart from selectionBackground, which CHM-30 resolves for every pack,
+    // user-supplied or bundled alike — see theme-pack.test.ts's equivalent
+    // assertion on a bundled pack.
+    const wtPayload = result.packs[0]?.payloads["windows-terminal"];
+    expect(wtPayload).toEqual({ ...MY_DRACULA_SCHEME, selectionBackground: wtPayload?.selectionBackground });
   });
 
   it("never derives a slug from name or family when one is declared, even if it disagrees with them", () => {
