@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { emitKeypressEvents, type Key } from "node:readline";
+import { fileURLToPath } from "node:url";
 import {
   addSegment,
   applyThemePack,
@@ -25,6 +27,7 @@ import {
   VERSION,
   writeOhMyPoshLayout,
   type Appearance,
+  type CurrentPackReport,
   type DoctorNerdFontCheck,
   type DoctorReport,
   type DoctorTargetCheck,
@@ -99,21 +102,44 @@ function matchesVerbFor(driftedTargets: readonly Target[]): string {
 }
 
 /**
- * `ch doctor`'s drift row: undefined when nothing has ever been applied —
- * there is nothing recorded to compare live configs against — "none" when
- * every detected target still matches the recorded pack, and otherwise the
- * targets that no longer do. See CHM-27: a partial apply that left targets
- * disagreeing must be visible here, not just at the moment it happened.
+ * Whether `report`'s recorded pack could not even be loaded — a slug the
+ * state file still names, but that no longer resolves to a pack in the
+ * library (deleted after being applied, say). `driftedTargets` comes back
+ * empty in exactly this case too (see currentPack), since there is nothing
+ * to compare against — but empty-because-nothing-was-checked and
+ * empty-because-everything-matched are different facts, and CHM-34 is what
+ * happens when `ch doctor`/`ch current` conflate them: they must never claim
+ * a match for a comparison that never ran.
  */
-function formatDriftLine(drift: DoctorReport["drift"]): string {
+function isPackUnloadable(report: CurrentPackReport): boolean {
+  return report.name === undefined;
+}
+
+/**
+ * `ch doctor`'s drift row: undefined when nothing has ever been applied —
+ * there is nothing recorded to compare live configs against — "cannot
+ * check" when the recorded pack no longer loads at all (CHM-34), "none"
+ * when every detected target still matches the recorded pack, and otherwise
+ * the targets that no longer do. See CHM-27: a partial apply that left
+ * targets disagreeing must be visible here, not just at the moment it
+ * happened.
+ */
+export function formatDriftLine(drift: DoctorReport["drift"]): string {
   if (!drift) return "drift: no pack has been applied yet — nothing to compare";
+  if (isPackUnloadable(drift)) return `cannot check drift: pack "${drift.slug}" is no longer available`;
   if (drift.driftedTargets.length === 0) return `drift: none — every detected target matches "${drift.slug}"`;
   return `drift: ${formatDriftedTargets(drift.driftedTargets)} no longer ${matchesVerbFor(drift.driftedTargets)} "${drift.slug}"`;
 }
 
-/** Whether `drift` names at least one target that no longer matches the recorded pack — what turns `ch doctor`'s drift row into a non-zero exit. */
-function hasDrift(drift: DoctorReport["drift"]): boolean {
-  return drift !== undefined && drift.driftedTargets.length > 0;
+/**
+ * Whether `ch doctor`'s drift row should turn into a non-zero exit: either a
+ * target no longer matches the recorded pack, or the recorded pack could not
+ * be loaded at all, so the comparison never ran (CHM-34) — the exit code
+ * must not read as success in a case that was never checked.
+ */
+export function hasDrift(drift: DoctorReport["drift"]): boolean {
+  if (!drift) return false;
+  return isPackUnloadable(drift) || drift.driftedTargets.length > 0;
 }
 
 /**
@@ -446,6 +472,15 @@ function runCurrent(args: readonly string[]): number {
   const showNameOnly = args.includes("--short");
   process.stdout.write(`${showNameOnly ? (current.name ?? current.slug) : current.slug}\n`);
 
+  // CHM-34: the recorded pack itself is gone — there is nothing left to
+  // compare live configs against, so this must say so rather than falling
+  // through to the driftedTargets check below, which is empty for this
+  // reason too and would otherwise read as a clean match.
+  if (isPackUnloadable(current)) {
+    process.stderr.write(`ch current: cannot check drift: pack "${current.slug}" is no longer available\n`);
+    return 1;
+  }
+
   if (current.driftedTargets.length > 0) {
     process.stderr.write(
       `ch current: drifted — ${formatDriftedTargets(current.driftedTargets)} no longer ${matchesVerbFor(current.driftedTargets)} "${current.slug}"\n`,
@@ -694,6 +729,24 @@ async function main(argv: string[]): Promise<number> {
   return runApply(command);
 }
 
-main(process.argv.slice(2)).then((exitCode) => {
-  process.exitCode = exitCode;
-});
+/**
+ * True only when this file was launched directly — as the `ch`/`chameleon`
+ * bin script, or via `node dist/cli.js` — never when a test imports it to
+ * exercise its exported formatting functions. `realpathSync` resolves both
+ * sides through whatever symlink npm's bin shim uses, so this holds whether
+ * `ch` was invoked straight or through that shim.
+ */
+function isRunAsScript(): boolean {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isRunAsScript()) {
+  main(process.argv.slice(2)).then((exitCode) => {
+    process.exitCode = exitCode;
+  });
+}
