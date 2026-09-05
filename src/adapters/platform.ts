@@ -87,12 +87,11 @@ export function claudeCodeSettingsPath(): string {
   return path.join(homedir(), ".claude", "settings.json");
 }
 
-// --- Shell detection, for Oh My Posh's own live-reload hook -----------------
+// --- Shell detection, for Oh My Posh's own profile line ---------------------
 //
-// Oh My Posh's live reload works by extending whichever shell is running
-// with a hook that notices when Chameleon's pointer file changes — and that
-// hook, and the file it is written into, are different for every shell. See
-// adapters/oh-my-posh.ts.
+// Chameleon owns one fixed config path and names it with a single
+// `oh-my-posh init <shell> --config` line — and the file that line is
+// written into is different for every shell. See adapters/oh-my-posh.ts.
 
 export const SHELLS = ["pwsh", "cmd", "bash", "zsh"] as const;
 export type Shell = (typeof SHELLS)[number];
@@ -115,17 +114,17 @@ export function detectShell(nodePlatform: NodeJS.Platform = process.platform): S
 }
 
 /**
- * The interactive-startup file `shell`'s own live-reload hook belongs in —
- * read on every new shell, and, via the hook this file installs, rechecked
- * on every prompt render of one already open. cmd.exe has no such file of
- * its own; its hook is a Clink Lua script instead, so it is routed to
- * clinkScriptPath rather than a profile.
+ * The interactive-startup file `shell`'s own Chameleon-owned init line
+ * belongs in — read once, on every new shell, which is all that is needed
+ * once that line names a fixed config path (see CHM-59). cmd.exe has no
+ * such file of its own; its equivalent is a Clink Lua script instead, so it
+ * is routed to clinkScriptPath rather than a profile.
  *
  * `pwsh` covers both PowerShell editions, and the two read *different*
  * profile files under *different* folder names — see
  * choosePowerShellEdition and windowsDocumentsDir. Assuming either one, the
- * way this used to hardcode PowerShell 7's `Documents\PowerShell`, writes a
- * hook to a file the installed edition never loads — see CHM-39.
+ * way this used to hardcode PowerShell 7's `Documents\PowerShell`, writes
+ * the init line to a file the installed edition never loads — see CHM-39.
  */
 export function ohMyPoshProfilePathFor(shell: Shell): string {
   if (shell === "cmd") return clinkScriptPath();

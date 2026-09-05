@@ -19,7 +19,7 @@ import {
   upsertMarkedBlock,
 } from "./marked-json-edit.js";
 import { detectShell, ohMyPoshProfilePathFor, stateDir, type Shell } from "./platform.js";
-import { defaultPromptStatePath, readPromptState } from "./prompt-state.js";
+import { defaultPromptStatePath, readPromptState, writePromptState } from "./prompt-state.js";
 
 /** Suffix for the pre-apply copy of a config or profile file that `undoOhMyPosh` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -30,8 +30,19 @@ const OH_MY_POSH_BINARY_NAME = "oh-my-posh";
 /** winget's package identifier for Oh My Posh, used to build the one-line install command `ch doctor` offers. */
 export const OH_MY_POSH_WINGET_PACKAGE_ID = "JanDeDobbeleer.OhMyPosh";
 
-/** File name of the pointer `apply` writes and every shell's own live-reload hook reads. */
-const POINTER_FILE_NAME = "oh-my-posh-pointer.json";
+/**
+ * File name of the single config Chameleon owns outright and rewrites in
+ * place, whether a theme recolours it or a layout replaces it wholesale —
+ * CHM-59. This path never changes once the profile's own init line names
+ * it, which is what makes a switch visible on a prompt's very next render
+ * with nothing to re-initialise: Oh My Posh's own prompt command re-reads
+ * whatever file $POSH_CONFIG names on every render, and $POSH_CONFIG is set
+ * once, at shell startup, from this same fixed path. See buildInitLine.
+ * This replaces the pointer file and the per-prompt reload hook the old
+ * design needed to move $POSH_CONFIG around a config path that used to
+ * change — a fixed path has nothing left to move.
+ */
+const OWNED_CONFIG_FILE_NAME = "chameleon.omp.json";
 
 /**
  * Every edit this adapter makes to a shell's profile is wrapped in this pair
@@ -70,45 +81,6 @@ export type OhMyPoshConfig = z.infer<typeof OhMyPoshConfigSchema>;
  */
 export function ohMyPoshMatchesRoleHexes(config: OhMyPoshConfig, roleHexes: Readonly<Record<Role, string>>): boolean {
   return ROLES.every((role) => config.palette?.[role] === roleHexes[role]);
-}
-
-const PointerSchema = z.object({
-  configPath: z.string().min(1),
-  updatedAtMs: z.number(),
-});
-
-/**
- * The pointer file's own contents, or undefined when it does not exist yet
- * or cannot be read — CHM-47 needs to read this back (to tell whether it
- * already names Chameleon's own bundled-prompt file), where every previous
- * use of PointerSchema only ever wrote it. Same "report the fact, never
- * throw" contract as readActivePackState.
- */
-function readPointerFile(pointerPath: string): z.infer<typeof PointerSchema> | undefined {
-  if (!existsSync(pointerPath)) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(pointerPath, "utf8"));
-    const validated = PointerSchema.safeParse(parsed);
-    return validated.success ? validated.data : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Whether the pointer file currently names Chameleon's own bundled-prompt
- * config — the one fact `ch current`'s prompt line must agree with (CHM-57),
- * never prompt-state.json alone: prompt-state.json can still say a layout is
- * active after something else clobbered the pointer back to the user's own
- * config (exactly this ticket's own reproduction), and only the pointer is
- * what a freshly started shell would actually load.
- * `pointerPath`/`bundledConfigPath` are only ever overridden by tests.
- */
-export function pointerNamesBundledPromptConfig(
-  pointerPath: string = defaultPointerPath(),
-  bundledConfigPath: string = defaultBundledPromptConfigPath(),
-): boolean {
-  return readPointerFile(pointerPath)?.configPath === bundledConfigPath;
 }
 
 export interface OhMyPoshAdapter {
@@ -263,10 +235,6 @@ function resolveConfigPath(configPath: string | undefined, profilePath: string, 
  */
 function defaultProfilePath(shell: Shell = "pwsh"): string {
   return ohMyPoshProfilePathFor(shell);
-}
-
-function defaultPointerPath(): string {
-  return path.join(stateDir(), POINTER_FILE_NAME);
 }
 
 function backupPathFor(targetPath: string): string {
@@ -774,56 +742,33 @@ function repairSegmentForegrounds(rawBlocks: readonly unknown[], paletteTable: R
 }
 
 /**
- * The PowerShell chaining variable names this adapter's own profile block
- * uses. Named so a user reading their profile can tell at a glance these
- * are Chameleon's, not something `Set-PoshContext` itself defines.
+ * The one line every pwsh/bash/zsh profile needs Chameleon to own —
+ * `oh-my-posh init <shell> --config <ownedConfigPath>`, wired into the
+ * shell's own startup the same way a person would write it by hand. Because
+ * `ownedConfigPath` never changes, this line never needs to change either,
+ * and there is nothing left to re-run mid-session: Oh My Posh's own prompt
+ * command re-reads whatever file $POSH_CONFIG names on every render, not
+ * just at init time. See CHM-59 — this is what replaces the pointer file
+ * and the `Set-PoshContext`/`PROMPT_COMMAND` reload hooks the old design
+ * needed only to move $POSH_CONFIG around a config path that used to change.
  */
-const PREVIOUS_HOOK_VARIABLE = "$ChameleonPreviousSetPoshContext";
-const LAST_APPLIED_VARIABLE = "$global:ChameleonLastAppliedAtMs";
-
-/**
- * The `Set-PoshContext` hook Oh My Posh calls once per prompt render. It
- * chains to whatever `Set-PoshContext` the rest of the profile already
- * defined — captured *before* this redefinition, so the user's own function
- * still runs — then re-initialises the prompt from the pointer file's own
- * config path whenever its timestamp has moved on from the last render.
- * That re-init is what makes an already-open shell repaint on its very next
- * prompt: nothing in this process can reach into another shell, but every
- * shell already calls this hook on its own.
- */
-function buildSetPoshContextBlock(pointerPath: string, eol: string): string {
-  const lines = [
-    "if (Test-Path Function:\\Set-PoshContext) {",
-    `    ${PREVIOUS_HOOK_VARIABLE} = \${function:Set-PoshContext}`,
-    "} else {",
-    `    ${PREVIOUS_HOOK_VARIABLE} = $null`,
-    "}",
-    "",
-    "function Set-PoshContext {",
-    `    if (${PREVIOUS_HOOK_VARIABLE}) {`,
-    `        & ${PREVIOUS_HOOK_VARIABLE}`,
-    "    }",
-    "",
-    `    $chameleonPointerPath = "${pointerPath.replace(/"/g, '`"')}"`,
-    "    if (Test-Path $chameleonPointerPath) {",
-    "        $chameleonPointer = Get-Content $chameleonPointerPath -Raw | ConvertFrom-Json",
-    `        if ($chameleonPointer.updatedAtMs -ne ${LAST_APPLIED_VARIABLE}) {`,
-    `            ${LAST_APPLIED_VARIABLE} = $chameleonPointer.updatedAtMs`,
-    "            oh-my-posh init pwsh --config $chameleonPointer.configPath | Invoke-Expression",
-    "        }",
-    "    }",
-    "}",
-  ];
-  return lines.join(eol);
+function buildInitLine(shell: "pwsh" | "bash" | "zsh", ownedConfigPath: string): string {
+  if (shell === "pwsh") {
+    return `oh-my-posh init pwsh --config "${ownedConfigPath.replace(/"/g, '`"')}" | Invoke-Expression`;
+  }
+  const escapedPath = ownedConfigPath.replace(/"/g, '\\"');
+  return `eval "$(oh-my-posh init ${shell} --config "${escapedPath}")"`;
 }
 
 /**
  * Upserts `ownedContent` between `markerBegin`/`markerEnd`, replacing an
  * earlier Chameleon block in place when one exists, or appending a fresh
- * one at the end of the file when it does not. Appending — rather than
- * inserting at the top — is what makes the chaining in
- * buildSetPoshContextBlock correct: a `Set-PoshContext` the user defined
- * earlier in the file is still the one in scope when this block runs.
+ * one at the end of the file when it does not. This is also what migrates a
+ * profile still carrying the old `Set-PoshContext`/`PROMPT_COMMAND` reload
+ * hook (CHM-39, CHM-47): that hook lived inside these same markers, so the
+ * very next apply replaces its whole body with the new single init line —
+ * see CHM-59's "an existing profile carrying the old hook is cleaned up on
+ * the next apply, not left with both."
  * `markerBegin`/`markerEnd` are parameters, not the module's own constants,
  * because Clink's hook is Lua, whose comment syntax (`--`) differs from the
  * `#` every shell profile in this file shares — see LUA_MARKER_BEGIN/END.
@@ -865,63 +810,7 @@ function backupBeforeEdit(targetPath: string): void {
   copyFileSync(targetPath, backupPathFor(targetPath));
 }
 
-/**
- * The function name and chaining variable bash's and zsh's own hooks use —
- * mirrors PREVIOUS_HOOK_VARIABLE/LAST_APPLIED_VARIABLE above, in each
- * shell's own naming convention. Shared by both, since the hook body itself
- * is identical apart from which `oh-my-posh init` subcommand it calls.
- */
-const POSIX_HOOK_FUNCTION_NAME = "__chameleon_ohmyposh_precmd";
-const POSIX_LAST_APPLIED_VARIABLE = "CHAMELEON_LAST_APPLIED_MS";
-
-/**
- * The body bash's and zsh's own hook share: read the pointer file's
- * `updatedAtMs` and `configPath` with `sed` — no JSON tool is guaranteed
- * installed on a bare bash or zsh, but sed is — and re-run `oh-my-posh init`
- * for `shell` whenever the timestamp has moved on since this function's own
- * last run. That re-init is what makes an already-open shell repaint on its
- * very next prompt, the same trick buildSetPoshContextBlock plays for pwsh.
- */
-function buildPosixHookFunction(pointerPath: string, shell: "bash" | "zsh"): string[] {
-  const escapedPointerPath = pointerPath.replace(/"/g, '\\"');
-  return [
-    `${POSIX_HOOK_FUNCTION_NAME}() {`,
-    `  [ -f "${escapedPointerPath}" ] || return`,
-    `  local chameleon_updated_at_ms`,
-    `  chameleon_updated_at_ms=$(sed -n 's/.*"updatedAtMs":[[:space:]]*\\([0-9]*\\).*/\\1/p' "${escapedPointerPath}")`,
-    `  [ "$chameleon_updated_at_ms" != "$${POSIX_LAST_APPLIED_VARIABLE}" ] || return`,
-    `  ${POSIX_LAST_APPLIED_VARIABLE}=$chameleon_updated_at_ms`,
-    `  local chameleon_config_path`,
-    `  chameleon_config_path=$(sed -n 's/.*"configPath":[[:space:]]*"\\([^"]*\\)".*/\\1/p' "${escapedPointerPath}")`,
-    `  eval "$(oh-my-posh init ${shell} --config "$chameleon_config_path")"`,
-    "}",
-  ];
-}
-
-/** bash calls PROMPT_COMMAND before every prompt; the hook chains onto whatever the user's own profile already set, guarding against adding itself twice on a second `source`. */
-function buildBashHookBlock(pointerPath: string, eol: string): string {
-  const lines = [
-    ...buildPosixHookFunction(pointerPath, "bash"),
-    `case ";$PROMPT_COMMAND;" in`,
-    `  *";${POSIX_HOOK_FUNCTION_NAME};"*) ;;`,
-    `  *) PROMPT_COMMAND="${POSIX_HOOK_FUNCTION_NAME};$PROMPT_COMMAND" ;;`,
-    "esac",
-  ];
-  return lines.join(eol);
-}
-
-/** zsh's own precmd_functions array is the equivalent of bash's PROMPT_COMMAND; the guard is an index lookup rather than a string search. */
-function buildZshHookBlock(pointerPath: string, eol: string): string {
-  const lines = [
-    ...buildPosixHookFunction(pointerPath, "zsh"),
-    `if (( ! \${precmd_functions[(I)${POSIX_HOOK_FUNCTION_NAME}]} )); then`,
-    `  precmd_functions+=(${POSIX_HOOK_FUNCTION_NAME})`,
-    "fi",
-  ];
-  return lines.join(eol);
-}
-
-/** cmd.exe's own binary name, resolved via PATH — the one dependency this project's Clink support has: without it, cmd.exe has no way at all to run a hook on every prompt. */
+/** cmd.exe's own binary name, resolved via PATH — the one dependency this project's Clink support has: without it, cmd.exe has no way at all to run Oh My Posh on every prompt. */
 const CLINK_BINARY_NAME = "clink";
 
 function detectClink(): boolean {
@@ -930,24 +819,22 @@ function detectClink(): boolean {
 }
 
 /**
- * cmd.exe's own live-reload hook: a Clink prompt filter, called on every
- * prompt render the same way Oh My Posh's own `init` hooks are for the other
- * three shells — but since Clink already calls this on every render, there
- * is no "has it changed" check to make; the pointer file's own config path
- * is simply read fresh every time and handed to `oh-my-posh print primary`.
+ * cmd.exe's own equivalent of the other three shells' init line: a Clink
+ * prompt filter, called on every prompt render, that shells out to
+ * `oh-my-posh print primary` against Chameleon's own fixed config path —
+ * cmd.exe has no `oh-my-posh init` subcommand of its own (see
+ * initShellNamesFor), so this is its only way to render at all. The path is
+ * embedded directly in the script rather than read from a separate file at
+ * render time, for the same reason the other three shells no longer need a
+ * reload hook: `ownedConfigPath` never changes, so there is nothing to read
+ * fresh on every prompt beyond the config file itself.
  */
-function buildClinkHookScript(pointerPath: string): string {
-  const escapedPointerPath = pointerPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+function buildClinkPromptFilterScript(ownedConfigPath: string): string {
+  const escapedPath = ownedConfigPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const lines = [
     "local chameleon = clink.promptfilter(1)",
     "function chameleon:filter(prompt)",
-    `    local chameleonPointerFile = io.open("${escapedPointerPath}", "r")`,
-    "    if not chameleonPointerFile then return end",
-    "    local chameleonPointerJson = chameleonPointerFile:read('*a')",
-    "    chameleonPointerFile:close()",
-    '    local chameleonConfigPath = chameleonPointerJson:match(\'"configPath"%s*:%s*"(.-)"\')',
-    "    if not chameleonConfigPath then return end",
-    "    local chameleonHandle = io.popen('oh-my-posh print primary --config \"' .. chameleonConfigPath .. '\" --shell=cmd')",
+    `    local chameleonHandle = io.popen('oh-my-posh print primary --config "${escapedPath}" --shell=cmd')`,
     "    if not chameleonHandle then return end",
     "    local chameleonPrompt = chameleonHandle:read('*a')",
     "    chameleonHandle:close()",
@@ -957,51 +844,52 @@ function buildClinkHookScript(pointerPath: string): string {
   return lines.join("\n");
 }
 
-/** Which marker pair owns `shell`'s own hook block — Lua's comment syntax for cmd's Clink script, the `#` every shell profile in this file shares otherwise. */
-const HOOK_MARKERS: Readonly<Record<Shell, { begin: string; end: string }>> = {
+/** Which marker pair owns `shell`'s own profile block — Lua's comment syntax for cmd's Clink script, the `#` every shell profile in this file shares otherwise. */
+const PROFILE_BLOCK_MARKERS: Readonly<Record<Shell, { begin: string; end: string }>> = {
   pwsh: { begin: PROFILE_MARKER_BEGIN, end: PROFILE_MARKER_END },
   bash: { begin: PROFILE_MARKER_BEGIN, end: PROFILE_MARKER_END },
   zsh: { begin: PROFILE_MARKER_BEGIN, end: PROFILE_MARKER_END },
   cmd: { begin: LUA_MARKER_BEGIN, end: LUA_MARKER_END },
 };
 
-/** `shell`'s own live-reload hook content — see buildSetPoshContextBlock, buildBashHookBlock, buildZshHookBlock and buildClinkHookScript. */
-function buildReloadHookBlock(shell: Shell, pointerPath: string, eol: string): string {
-  if (shell === "pwsh") return buildSetPoshContextBlock(pointerPath, eol);
-  if (shell === "bash") return buildBashHookBlock(pointerPath, eol);
-  if (shell === "zsh") return buildZshHookBlock(pointerPath, eol);
-  return buildClinkHookScript(pointerPath);
+/** `shell`'s own Chameleon-owned profile content — see buildInitLine and buildClinkPromptFilterScript. */
+function buildProfileOwnedBlock(shell: Shell, ownedConfigPath: string): string {
+  if (shell === "cmd") return buildClinkPromptFilterScript(ownedConfigPath);
+  return buildInitLine(shell, ownedConfigPath);
 }
 
 /**
  * The one-sentence notice `ch apply` shows instead of creating `profilePath`
- * silently — CHM-39's "say which path it would create and why": a hook
- * written to a file nothing has ever loaded before is exactly the silent
- * breakage this ticket exists to fix, so the first time Chameleon creates
- * one, it says so.
+ * silently — CHM-39's "say which path it would create and why": an init
+ * line written to a file nothing has ever loaded before is exactly the
+ * silent breakage this ticket exists to fix, so the first time Chameleon
+ * creates one, it says so.
  */
 function profileCreationNotice(profilePath: string, shell: Shell): string {
-  return `created ${profilePath} — ${shell} had no profile of its own yet, so Oh My Posh's live-reload hook had nowhere to go`;
+  return `created ${profilePath} — ${shell} had no profile of its own yet, so Oh My Posh's init line had nowhere to go`;
 }
 
 /**
- * Extends `shell`'s own interactive-startup file with Chameleon's live-
- * reload hook, chaining any hook the shell already defines where one exists
- * (pwsh's Set-PoshContext). Idempotent: re-applying replaces Chameleon's own
- * block in place rather than duplicating it. cmd.exe has no startup file of
- * its own — its hook is a Clink Lua script instead, and Clink itself must be
- * installed for cmd.exe to run any hook at all — see CHM-25's "says so
- * plainly where it is not": a cmd shell without Clink is refused here, with
- * a message naming the reason, rather than silently skipped.
+ * Extends `shell`'s own interactive-startup file with the one line that
+ * names `ownedConfigPath` — see buildInitLine. Idempotent: re-applying
+ * replaces Chameleon's own block in place rather than duplicating it, and a
+ * profile still carrying the old `Set-PoshContext`/`PROMPT_COMMAND` reload
+ * hook is cleaned up the same way, since that hook lived inside the same
+ * markers this upserts into — see CHM-59's migration requirement.
+ * cmd.exe has no startup file of its own — its "profile" is a Clink Lua
+ * script instead, and Clink itself must be installed for cmd.exe to render
+ * through Oh My Posh at all — see CHM-25's "says so plainly where it is
+ * not": a cmd shell without Clink is refused here, with a message naming
+ * the reason, rather than silently skipped.
  *
  * Returns profileCreationNotice's message when `profilePath` did not exist
  * yet — see CHM-39 — and undefined when it already did, since there is
  * nothing new to say about a file that was already there.
  */
-function upsertReloadHook(shell: Shell, profilePath: string, pointerPath: string): string | undefined {
+function upsertInitLine(shell: Shell, profilePath: string, ownedConfigPath: string): string | undefined {
   if (shell === "cmd" && !detectClink()) {
     throw new Error(
-      "Clink is not installed — cmd.exe needs Clink for Oh My Posh's live reload (https://chrisant996.github.io/clink/); install it and re-run this command",
+      "Clink is not installed — cmd.exe needs Clink to render through Oh My Posh (https://chrisant996.github.io/clink/); install it and re-run this command",
     );
   }
 
@@ -1009,116 +897,43 @@ function upsertReloadHook(shell: Shell, profilePath: string, pointerPath: string
   backupBeforeEdit(profilePath);
   const originalText = readTextOrEmpty(profilePath);
   const eol = detectLineEnding(originalText || "\n");
-  const { begin, end } = HOOK_MARKERS[shell];
-  const updatedText = upsertProfileBlock(originalText, buildReloadHookBlock(shell, pointerPath, eol), eol, begin, end);
+  const { begin, end } = PROFILE_BLOCK_MARKERS[shell];
+  const updatedText = upsertProfileBlock(originalText, buildProfileOwnedBlock(shell, ownedConfigPath), eol, begin, end);
   writeFileSync(profilePath, updatedText, "utf8");
   return didProfileAlreadyExist ? undefined : profileCreationNotice(profilePath, shell);
 }
 
-/** Points the pointer file at `configPath`, timestamped now — what the profile's `Set-PoshContext` hook diffs against to know a new theme has been applied. */
-function writePointer(pointerPath: string, configPath: string): void {
-  mkdirSync(path.dirname(pointerPath), { recursive: true });
-  const pointer: z.infer<typeof PointerSchema> = { configPath, updatedAtMs: Date.now() };
-  writeFileSync(pointerPath, JSON.stringify(pointer, null, 2), "utf8");
-}
-
-// --- Switching a bundled prompt layout in, without touching the user's own
-// config (CHM-47) ------------------------------------------------------------
+// --- Chameleon's single owned config (CHM-59) --------------------------------
 //
-// Theme switching (applyOhMyPoshScheme, above) recolours whichever config is
-// already active, in place. A prompt-*layout* switch is a different config
-// entirely — a bundled `.omp.json`, resolved against the current theme's own
-// roles (see prompt-pack.ts's resolvePromptLayoutRoleReferences) — so this
-// writes it to a file Chameleon owns outright and repoints the pointer at
-// that, rather than opening the user's file at all. See CLAUDE.md's "Never
-// rewrite a config file wholesale" and this ticket's own "must never
-// overwrite the config the user already has."
+// Every earlier design here (CHM-36 through CHM-57) existed to keep
+// $POSH_CONFIG pointed at whichever config was "active", because that config
+// used to move: a plain theme apply edited the user's own file directly, and
+// a prompt-layout switch redirected to a separate bundled file via a pointer
+// a reload hook had to notice and re-init from. That chain never worked
+// reliably in a live shell — see this ticket. With one fixed path that
+// Chameleon owns outright, nothing needs to move: the profile's own
+// `oh-my-posh init --config <ownedConfigPath>` line is written once, and
+// every later theme or layout switch just rewrites that same file's
+// contents. Oh My Posh's own prompt command re-reads it on every render.
+//
+// The user's own original config is still never overwritten (the CHM-47
+// guarantee): the very first time anything is ever applied, whatever config
+// was active before Chameleon existed is discovered and copied into the
+// owned path, and that original path is recorded so `chm prompt mine` (see
+// index.ts's restorePromptToMine) can always copy its current, untouched
+// content back in and recolour it there.
 
-const BUNDLED_PROMPT_CONFIG_FILE_NAME = "bundled-prompt.omp.json";
-
-/** Where a bundled prompt layout, resolved to real hex, is written — never the user's own config path, whatever that happens to be. */
-export function defaultBundledPromptConfigPath(): string {
-  return path.join(stateDir(), BUNDLED_PROMPT_CONFIG_FILE_NAME);
+/** Where Chameleon's single owned config lives — the one file every theme or layout apply rewrites, and the one path the profile's own init line ever names. */
+export function defaultOwnedConfigPath(): string {
+  return path.join(stateDir(), OWNED_CONFIG_FILE_NAME);
 }
 
 /**
- * The config path a bundled-layout switch should record as "the user's
- * own", the moment before the very first switch — see prompt-state.ts's
- * `originalConfigPath`. Prefers the pointer file's own configPath, which is
- * authoritative once anything has ever been applied through it (theme or
- * prompt); falls back to the same env-or-profile resolution
- * createOhMyPoshAdapter itself uses only when the pointer does not exist
- * yet. A pointer already naming `bundledPromptConfigPath` — Chameleon's own
- * file, from an earlier prompt switch — is never adopted as "the user's
- * own": that would happen only if `ch prompt <name>` were called a second
- * time with no prompt-state file to read from, which readPromptState's own
- * contract (CHM-47) is what prevents.
- */
-export function activeConfigPathForPromptTracking(
-  configPath: string | undefined = defaultConfigPath(),
-  profilePath: string = defaultProfilePath(),
-  pointerPath: string = defaultPointerPath(),
-  shell: Shell = "pwsh",
-  bundledPromptConfigPath: string = defaultBundledPromptConfigPath(),
-): string {
-  const pointer = readPointerFile(pointerPath);
-  if (pointer && pointer.configPath !== bundledPromptConfigPath) return pointer.configPath;
-  return requireConfigPath(resolveConfigPath(configPath, profilePath, shell));
-}
-
-/** The real-shell convenience wrapper every caller besides a test uses — see createDefaultOhMyPoshAdapter's own doc comment for why shell resolution happens here rather than in a parameter default. */
-export function currentPromptTrackingConfigPath(): string {
-  const shell = detectShell();
-  return activeConfigPathForPromptTracking(defaultConfigPath(), defaultProfilePath(shell), defaultPointerPath(), shell);
-}
-
-/**
- * Writes `resolvedConfig` — a bundled prompt layout with every `p:<role>`
- * reference already resolved to hex — to Chameleon's own config file, and
- * repoints the pointer at it. Installs the live-reload hook the same way
- * applyOhMyPoshScheme does, in case a prompt-only switch is the very first
- * thing this machine ever applied through Chameleon — there may be no
- * theme apply to have installed it yet. The user's own config, at whatever
- * path the pointer or the environment previously named, is never opened,
- * let alone written.
- */
-export function applyPromptLayout(
-  resolvedConfig: Record<string, unknown>,
-  bundledConfigPath: string = defaultBundledPromptConfigPath(),
-  profilePath: string = defaultProfilePath(),
-  pointerPath: string = defaultPointerPath(),
-  shell: Shell = "pwsh",
-): string | undefined {
-  mkdirSync(path.dirname(bundledConfigPath), { recursive: true });
-  writeFileSync(bundledConfigPath, JSON.stringify(resolvedConfig, null, 2), "utf8");
-  const profileNotice = upsertReloadHook(shell, profilePath, pointerPath);
-  writePointer(pointerPath, bundledConfigPath);
-  return profileNotice;
-}
-
-/** The real-shell convenience wrapper — see currentPromptTrackingConfigPath. */
-export function applyPromptLayoutForCurrentShell(resolvedConfig: Record<string, unknown>): string | undefined {
-  const shell = detectShell();
-  return applyPromptLayout(resolvedConfig, defaultBundledPromptConfigPath(), defaultProfilePath(shell), defaultPointerPath(), shell);
-}
-
-/**
- * `ch prompt mine` — repoints the pointer at `originalConfigPath`, the exact
- * path activeConfigPathForPromptTracking recorded before the first bundled
- * layout was ever applied. Never touches the file at that path in any way:
- * it was never written to begin with, so there is nothing to restore beyond
- * the pointer itself — see this ticket's "must never overwrite" and "chm
- * prompt mine puts the pointer back."
- */
-export function restoreOriginalPrompt(originalConfigPath: string, pointerPath: string = defaultPointerPath()): void {
-  writePointer(pointerPath, originalConfigPath);
-}
-
-/**
- * What Chameleon actually tried before giving up on finding an active
- * config, named plainly rather than pointing at one variable current Oh My
- * Posh never sets — see CHM-36, where "POSH_THEME is not set" survived
- * every real apply failing because that was never the whole story.
+ * What Chameleon actually tried before giving up on finding a pre-existing
+ * config to seed the owned one from, named plainly rather than pointing at
+ * one variable current Oh My Posh never sets — see CHM-36, where "POSH_THEME
+ * is not set" survived every real apply failing because that was never the
+ * whole story.
  */
 function noConfigDiscoveredMessage(profilePath: string, shell: Shell): string {
   const initShellName = initShellNamesFor(shell)[0];
@@ -1129,64 +944,147 @@ function noConfigDiscoveredMessage(profilePath: string, shell: Shell): string {
 }
 
 /**
- * Backs up the config and profile, swaps the config's palette table for
- * `scheme`'s resolved roles, repairs any segment whose own foreground fails
- * TEXT_MIN_RATIO against its own background (see repairSegmentForegrounds
- * and CHM-40), extends `shell`'s own live-reload hook, and points the
- * pointer file at the config so every open shell — this one included —
- * repaints on its next prompt. Returns upsertReloadHook's own
- * profile-creation notice, or undefined when the profile already existed —
- * see CHM-39.
+ * Seeds `ownedConfigPath` the first time anything is ever applied, by
+ * copying whatever config was active before Chameleon existed — discovered
+ * via $POSH_CONFIG/$POSH_THEME, or failing that, `profilePath`'s own
+ * pre-existing `oh-my-posh init` line (see resolveConfigPath) — and records
+ * that discovered path in prompt-state.json so `chm prompt mine` can always
+ * find its way back to it, no matter how many theme or layout switches
+ * happen in between. See CHM-47's "recorded once, at the very first switch,
+ * never again," and CHM-59's migration requirement: a profile still
+ * carrying the old hook is what this discovery reads through
+ * withoutOwnedMarkerBlocks, before upsertInitLine gets anywhere near it.
+ *
+ * A no-op once prompt-state.json already exists: by then the owned config
+ * and its origin are both already settled, and running this discovery again
+ * would find Chameleon's own init line instead of the user's original one.
  */
-function applyOhMyPoshScheme(
-  configPath: string | undefined,
-  profilePath: string,
-  pointerPath: string,
-  shell: Shell,
-  scheme: Scheme,
-): string | undefined {
-  if (!configPath) {
+export function ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath: string, profilePath: string, shell: Shell, promptStatePath: string): string {
+  const existingState = readPromptState(promptStatePath);
+  if (existingState) return existingState.originalConfigPath;
+
+  const discoveredConfigPath = resolveConfigPath(defaultConfigPath(), profilePath, shell);
+  if (!discoveredConfigPath) {
     throw new Error(noConfigDiscoveredMessage(profilePath, shell));
   }
-  if (!existsSync(configPath)) {
-    throw new Error(`no Oh My Posh config found at ${configPath}`);
+  if (!existsSync(ownedConfigPath)) {
+    mkdirSync(path.dirname(ownedConfigPath), { recursive: true });
+    copyFileSync(discoveredConfigPath, ownedConfigPath);
+  }
+  writePromptState({ originalConfigPath: discoveredConfigPath, activeSlug: undefined, updatedAtMs: Date.now() }, promptStatePath);
+  return discoveredConfigPath;
+}
+
+/** The real-shell convenience wrapper `chm prompt <name>` uses — see ensureOhMyPoshOwnedConfigSeeded. */
+export function ensureOhMyPoshOwnedConfigSeededForCurrentShell(promptStatePath: string = defaultPromptStatePath()): string {
+  const shell = detectShell();
+  return ensureOhMyPoshOwnedConfigSeeded(defaultOwnedConfigPath(), defaultProfilePath(shell), shell, promptStatePath);
+}
+
+/**
+ * Recolors `sourceConfigPath`'s own content for `scheme` — swapping its
+ * palette table for `scheme`'s resolved roles and repairing any segment
+ * whose own foreground fails TEXT_MIN_RATIO against its own background (see
+ * repairSegmentForegrounds and CHM-40) — and writes the result into
+ * `destConfigPath`, backed up first. `sourceConfigPath` and `destConfigPath`
+ * are the same file for an ordinary theme apply; they differ for `chm
+ * prompt mine` (see restoreOriginalPromptForCurrentShell), where the source
+ * is the user's own real config and the destination is Chameleon's owned
+ * copy of it — `sourceConfigPath` is only ever read here, never written.
+ * Ends by upserting the one profile init line naming `destConfigPath` — see
+ * CHM-59.
+ */
+function recolorConfigInto(sourceConfigPath: string, destConfigPath: string, profilePath: string, shell: Shell, scheme: Scheme): string | undefined {
+  if (!existsSync(sourceConfigPath)) {
+    throw new Error(`no Oh My Posh config found at ${sourceConfigPath}`);
   }
 
-  copyFileSync(configPath, backupPathFor(configPath));
-  const originalText = readFileSync(configPath, "utf8");
-  const existingConfig = readOhMyPoshConfig(configPath);
-  const paletteTable = recoloredPaletteTable(existingConfig.palette, resolveRoleHexes(scheme), scheme);
+  backupBeforeEdit(destConfigPath);
+  const sourceText = readFileSync(sourceConfigPath, "utf8");
+  const sourceConfig = readOhMyPoshConfig(sourceConfigPath);
+  const paletteTable = recoloredPaletteTable(sourceConfig.palette, resolveRoleHexes(scheme), scheme);
 
   // Segment repair reads the recoloured table above, never the config's own
   // original palette — a segment must be checked against the colours it is
   // about to render, not the ones it used to.
-  const segmentRepair = repairSegmentForegrounds(existingConfig.blocks ?? [], paletteTable);
+  const segmentRepair = repairSegmentForegrounds(sourceConfig.blocks ?? [], paletteTable);
   const finalPaletteTable = { ...paletteTable, ...segmentRepair.additionalPaletteEntries };
 
-  let updatedConfigText = upsertPaletteTable(configPath, originalText, finalPaletteTable);
+  let updatedConfigText = upsertPaletteTable(destConfigPath, sourceText, finalPaletteTable);
   // "blocks" is left completely untouched — not even re-upserted — when
   // nothing about it changed, so the overwhelming common case still
   // round-trips byte-identical outside the palette block, same as before
   // this ticket.
   if (segmentRepair.wereBlocksChanged) {
-    updatedConfigText = upsertBlocksArray(configPath, updatedConfigText, [...segmentRepair.blocks]);
+    updatedConfigText = upsertBlocksArray(destConfigPath, updatedConfigText, [...segmentRepair.blocks]);
   }
-  assertNoDanglingPaletteReferences(configPath, updatedConfigText, finalPaletteTable);
-  writeFileSync(configPath, updatedConfigText, "utf8");
+  assertNoDanglingPaletteReferences(destConfigPath, updatedConfigText, finalPaletteTable);
+  writeFileSync(destConfigPath, updatedConfigText, "utf8");
 
-  const profileNotice = upsertReloadHook(shell, profilePath, pointerPath);
-  writePointer(pointerPath, configPath);
-  return profileNotice;
+  return upsertInitLine(shell, profilePath, destConfigPath);
+}
+
+/**
+ * Writes `resolvedConfig` — a bundled prompt layout with every `p:<role>`
+ * reference already resolved to hex — to Chameleon's single owned config,
+ * wholesale: a bundled layout is entirely Chameleon's own generated content,
+ * so unlike an ordinary theme apply there is no existing palette table or
+ * segment list worth preserving around it. Upserts the one profile init
+ * line the same way an ordinary apply does, in case a prompt-layout switch
+ * is the very first thing this machine ever applied through Chameleon.
+ */
+export function writeOwnedPromptConfig(
+  resolvedConfig: Record<string, unknown>,
+  ownedConfigPath: string = defaultOwnedConfigPath(),
+  profilePath: string = defaultProfilePath(),
+  shell: Shell = "pwsh",
+): string | undefined {
+  mkdirSync(path.dirname(ownedConfigPath), { recursive: true });
+  writeFileSync(ownedConfigPath, JSON.stringify(resolvedConfig, null, 2), "utf8");
+  return upsertInitLine(shell, profilePath, ownedConfigPath);
+}
+
+/** The real-shell convenience wrapper `chm prompt <name>` uses. */
+export function writeOwnedPromptConfigForCurrentShell(resolvedConfig: Record<string, unknown>): string | undefined {
+  const shell = detectShell();
+  return writeOwnedPromptConfig(resolvedConfig, defaultOwnedConfigPath(), defaultProfilePath(shell), shell);
+}
+
+/**
+ * `chm prompt mine` — copies `originalConfigPath`'s own, always-untouched
+ * content fresh and recolors it against `scheme` through the same pipeline
+ * as an ordinary theme apply, writing the result into `ownedConfigPath`.
+ * `originalConfigPath` itself is only ever read here, never written — see
+ * this ticket's "chm prompt mine copies their config into Chameleon's file
+ * and recolours it there, leaving the original untouched." Parameterized the
+ * same way createOhMyPoshAdapter is, for tests; real callers use
+ * restoreOriginalPromptForCurrentShell.
+ */
+export function restoreOriginalPrompt(
+  originalConfigPath: string,
+  scheme: Scheme,
+  ownedConfigPath: string = defaultOwnedConfigPath(),
+  profilePath: string = defaultProfilePath(),
+  shell: Shell = "pwsh",
+): string | undefined {
+  return recolorConfigInto(originalConfigPath, ownedConfigPath, profilePath, shell, scheme);
+}
+
+/** The real-shell convenience wrapper `chm prompt mine` uses — see restoreOriginalPrompt. */
+export function restoreOriginalPromptForCurrentShell(originalConfigPath: string, scheme: Scheme): string | undefined {
+  const shell = detectShell();
+  return restoreOriginalPrompt(originalConfigPath, scheme, defaultOwnedConfigPath(), defaultProfilePath(shell), shell);
 }
 
 /**
  * Nothing to trigger from this process: an already-open shell picks up the
- * new palette on its own next prompt render, through the live-reload hook
- * `apply` wires into its own startup file — see buildReloadHookBlock. A CLI
- * invocation cannot reach into another shell's process to force a repaint
- * any more than it could for the one that ran it. Returns undefined, never
- * a detail: unlike Herdr (CHM-45), there is no "nothing running to tell"
- * case here worth surfacing.
+ * new config on its own next prompt render, since Oh My Posh's own prompt
+ * command re-reads whatever $POSH_CONFIG names — a fixed path this process
+ * just rewrote — on every render. A CLI invocation cannot reach into
+ * another shell's process to force a repaint any more than it could for the
+ * one that ran it. Returns undefined, never a detail: unlike Herdr
+ * (CHM-45), there is no "nothing running to tell" case here worth
+ * surfacing.
  */
 function reloadOhMyPosh(): string | undefined {
   // Intentional no-op — see the doc comment above.
@@ -1194,95 +1092,81 @@ function reloadOhMyPosh(): string | undefined {
 }
 
 /**
- * Builds the Oh My Posh adapter. `configPath` defaults to whatever
- * POSH_CONFIG or POSH_THEME names in the current environment; `profilePath`
- * and `pointerPath` default to their real pwsh locations; `shell` defaults
- * to "pwsh", matching those defaults. All four are only ever overridden by
- * tests, which point them at fixture copies so nothing here touches a real
- * profile or config — real callers instead use createDefaultOhMyPoshAdapter,
- * which resolves the shell `ch` is actually running in and the profile that
- * goes with it.
+ * Builds the Oh My Posh adapter. `configPath` defaults to Chameleon's own
+ * fixed owned path; `profilePath` defaults to its real pwsh location;
+ * `shell` defaults to "pwsh", matching that default. All three are only
+ * ever overridden by tests, which point them at fixture copies so nothing
+ * here touches a real profile or config — real callers instead use
+ * createDefaultOhMyPoshAdapter, which resolves the shell `ch` is actually
+ * running in and the profile that goes with it.
  *
- * When `configPath` is not given (or the environment named none), this
- * falls back to parsing `profilePath` itself for an `oh-my-posh init`
- * line — the case CHM-36 exists for: a normal shell that Oh My Posh has
- * never actually initialised this session, so POSH_CONFIG and POSH_THEME
- * are not set yet even though the shell's own profile names a config. That
- * resolution happens here, in the function body, rather than in
- * `configPath`'s own default expression, because a parameter default cannot
- * see `profilePath` — the parameter declared after it — and every caller
- * needs the fallback to run against the exact profile it passed in.
- *
- * This never checks whether a bundled prompt layout is currently active —
- * see withActiveLayoutRespected, below, for that. Keeping it out of here is
- * what lets every existing test built on this function's own four
- * parameters keep working unchanged: this function's own `apply` always
- * writes `configPath`, exactly as it always has.
+ * This never seeds `configPath` from a pre-existing config, and never checks
+ * whether a bundled prompt layout is currently active — see
+ * ensureOhMyPoshOwnedConfigSeeded and withActiveLayoutRespected, below, for
+ * both. Keeping them out of here is what lets a test built on this
+ * function's own three parameters treat `configPath` as already the file in
+ * force, exactly the steady state `chm <theme>` runs in on every apply after
+ * the very first.
  */
 export function createOhMyPoshAdapter(
-  configPath: string | undefined = defaultConfigPath(),
+  configPath: string = defaultOwnedConfigPath(),
   profilePath: string = defaultProfilePath(),
-  pointerPath: string = defaultPointerPath(),
   shell: Shell = "pwsh",
 ): OhMyPoshAdapter {
-  const resolvedConfigPath = resolveConfigPath(configPath, profilePath, shell);
   return {
     detect: () => detectOhMyPosh(),
-    read: () => readOhMyPoshConfig(resolvedConfigPath ?? throwNoConfigDiscovered(profilePath, shell)),
-    apply: (scheme) => applyOhMyPoshScheme(resolvedConfigPath, profilePath, pointerPath, shell, scheme),
+    read: () => {
+      if (!existsSync(configPath)) throw new Error(noConfigDiscoveredMessage(profilePath, shell));
+      return readOhMyPoshConfig(configPath);
+    },
+    apply: (scheme) => recolorConfigInto(configPath, configPath, profilePath, shell, scheme),
     reload: () => reloadOhMyPosh(),
   };
 }
 
-/** Throws noConfigDiscoveredMessage — a function, not an inline `if`, so it can sit in the `??` chain read() uses to fall back only when resolvedConfigPath is genuinely absent. */
-function throwNoConfigDiscovered(profilePath: string, shell: Shell): never {
-  throw new Error(noConfigDiscoveredMessage(profilePath, shell));
-}
-
 /**
  * Wraps `adapter`'s own `apply` so a bundled prompt layout, once active,
- * owns the pointer through every later theme apply — CHM-57. Before this,
- * every theme apply overwrote whatever config `adapter` itself resolved at
- * construction unconditionally, even while prompt-state.json recorded a
- * bundled layout as active, which silently reverted a chosen layout the
- * moment any theme was applied afterwards, while `ch current` kept
- * reporting the layout as active from prompt-state.json alone.
- *
- * A bundled layout is authored purely in `p:<role>` references (CHM-46), so
- * recolouring it for a new theme is just re-resolving those references
- * again, through the same applyPromptLayout `ch prompt <name>` itself uses —
- * unlike `adapter`'s own repairSegmentForegrounds pass for a stranger's
- * arbitrary palette, no segment-foreground repair is needed here: every
- * bundled layout already clears TEXT_MIN_RATIO against every theme, checked
- * at build time (see prompt-pack.ts's findContrastFailures). A recorded slug
+ * keeps repainting through every later theme apply instead of being
+ * silently reverted to a plain palette recolor — CHM-57, carried forward
+ * under CHM-59's single owned config. A bundled layout is authored purely
+ * in `p:<role>` references (CHM-46), so recolouring it for a new theme is
+ * just re-resolving those references again, through the same
+ * writeOwnedPromptConfig `chm prompt <name>` itself uses — unlike
+ * `adapter`'s own repairSegmentForegrounds pass for a stranger's arbitrary
+ * palette, no segment-foreground repair is needed here: every bundled
+ * layout already clears TEXT_MIN_RATIO against every theme, checked at
+ * build time (see prompt-pack.ts's findContrastFailures). A recorded slug
  * that no longer names a loadable layout (e.g. an install that dropped one
  * since it was applied) falls through to `adapter`'s own ordinary `apply`
- * instead — there is nothing left to recolour, and the user's own config is
- * exactly what the pointer would otherwise still be naming.
+ * instead — there is nothing left to recolour.
  *
- * `promptStatePath`/`bundledConfigPath` are only ever overridden by tests,
- * which build `adapter` from createOhMyPoshAdapter's own fixture paths and
- * wrap it here with their own temp state file — real callers only ever
- * reach this through createDefaultOhMyPoshAdapter.
+ * Also seeds the owned config the first time this is ever called — see
+ * ensureOhMyPoshOwnedConfigSeeded — so an ordinary `chm <theme>` works the
+ * very first time even when `chm prompt` has never been touched.
+ *
+ * `promptStatePath` is only ever overridden by tests, which build `adapter`
+ * from createOhMyPoshAdapter's own fixture paths and wrap it here with
+ * their own temp state file — real callers only ever reach this through
+ * createDefaultOhMyPoshAdapter.
  */
 export function withActiveLayoutRespected(
   adapter: OhMyPoshAdapter,
+  ownedConfigPath: string,
   profilePath: string,
-  pointerPath: string,
   shell: Shell,
   promptStatePath: string = defaultPromptStatePath(),
-  bundledConfigPath: string = defaultBundledPromptConfigPath(),
 ): OhMyPoshAdapter {
   return {
     ...adapter,
     apply: (scheme) => {
+      ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, shell, promptStatePath);
       const activeSlug = readPromptState(promptStatePath)?.activeSlug;
       const activeLayout =
         activeSlug !== undefined ? loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === activeSlug) : undefined;
       if (!activeLayout) return adapter.apply(scheme);
 
       const resolvedConfig = resolvePromptLayoutRoleReferences(activeLayout.layout, resolveRoleHexes(scheme));
-      return applyPromptLayout(resolvedConfig, bundledConfigPath, profilePath, pointerPath, shell);
+      return writeOwnedPromptConfig(resolvedConfig, ownedConfigPath, profilePath, shell);
     },
   };
 }
@@ -1293,15 +1177,15 @@ export function withActiveLayoutRespected(
  * shell here, rather than in createOhMyPoshAdapter's own parameter defaults,
  * is what lets that function's defaults stay the fixed "pwsh" a test relies
  * on without having to pass a shell of its own. See CHM-25. Wrapped in
- * withActiveLayoutRespected (CHM-57) so a real apply never clobbers an
- * active bundled layout's own pointer — see that function's own doc comment.
+ * withActiveLayoutRespected (CHM-57) so a real apply never silently reverts
+ * an active bundled layout — see that function's own doc comment.
  */
 export function createDefaultOhMyPoshAdapter(): OhMyPoshAdapter {
   const shell = detectShell();
   const profilePath = defaultProfilePath(shell);
-  const pointerPath = defaultPointerPath();
-  const adapter = createOhMyPoshAdapter(defaultConfigPath(), profilePath, pointerPath, shell);
-  return withActiveLayoutRespected(adapter, profilePath, pointerPath, shell);
+  const ownedConfigPath = defaultOwnedConfigPath();
+  const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath, shell);
+  return withActiveLayoutRespected(adapter, ownedConfigPath, profilePath, shell);
 }
 
 function requireConfigPath(configPath: string | undefined): string {
@@ -1500,13 +1384,13 @@ function writeLayout(configPath: string, layout: Layout): void {
   writeFileSync(configPath, updatedText, "utf8");
 }
 
-/** Reads the active config's layout — the left and right-hand segment blocks `ch edit` operates on. */
-export function readOhMyPoshLayout(configPath: string | undefined = defaultConfigPath()): Layout {
+/** Reads Chameleon's owned config's layout — the left and right-hand segment blocks `ch edit` operates on. */
+export function readOhMyPoshLayout(configPath: string | undefined = defaultOwnedConfigPath()): Layout {
   return readLayout(requireConfigPath(configPath));
 }
 
-/** Writes `layout` back to the active config, backed up first. Not part of the adapter interface — editing the layout is `ch edit`'s job, never a step in the theming pipeline. */
-export function writeOhMyPoshLayout(layout: Layout, configPath: string | undefined = defaultConfigPath()): void {
+/** Writes `layout` back to Chameleon's owned config, backed up first. Not part of the adapter interface — editing the layout is `ch edit`'s job, never a step in the theming pipeline. */
+export function writeOhMyPoshLayout(layout: Layout, configPath: string | undefined = defaultOwnedConfigPath()): void {
   writeLayout(requireConfigPath(configPath), layout);
 }
 
@@ -1702,7 +1586,7 @@ export function moveSegmentBetweenBlocks(
  * business.
  */
 export function undoOhMyPosh(
-  configPath: string | undefined = defaultConfigPath(),
+  configPath: string | undefined = defaultOwnedConfigPath(),
   profilePath: string = defaultProfilePath(),
 ): void {
   const resolvedConfigPath = requireConfigPath(configPath);
