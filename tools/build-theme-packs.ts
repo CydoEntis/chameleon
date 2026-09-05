@@ -166,6 +166,28 @@ function describeAnsiRepairs({ scheme, pack }: BuiltPack): string {
 }
 
 /**
+ * One line per pack whose Windows Terminal `foreground` moved away from the
+ * scheme's own authored value — CHM-33's "the amount each pack moved should
+ * be reported rather than applied silently". `foreground` only ever departs
+ * from the scheme's own when resolveSelectionAndBody nudged body further
+ * from ground to open up room for a selection clearing body-on-selection
+ * (see selection.ts's own doc comment on widenedBodyLuminance), so a line
+ * here for a pack is that nudge made inspectable, not a second repair pass.
+ * Omitted for a pack whose foreground never moved, the overwhelming
+ * majority — see describeAnsiRepairs above for why this reads from the
+ * shipped payload rather than recomputing it.
+ */
+function describeBodyNudge({ scheme, pack }: BuiltPack): string | undefined {
+  const shippedForeground = pack.payloads["windows-terminal"].foreground;
+  if (shippedForeground === scheme.foreground) return undefined;
+
+  const groundHex = pack.payloads["windows-terminal"].background;
+  const ratioBefore = contrastRatio(scheme.foreground, groundHex).toFixed(2);
+  const ratioAfter = contrastRatio(shippedForeground, groundHex).toFixed(2);
+  return `  ${pack.manifest.slug.padEnd(24)} body moved ${scheme.foreground} -> ${shippedForeground} for body-on-selection (vs ground ${ratioBefore} -> ${ratioAfter})`;
+}
+
+/**
  * Generates the twelve curated theme families (light + dark) plus Dracula
  * and Monokai (dark only) under themes/ — see CHM-6. Run with
  * `npm run generate:themes`; the output is committed, not built on every
@@ -189,6 +211,11 @@ function main(): void {
   process.stdout.write(`wrote ${packs.length} theme packs to ${path.relative(process.cwd(), THEMES_DIR)}\n`);
   process.stdout.write(`${packs.map(describeSelectionTradeoff).join("\n")}\n`);
   process.stdout.write(`${built.map(describeAnsiRepairs).join("\n")}\n`);
+
+  const bodyNudgeLines = built.map(describeBodyNudge).filter((line): line is string => line !== undefined);
+  if (bodyNudgeLines.length > 0) {
+    process.stdout.write(`${bodyNudgeLines.join("\n")}\n`);
+  }
 }
 
 main();
