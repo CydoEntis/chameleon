@@ -51,8 +51,12 @@ function isTaken(hex: string, takenHexes: ReadonlySet<string>): boolean {
  * which side it happened to start on: a muted candidate that starts darker
  * than a mid-toned ground can still be unable to reach its floor by going
  * further dark, if going light would clear it with room to spare.
+ *
+ * Exported for palette/role-mapping.ts, which needs the same "which extreme
+ * is farthest from ground" question to pick the far pole a foreign palette
+ * key's luminance is retinted toward — see recoloredHexFor.
  */
-function poleWithMoreHeadroom(groundHex: string): boolean {
+export function poleWithMoreHeadroom(groundHex: string): boolean {
   const groundLuminance = relativeLuminance(groundHex);
   const maxRatioGoingLighter = (1 + WCAG_CONTRAST_OFFSET) / (groundLuminance + WCAG_CONTRAST_OFFSET);
   const maxRatioGoingDarker = (groundLuminance + WCAG_CONTRAST_OFFSET) / WCAG_CONTRAST_OFFSET;

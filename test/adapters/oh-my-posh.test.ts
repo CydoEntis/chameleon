@@ -22,7 +22,8 @@ import {
   type Layout,
   type LayoutSegment,
 } from "../../src/adapters/oh-my-posh.js";
-import { ROLES } from "../../src/constants.js";
+import { ANSI_MIN_RATIO, ROLES } from "../../src/constants.js";
+import { contrastRatio } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
@@ -162,6 +163,32 @@ function undefinedPaletteReferences(configText: string, paletteTable: Record<str
 
 function usesOnlyLineEnding(text: string, eol: string): boolean {
   return eol === CRLF ? !/(?<!\r)\n/.test(text) : !text.includes("\r");
+}
+
+/** Every "p:role" reference `value` carries — zero for anything that is not a string, or a plain string with no such reference. */
+function paletteReferencesIn(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  return [...value.matchAll(/p:([A-Za-z0-9_-]+)/g)].flatMap((match) => (match[1] !== undefined ? [match[1]] : []));
+}
+
+/** Every foreground-key/background-key pair a real config's own segments actually render together — read from each segment's own foreground/background and foreground_templates/background_templates fields (see CHM-16's chips.omp.json), not hand-listed, so this stays correct if the fixture ever changes. A segment with several background candidates (one per battery level, one per git state, …) pairs its one foreground against every one of them, since only one renders at a time but any of them could. */
+function segmentForegroundBackgroundPairs(configText: string): ReadonlyArray<readonly [string, string]> {
+  const parsed = parseJsonc(configText, [], { allowTrailingComma: true }) as { blocks: Array<{ segments: Array<Record<string, unknown>> }> };
+  const pairs: Array<readonly [string, string]> = [];
+  for (const block of parsed.blocks) {
+    for (const segment of block.segments) {
+      const foregroundTemplates = Array.isArray(segment["foreground_templates"]) ? (segment["foreground_templates"] as unknown[]) : [];
+      const backgroundTemplates = Array.isArray(segment["background_templates"]) ? (segment["background_templates"] as unknown[]) : [];
+      const foregroundKeys = [...paletteReferencesIn(segment["foreground"]), ...foregroundTemplates.flatMap(paletteReferencesIn)];
+      const backgroundKeys = [...paletteReferencesIn(segment["background"]), ...backgroundTemplates.flatMap(paletteReferencesIn)];
+      for (const foregroundKey of foregroundKeys) {
+        for (const backgroundKey of backgroundKeys) {
+          pairs.push([foregroundKey, backgroundKey]);
+        }
+      }
+    }
+  }
+  return pairs;
 }
 
 function parseWritten(text: string): unknown {
@@ -765,6 +792,52 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
       const resultText = readFileSync(configPath, "utf8");
       const resultPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
       expect(undefinedPaletteReferences(resultText, resultPalette)).toEqual([]);
+    }
+  });
+
+  it("keeps most of chips's own 47 keys visually distinct after recolouring, across every bundled theme (CHM-37)", () => {
+    // CHM-37's own regression: CHM-31 stopped deleting these keys but
+    // recoloured nearly all of them to one of Chameleon's six roles, so 46
+    // of the 47 collapsed onto three or four colours. chips's own 47 keys
+    // already carry only 36 distinct values to start with (several
+    // battery/date/wakatime keys are the same colour on purpose) — this
+    // asserts recolouring does not destroy meaningfully more of that
+    // distinctness than the fixture itself already gives up.
+    const originalDistinctCount = new Set(Object.values(originalPalette).map((hex) => hex.toLowerCase())).size;
+    const curatedPacks = loadCuratedThemePacks();
+
+    for (const pack of curatedPacks) {
+      writeFileSync(configPath, originalChipsText, "utf8");
+      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+
+      const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+      const recolouredValues = Object.keys(originalPalette).map((key) => resultPalette[key]!.toLowerCase());
+      const recolouredDistinctCount = new Set(recolouredValues).size;
+      expect(recolouredDistinctCount).toBeGreaterThanOrEqual(originalDistinctCount - 2);
+    }
+  });
+
+  it("keeps every segment's own foreground legible against its own background, across every bundled theme (CHM-37)", () => {
+    // The chips fixture's own failure mode: its "chips" style paints a
+    // segment's background from one palette key and its text from another,
+    // and CHM-31's flat six-role recolour let both land on the same colour,
+    // so the text vanished into its own background. Pairs are extracted
+    // from the real fixture's own foreground/background (and their
+    // *_templates variants) rather than hand-listed, so this stays correct
+    // if the fixture ever changes.
+    const pairs = segmentForegroundBackgroundPairs(originalChipsText);
+    expect(pairs.length).toBeGreaterThan(0);
+    const curatedPacks = loadCuratedThemePacks();
+
+    for (const pack of curatedPacks) {
+      writeFileSync(configPath, originalChipsText, "utf8");
+      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+
+      const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+      for (const [foregroundKey, backgroundKey] of pairs) {
+        const contrast = contrastRatio(resultPalette[foregroundKey]!, resultPalette[backgroundKey]!);
+        expect(contrast).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
+      }
     }
   });
 });
