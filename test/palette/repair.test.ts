@@ -169,12 +169,12 @@ describe("repairForegroundAgainstBackgrounds", () => {
 
   it("leaves a foreground untouched when it already clears the floor against every background", () => {
     expect(
-      repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, [CHIPS_GIT_NORMAL_ON_EVERFOREST_DARK]),
+      repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, [CHIPS_GIT_NORMAL_ON_EVERFOREST_DARK], TEXT_MIN_RATIO),
     ).toBeUndefined();
   });
 
   it("returns undefined, never a same-value repair, when there is no background to check against", () => {
-    expect(repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, [])).toBeUndefined();
+    expect(repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, [], TEXT_MIN_RATIO)).toBeUndefined();
   });
 
   it("repairs a foreground that fails against one of several real backgrounds, clearing the floor against all of them at once", () => {
@@ -185,7 +185,7 @@ describe("repairForegroundAgainstBackgrounds", () => {
     const backgrounds = [CHIPS_GIT_NORMAL_ON_EVERFOREST_DARK, CHIPS_BATTERY_STATE_ERROR_ON_EVERFOREST_DARK];
     expect(contrastRatio(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, CHIPS_BATTERY_STATE_ERROR_ON_EVERFOREST_DARK)).toBeLessThan(TEXT_MIN_RATIO);
 
-    const repaired = repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, backgrounds);
+    const repaired = repairForegroundAgainstBackgrounds(CHIPS_BADGE_TEXT_ON_EVERFOREST_DARK, backgrounds, TEXT_MIN_RATIO);
 
     expect(repaired).toBeDefined();
     for (const background of backgrounds) {
