@@ -102,6 +102,9 @@ export { createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.
 export type { UserThemePackLoadResult } from "./adapters/user-theme-packs.js";
 export { defaultUserThemePackDir, loadUserThemePacks } from "./adapters/user-theme-packs.js";
 
+export type { AcquireLockResult, LockInfo } from "./adapters/lock.js";
+export { acquireLock, currentLockHolder, defaultLockPath } from "./adapters/lock.js";
+
 export type { PromptLayout, PromptPackManifest } from "./palette/prompt-pack.js";
 export type { BundledPromptPack } from "./palette/prompt-pack-library.js";
 export { loadBundledPromptPacks } from "./palette/prompt-pack-library.js";
