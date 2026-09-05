@@ -563,11 +563,16 @@ describe("herdr adapter — full custom token vocabulary (CHM-28)", () => {
     }
   });
 
-  it("passes the scheme's own selection colour straight through to selection_bg", () => {
+  it("repairs selection_bg rather than passing through a selection colour that fails its floors", () => {
+    // GitHub Light's authored selectionBackground is literally its own body
+    // colour (#1f2328) — invisible as a highlight and unreadable underneath
+    // it at once (CHM-30). Passing it straight through, the way this
+    // adapter used to, would ship that bug into Herdr.
     createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
 
     const config = createHerdrAdapter(configPath).read();
-    expect(config.theme.custom["selection_bg"]).toBe(GITHUB_LIGHT_SCHEME.selectionBackground);
+    expect(config.theme.custom["selection_bg"]).not.toBe(GITHUB_LIGHT_SCHEME.selectionBackground);
+    expect(config.theme.custom["selection_bg"]).toMatch(/^#[0-9a-f]{6}$/i);
   });
 
   it("draws the extra accent tokens straight from the scheme's own base ANSI slots", () => {
