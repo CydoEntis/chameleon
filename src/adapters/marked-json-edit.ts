@@ -287,3 +287,28 @@ export function upsertMarkedBlock(text: string, container: Node, ownedContent: s
 
   return text.slice(0, replaceStart) + replacement + text.slice(replaceEnd);
 }
+
+/**
+ * Sets root-level `key` to `value`, scoped between ch:begin/ch:end — the
+ * "dedupe whatever plain value the user already had, then upsert Chameleon's
+ * own marked block in its place" shape shared by every adapter that owns a
+ * single top-level scalar key: windows-terminal.ts's own top-level "theme"
+ * and claude-code.ts's own top-level "theme" are the same edit against a
+ * different config, so this is the one place it is written. Everything else
+ * in the document — sibling keys, comments, key order — never moves. See
+ * upsertMarkedBlock.
+ */
+export function upsertTopLevelProperty(sourcePath: string, text: string, key: string, value: unknown): string {
+  const eol = detectLineEnding(text);
+  const root = parseJsonTree(sourcePath, text);
+  if (root.type !== "object") {
+    throw new Error(`${sourcePath}'s root is not a JSON object`);
+  }
+
+  const dedupedText = dedupeConflict(text, root, findPropertyNode(root, key), key);
+  const container = parseJsonTree(sourcePath, dedupedText);
+  if (container.type !== "object") {
+    throw new Error(`${sourcePath}'s root is not a JSON object`);
+  }
+  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent(key, value, eol), eol, key);
+}
