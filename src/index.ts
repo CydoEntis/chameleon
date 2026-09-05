@@ -15,6 +15,7 @@ import {
   currentPromptTrackingConfigPath,
   ohMyPoshMatchesRoleHexes,
   OH_MY_POSH_WINGET_PACKAGE_ID,
+  pointerNamesBundledPromptConfig,
   restoreOriginalPrompt,
   undoOhMyPosh,
 } from "./adapters/oh-my-posh.js";
@@ -893,11 +894,21 @@ export interface CurrentPromptReport {
   readonly name: string | undefined;
 }
 
-/** The prompt layout `ch` last switched to, or undefined when no bundled layout has ever been applied — `ch current`'s own prompt row (CHM-47). */
+/**
+ * The prompt layout `ch` last switched to, or undefined when no bundled
+ * layout has ever been applied — `ch current`'s own prompt row (CHM-47).
+ *
+ * CHM-57: prompt-state.json alone is not trusted for this — it can still
+ * name a layout active after some other write clobbered the pointer back to
+ * the user's own config (this ticket's own reproduction), and a shell only
+ * ever loads whatever the pointer names. Reporting "mine" whenever the
+ * pointer disagrees is what keeps this in line with CLAUDE.md's "chm current
+ * must never report a layout that is not the one in force."
+ */
 export function currentPromptPack(promptStatePath?: string): CurrentPromptReport | undefined {
   const state = readPromptState(promptStatePath);
   if (!state) return undefined;
-  if (state.activeSlug === undefined) return { slug: undefined, name: undefined };
+  if (state.activeSlug === undefined || !pointerNamesBundledPromptConfig()) return { slug: undefined, name: undefined };
   const bundled = loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === state.activeSlug);
   return { slug: state.activeSlug, name: bundled?.manifest.name };
 }
