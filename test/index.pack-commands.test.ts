@@ -6,6 +6,7 @@ import { readActivePackState, writeActivePackState } from "../src/adapters/state
 import {
   applyThemePack,
   currentPack,
+  detectPackDrift,
   findFamilySibling,
   loadAllThemePacks,
   nextPackSlug,
@@ -16,33 +17,42 @@ import {
 
 // CHM-19's orchestration only fans a pack's scheme out to whichever real
 // adapter each target already ships; the adapters themselves are covered by
-// their own test files. Mocking `detect`/`apply` here is what lets these
-// tests exercise "some targets installed, some not, one of them throws"
-// without ever touching a real settings.json, .omp.json or config.toml —
+// their own test files. Mocking `detect`/`apply`/`read` here is what lets
+// these tests exercise "some targets installed, some not, one of them
+// throws, one of them has drifted" without ever touching a real
+// settings.json, .omp.json or config.toml —
 // createWindowsTerminalAdapter()/createOhMyPoshAdapter()/createHerdrAdapter()
 // with no arguments resolve to the real, machine-specific config paths, and
 // a test must never write to those. Vitest hoists vi.mock above these
-// imports regardless of where it appears in the file.
-const windowsTerminalAdapter = { detect: vi.fn(), apply: vi.fn() };
-const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn() };
-const herdrAdapter = { detect: vi.fn(), apply: vi.fn() };
+// imports regardless of where it appears in the file. Each adapter's own
+// "matches the recorded pack" comparison (CHM-27) is mocked too, defaulting
+// to "matches" so a test that isn't about drift never has to think about it.
+const windowsTerminalAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
+const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
+const herdrAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
 const undoWindowsTerminalMock = vi.fn();
 const undoOhMyPoshMock = vi.fn();
 const undoHerdrMock = vi.fn();
+const windowsTerminalMatchesSchemeMock = vi.fn();
+const ohMyPoshMatchesRoleHexesMock = vi.fn();
+const herdrMatchesRoleHexesMock = vi.fn();
 
 vi.mock("../src/adapters/windows-terminal.js", () => ({
   createWindowsTerminalAdapter: () => windowsTerminalAdapter,
   selectedFontFace: () => undefined,
   undoWindowsTerminal: () => undoWindowsTerminalMock(),
+  windowsTerminalMatchesScheme: (...args: unknown[]) => windowsTerminalMatchesSchemeMock(...args),
   WINDOWS_TERMINAL_WINGET_PACKAGE_ID: "Microsoft.WindowsTerminal",
 }));
 vi.mock("../src/adapters/oh-my-posh.js", () => ({
   createOhMyPoshAdapter: () => ohMyPoshAdapter,
+  ohMyPoshMatchesRoleHexes: (...args: unknown[]) => ohMyPoshMatchesRoleHexesMock(...args),
   OH_MY_POSH_WINGET_PACKAGE_ID: "JanDeDobbeleer.OhMyPosh",
   undoOhMyPosh: () => undoOhMyPoshMock(),
 }));
 vi.mock("../src/adapters/herdr.js", () => ({
   createHerdrAdapter: () => herdrAdapter,
+  herdrMatchesRoleHexes: (...args: unknown[]) => herdrMatchesRoleHexesMock(...args),
   undoHerdr: () => undoHerdrMock(),
 }));
 
@@ -56,13 +66,19 @@ beforeEach(() => {
 
   windowsTerminalAdapter.detect.mockReset().mockReturnValue(true);
   windowsTerminalAdapter.apply.mockReset();
+  windowsTerminalAdapter.read.mockReset();
   ohMyPoshAdapter.detect.mockReset().mockReturnValue(true);
   ohMyPoshAdapter.apply.mockReset();
+  ohMyPoshAdapter.read.mockReset();
   herdrAdapter.detect.mockReset().mockReturnValue(true);
   herdrAdapter.apply.mockReset();
+  herdrAdapter.read.mockReset();
   undoWindowsTerminalMock.mockReset();
   undoOhMyPoshMock.mockReset();
   undoHerdrMock.mockReset();
+  windowsTerminalMatchesSchemeMock.mockReset().mockReturnValue(true);
+  ohMyPoshMatchesRoleHexesMock.mockReset().mockReturnValue(true);
+  herdrMatchesRoleHexesMock.mockReset().mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -81,6 +97,7 @@ describe("applyThemePack", () => {
     expect(windowsTerminalAdapter.apply).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.apply).toHaveBeenCalledTimes(1);
     expect(herdrAdapter.apply).toHaveBeenCalledTimes(1);
+    expect(report.isFullyApplied).toBe(true);
     expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
   });
 
@@ -98,10 +115,15 @@ describe("applyThemePack", () => {
     expect(ohMyPoshAdapter.apply).not.toHaveBeenCalled();
     expect(herdrAdapter.apply).not.toHaveBeenCalled();
     // Still a successful apply — Windows Terminal actually changed.
+    expect(report.isFullyApplied).toBe(true);
     expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
   });
 
-  it("reports a target's own failure without stopping the targets after it", () => {
+  // CHM-27: a partial apply must never be recorded as the active pack — the
+  // whole bug this ticket exists to fix was `ch prev`/`ch <slug>` recording
+  // success, and the state file lying about it, the moment *any* target took
+  // the new pack, even with Oh My Posh (say) sitting on POSH_THEME unset.
+  it("reports a target's own failure without stopping the targets after it, and never records the pack as active", () => {
     herdrAdapter.apply.mockImplementation(() => {
       throw new Error("no Herdr config found at C:\\fake\\config.toml");
     });
@@ -113,9 +135,45 @@ describe("applyThemePack", () => {
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "failed", detail: "no Herdr config found at C:\\fake\\config.toml" },
     ]);
-    // windows-terminal and oh-my-posh still ran, and still changed something.
+    // windows-terminal and oh-my-posh still ran, and still changed something
+    // — a partial apply is never rolled back, only left unrecorded.
     expect(windowsTerminalAdapter.apply).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.apply).toHaveBeenCalledTimes(1);
+    expect(report.isFullyApplied).toBe(false);
+    expect(readActivePackState(statePath)).toBeUndefined();
+  });
+
+  // CHM-27's own reproduction: `ch prev` then `ch 26` from a shell with no
+  // POSH_THEME, Oh My Posh otherwise installed. Windows Terminal and Herdr
+  // both took the new pack; Oh My Posh — detected, but with nothing for it
+  // to write to — did not. That must fail loudly, not print "applied" and
+  // exit 0 with the state file believing it.
+  it("fails loudly, rather than reporting success, when Oh My Posh is installed but POSH_THEME is unset", () => {
+    ohMyPoshAdapter.apply.mockImplementation(() => {
+      throw new Error("POSH_THEME is not set — no active Oh My Posh config to apply to");
+    });
+
+    const report = applyThemePack("tokyo-night-light", userThemeDir, statePath);
+
+    expect(report.results).toEqual([
+      { target: "windows-terminal", status: "applied" },
+      { target: "oh-my-posh", status: "failed", detail: "POSH_THEME is not set — no active Oh My Posh config to apply to" },
+      { target: "herdr", status: "applied" },
+    ]);
+    expect(report.isFullyApplied).toBe(false);
+    expect(readActivePackState(statePath)).toBeUndefined();
+  });
+
+  it("leaves a previously recorded pack in place when a later apply only partially succeeds", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    herdrAdapter.apply.mockImplementation(() => {
+      throw new Error("no Herdr config found at C:\\fake\\config.toml");
+    });
+
+    applyThemePack("catppuccin-light", userThemeDir, statePath);
+
+    // The pointer still names the last pack that actually took fully —
+    // never the partially-applied one, and never wiped outright.
     expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
   });
 
@@ -180,16 +238,52 @@ describe("currentPack", () => {
     expect(currentPack(userThemeDir, statePath)).toBeUndefined();
   });
 
-  it("reports the applied pack's slug and name immediately after an apply", () => {
+  it("reports the applied pack's slug and name immediately after an apply, with no drift", () => {
     applyThemePack("catppuccin-dark", userThemeDir, statePath);
 
-    expect(currentPack(userThemeDir, statePath)).toEqual({ slug: "catppuccin-dark", name: "Catppuccin Mocha" });
+    expect(currentPack(userThemeDir, statePath)).toEqual({ slug: "catppuccin-dark", name: "Catppuccin Mocha", driftedTargets: [] });
   });
 
-  it("still reports the slug when the recorded pack is no longer in the library, with no name", () => {
+  it("still reports the slug when the recorded pack is no longer in the library, with no name and no drift to compare", () => {
     writeActivePackState("a-pack-that-got-deleted", statePath);
 
-    expect(currentPack(userThemeDir, statePath)).toEqual({ slug: "a-pack-that-got-deleted", name: undefined });
+    expect(currentPack(userThemeDir, statePath)).toEqual({ slug: "a-pack-that-got-deleted", name: undefined, driftedTargets: [] });
+  });
+
+  // CHM-27: this is the reproduction — a partial apply leaves the
+  // succeeding targets pointed at the new pack while the recorded pointer
+  // (correctly, per applyThemePack) stays on the old one. `ch current` must
+  // surface that as drift on the succeeding target, not report a clean slug.
+  it("reports drift on a target whose live config no longer matches the recorded pack", () => {
+    writeActivePackState("catppuccin-dark", statePath);
+    ohMyPoshMatchesRoleHexesMock.mockReturnValue(false);
+
+    expect(currentPack(userThemeDir, statePath)).toEqual({
+      slug: "catppuccin-dark",
+      name: "Catppuccin Mocha",
+      driftedTargets: ["oh-my-posh"],
+    });
+  });
+});
+
+describe("detectPackDrift", () => {
+  it("returns nothing when every detected target still matches the pack", () => {
+    expect(detectPackDrift("catppuccin-dark", userThemeDir)).toEqual([]);
+  });
+
+  it("never reports a target that is not installed as drift, even if it would otherwise disagree", () => {
+    herdrAdapter.detect.mockReturnValue(false);
+    herdrMatchesRoleHexesMock.mockReturnValue(false);
+
+    expect(detectPackDrift("catppuccin-dark", userThemeDir)).toEqual([]);
+  });
+
+  it("reports a detected target whose live config cannot even be read as drifted, rather than skipping it", () => {
+    windowsTerminalAdapter.read.mockImplementation(() => {
+      throw new Error("no Windows Terminal settings.json found");
+    });
+
+    expect(detectPackDrift("catppuccin-dark", userThemeDir)).toEqual(["windows-terminal"]);
   });
 });
 

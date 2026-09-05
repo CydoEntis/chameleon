@@ -74,6 +74,16 @@ export function selectedFontFace(settings: WindowsTerminalSettings): string | un
   return defaults?.font?.face ?? defaults?.fontFace;
 }
 
+/**
+ * Whether `settings`'s own colour scheme selection already matches `scheme`
+ * — the same field applyWindowsTerminalScheme itself writes via
+ * upsertDefaultColorScheme, so a mismatch means this target has drifted from
+ * whatever pack `ch` last recorded as active. See CHM-27.
+ */
+export function windowsTerminalMatchesScheme(settings: WindowsTerminalSettings, scheme: Scheme): boolean {
+  return settings.profiles?.defaults?.["colorScheme"] === scheme.name;
+}
+
 export interface WindowsTerminalAdapter {
   detect(): boolean;
   read(): WindowsTerminalSettings;
