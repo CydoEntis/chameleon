@@ -339,9 +339,15 @@ function runEdit(argv: string[]): number {
   }
 }
 
-/** One line of `ch <slug>`/`ch undo`'s per-target report — plain text, no Nerd Font glyph. */
+/**
+ * One line of `ch <slug>`/`ch undo`'s per-target report — plain text, no
+ * Nerd Font glyph. An "applied" result can still carry a `detail` — see
+ * CHM-39's profile-creation notice — which is shown rather than dropped,
+ * since it is exactly the "says which path it would create and why" this
+ * ticket asks for.
+ */
 function formatPackActionLine(result: PackActionResult): string {
-  if (result.status === "applied") return `${result.target}: applied`;
+  if (result.status === "applied") return result.detail ? `${result.target}: applied — ${result.detail}` : `${result.target}: applied`;
   if (result.status === "restored") return `${result.target}: restored`;
   if (result.status === "skipped") return `${result.target}: skipped (${result.detail})`;
   return `${result.target}: failed — ${result.detail}`;

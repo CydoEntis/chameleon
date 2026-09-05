@@ -77,7 +77,8 @@ const PointerSchema = z.object({
 export interface OhMyPoshAdapter {
   detect(): boolean;
   read(): OhMyPoshConfig;
-  apply(scheme: Scheme): void;
+  /** Returns a one-sentence notice when applying created the shell's profile from scratch — see CHM-39's "say which path it would create and why" — or undefined when it already existed. */
+  apply(scheme: Scheme): string | undefined;
   reload(): void;
 }
 
@@ -157,6 +158,24 @@ function expandPathReferences(rawPath: string, shell: Shell): string {
 }
 
 /**
+ * Removes every block Chameleon itself wrote — everything from a `ch:begin`
+ * marker up to and including its matching `ch:end`, greedy for neither —
+ * before a profile's text is searched for a user-written `oh-my-posh init`
+ * line. Chameleon's own pwsh hook contains the literal text `oh-my-posh init
+ * pwsh --config $chameleonPointer.configPath` (see
+ * buildSetPoshContextBlock), which otherwise matches
+ * initConfigArgumentPattern just as well as a real init line does, and gets
+ * read back as a config path pointing nowhere real — see CHM-39, where that
+ * produced `ENOENT ... \$chameleonPointer.configPath`. A profile with an
+ * unterminated marker (a `ch:begin` with no `ch:end`) is left as-is here;
+ * upsertProfileBlock is what refuses to write that shape in the first place.
+ */
+function withoutOwnedMarkerBlocks(profileText: string): string {
+  const ownedBlockPattern = new RegExp(`${PROFILE_MARKER_BEGIN}[\\s\\S]*?${PROFILE_MARKER_END}`, "g");
+  return profileText.replace(ownedBlockPattern, "");
+}
+
+/**
  * Falls back to the config path a shell profile's own `oh-my-posh init`
  * line names, for a shell Oh My Posh has never actually initialised in this
  * session — no POSH_CONFIG or POSH_THEME to read yet, but the path is
@@ -169,7 +188,8 @@ function configPathFromProfile(profilePath: string, shell: Shell): string | unde
   const shellNames = initShellNamesFor(shell);
   if (shellNames.length === 0 || !existsSync(profilePath)) return undefined;
 
-  const match = readFileSync(profilePath, "utf8").match(initConfigArgumentPattern(shellNames));
+  const profileText = withoutOwnedMarkerBlocks(readFileSync(profilePath, "utf8"));
+  const match = profileText.match(initConfigArgumentPattern(shellNames));
   const rawPath = match?.[1] ?? match?.[2] ?? match?.[3];
   return rawPath ? expandPathReferences(rawPath, shell) : undefined;
 }
@@ -532,6 +552,17 @@ function buildReloadHookBlock(shell: Shell, pointerPath: string, eol: string): s
 }
 
 /**
+ * The one-sentence notice `ch apply` shows instead of creating `profilePath`
+ * silently — CHM-39's "say which path it would create and why": a hook
+ * written to a file nothing has ever loaded before is exactly the silent
+ * breakage this ticket exists to fix, so the first time Chameleon creates
+ * one, it says so.
+ */
+function profileCreationNotice(profilePath: string, shell: Shell): string {
+  return `created ${profilePath} — ${shell} had no profile of its own yet, so Oh My Posh's live-reload hook had nowhere to go`;
+}
+
+/**
  * Extends `shell`'s own interactive-startup file with Chameleon's live-
  * reload hook, chaining any hook the shell already defines where one exists
  * (pwsh's Set-PoshContext). Idempotent: re-applying replaces Chameleon's own
@@ -540,20 +571,26 @@ function buildReloadHookBlock(shell: Shell, pointerPath: string, eol: string): s
  * installed for cmd.exe to run any hook at all — see CHM-25's "says so
  * plainly where it is not": a cmd shell without Clink is refused here, with
  * a message naming the reason, rather than silently skipped.
+ *
+ * Returns profileCreationNotice's message when `profilePath` did not exist
+ * yet — see CHM-39 — and undefined when it already did, since there is
+ * nothing new to say about a file that was already there.
  */
-function upsertReloadHook(shell: Shell, profilePath: string, pointerPath: string): void {
+function upsertReloadHook(shell: Shell, profilePath: string, pointerPath: string): string | undefined {
   if (shell === "cmd" && !detectClink()) {
     throw new Error(
       "Clink is not installed — cmd.exe needs Clink for Oh My Posh's live reload (https://chrisant996.github.io/clink/); install it and re-run this command",
     );
   }
 
+  const didProfileAlreadyExist = existsSync(profilePath);
   backupBeforeEdit(profilePath);
   const originalText = readTextOrEmpty(profilePath);
   const eol = detectLineEnding(originalText || "\n");
   const { begin, end } = HOOK_MARKERS[shell];
   const updatedText = upsertProfileBlock(originalText, buildReloadHookBlock(shell, pointerPath, eol), eol, begin, end);
   writeFileSync(profilePath, updatedText, "utf8");
+  return didProfileAlreadyExist ? undefined : profileCreationNotice(profilePath, shell);
 }
 
 /** Points the pointer file at `configPath`, timestamped now — what the profile's `Set-PoshContext` hook diffs against to know a new theme has been applied. */
@@ -581,9 +618,17 @@ function noConfigDiscoveredMessage(profilePath: string, shell: Shell): string {
  * Backs up the config and profile, swaps the config's palette table for
  * `scheme`'s resolved roles, extends `shell`'s own live-reload hook, and
  * points the pointer file at the config so every open shell — this one
- * included — repaints on its next prompt.
+ * included — repaints on its next prompt. Returns upsertReloadHook's own
+ * profile-creation notice, or undefined when the profile already existed —
+ * see CHM-39.
  */
-function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string, pointerPath: string, shell: Shell, scheme: Scheme): void {
+function applyOhMyPoshScheme(
+  configPath: string | undefined,
+  profilePath: string,
+  pointerPath: string,
+  shell: Shell,
+  scheme: Scheme,
+): string | undefined {
   if (!configPath) {
     throw new Error(noConfigDiscoveredMessage(profilePath, shell));
   }
@@ -599,8 +644,9 @@ function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string
   assertNoDanglingPaletteReferences(configPath, updatedConfigText, paletteTable);
   writeFileSync(configPath, updatedConfigText, "utf8");
 
-  upsertReloadHook(shell, profilePath, pointerPath);
+  const profileNotice = upsertReloadHook(shell, profilePath, pointerPath);
   writePointer(pointerPath, configPath);
+  return profileNotice;
 }
 
 /**
