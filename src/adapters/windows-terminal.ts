@@ -14,6 +14,7 @@ import {
   parseJsonTree,
   requireNode,
   upsertMarkedBlock,
+  upsertTopLevelProperty,
 } from "./marked-json-edit.js";
 
 /**
@@ -171,27 +172,6 @@ function upsertDefaultColorScheme(settingsPath: string, text: string, schemeName
 }
 
 /**
- * Sets the top-level theme to the scheme's own appearance. A pre-existing
- * theme — anyone who has touched Windows Terminal's own theme picker has
- * one — is removed first, so the result always resolves to exactly one
- * theme key: Chameleon's.
- */
-function upsertTopLevelTheme(settingsPath: string, text: string, appearance: Appearance): string {
-  const eol = detectLineEnding(text);
-  const root = parseJsonTree(settingsPath, text);
-  if (root.type !== "object") {
-    throw new Error(`${settingsPath}'s root is not a JSON object`);
-  }
-
-  const dedupedText = dedupeConflict(text, root, findPropertyNode(root, "theme"), "theme");
-  const container = parseJsonTree(settingsPath, dedupedText);
-  if (container.type !== "object") {
-    throw new Error(`${settingsPath}'s root is not a JSON object`);
-  }
-  return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("theme", appearance, eol), eol, "theme");
-}
-
-/**
  * Which shape of the font setting `defaultsNode` already uses — nested
  * `font: { face }` (current Windows Terminal) or flat `fontFace` (legacy).
  * Neither present defaults to nested, since that is what a fresh Windows
@@ -287,7 +267,7 @@ function applyWindowsTerminalScheme(settingsPath: string, scheme: Scheme): void 
 
   const withScheme = upsertSchemesEntry(settingsPath, originalText, scheme);
   const withColorScheme = upsertDefaultColorScheme(settingsPath, withScheme, scheme.name);
-  const withTheme = upsertTopLevelTheme(settingsPath, withColorScheme, appearance);
+  const withTheme = upsertTopLevelProperty(settingsPath, withColorScheme, "theme", appearance);
 
   writeFileSync(settingsPath, withTheme, "utf8");
 }

@@ -1,0 +1,311 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse as parseJsonc } from "jsonc-parser";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { claudeCodeMatchesAppearance, createClaudeCodeAdapter, undoClaudeCode } from "../../src/adapters/claude-code.js";
+
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = path.join(currentDir, "fixtures", "claude-code-settings.jsonc");
+
+const CRLF = "\r\n";
+const LF = "\n";
+
+/**
+ * True when every line of `original`, in order, appears verbatim somewhere
+ * in `result` — i.e. `original`'s lines form a subsequence of `result`'s.
+ * This is the byte-for-byte-outside-the-marker guarantee, checked without
+ * re-implementing the adapter's own splicing logic inside the test.
+ */
+function everyOriginalLineSurvivesInOrder(original: string, result: string): boolean {
+  const originalLines = original.split(/\r\n|\n/);
+  const resultLines = result.split(/\r\n|\n/);
+  let originalIndex = 0;
+  for (const resultLine of resultLines) {
+    if (originalIndex < originalLines.length && resultLine === originalLines[originalIndex]) {
+      originalIndex += 1;
+    }
+  }
+  return originalIndex === originalLines.length;
+}
+
+/** The fixture's lines minus the one Chameleon is this ticket's job to *replace* — the pre-existing top-level "theme". Everything else — permissions, hooks and statusLine included — must round-trip untouched. */
+function linesUnrelatedToChameleonEdits(text: string, eol: string): string {
+  return text
+    .split(eol)
+    .filter((line) => !/^\s*"theme":/.test(line))
+    .join(eol);
+}
+
+function countOccurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
+function usesOnlyLineEnding(text: string, eol: string): boolean {
+  return eol === CRLF ? !/(?<!\r)\n/.test(text) : !text.includes("\r");
+}
+
+function parseWritten(text: string): unknown {
+  return parseJsonc(text, [], { allowTrailingComma: true });
+}
+
+// The hostile fixture already carries \n only (see .gitattributes, which
+// pins it there regardless of core.autocrlf) — both line-ending variants
+// are derived from it here so the test never depends on how git or the
+// filesystem happened to check the file out.
+const LF_FIXTURE = readFileSync(FIXTURE_PATH, "utf8").replace(/\r\n/g, LF);
+const CRLF_FIXTURE = LF_FIXTURE.replace(/\n/g, CRLF);
+
+describe.each([
+  { label: "CRLF", fixture: CRLF_FIXTURE, eol: CRLF },
+  { label: "LF", fixture: LF_FIXTURE, eol: LF },
+])("claude code adapter — $label fixture", ({ fixture, eol }) => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-claude-code-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, fixture, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("detects Claude Code by the presence of its settings.json", () => {
+    expect(createClaudeCodeAdapter(settingsPath).detect()).toBe(true);
+    expect(createClaudeCodeAdapter(path.join(settingsDir, "missing.json")).detect()).toBe(false);
+  });
+
+  it("reads a hostile settings.json — comments, permissions, hooks and statusLine included", () => {
+    const settings = createClaudeCodeAdapter(settingsPath).read();
+    expect(settings.theme).toBe("light");
+    expect(settings["statusLine"]).toEqual({ type: "command", command: "node ~/.claude/statusline.js" });
+    expect(settings["permissions"]).toBeDefined();
+    expect(settings["hooks"]).toBeDefined();
+    expect(settings["enabledPlugins"]).toEqual({ "commit@aevox-playbook": true, "debt@aevox-playbook": true });
+  });
+
+  it("round-trips every original line byte-identical outside the theme key, its own line endings included", () => {
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(everyOriginalLineSurvivesInOrder(linesUnrelatedToChameleonEdits(fixture, eol), resultText)).toBe(true);
+    expect(usesOnlyLineEnding(resultText, eol)).toBe(true);
+  });
+
+  it("preserves permissions, hooks and statusLine byte for byte", () => {
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(resultText).toContain("// hooks I rely on for session setup, do not remove");
+    expect(resultText).toContain('"command": "node ~/.claude/statusline.js"');
+    expect(resultText).toContain('"Bash(npm run test:*)"');
+    expect(resultText).toContain('"../shared-lib"');
+
+    const parsed = parseWritten(resultText) as Record<string, unknown>;
+    expect(parsed["permissions"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["permissions"]);
+    expect(parsed["hooks"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["hooks"]);
+    expect(parsed["statusLine"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["statusLine"]);
+    expect(parsed["enabledPlugins"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["enabledPlugins"]);
+  });
+
+  it("leaves exactly one theme key, resolving to Chameleon's value, when one already existed", () => {
+    expect(fixture).toContain('"theme": "light"');
+
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(countOccurrences(resultText, '"theme"')).toBe(1);
+    const parsed = parseWritten(resultText) as { theme?: unknown };
+    expect(parsed.theme).toBe("dark-ansi");
+  });
+
+  it("is idempotent — applying the same appearance twice produces the same file", () => {
+    const adapter = createClaudeCodeAdapter(settingsPath);
+
+    adapter.apply("dark");
+    const afterFirstApply = readFileSync(settingsPath, "utf8");
+    adapter.apply("dark");
+    const afterSecondApply = readFileSync(settingsPath, "utf8");
+
+    expect(afterSecondApply).toBe(afterFirstApply);
+    expect(countOccurrences(afterSecondApply, "// ch:begin")).toBe(1);
+  });
+
+  it("upserts the theme in place when appearance switches, instead of accumulating marked blocks", () => {
+    const adapter = createClaudeCodeAdapter(settingsPath);
+
+    adapter.apply("dark");
+    adapter.apply("light");
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    const parsed = parseWritten(resultText) as { theme?: unknown };
+    expect(parsed.theme).toBe("light-ansi");
+    expect(countOccurrences(resultText, "// ch:begin")).toBe(1);
+  });
+
+  it("writes a backup before every apply, and undo restores it exactly", () => {
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+    expect(readFileSync(settingsPath, "utf8")).not.toBe(fixture);
+    expect(readFileSync(`${settingsPath}.chameleon-backup`, "utf8")).toBe(fixture);
+
+    undoClaudeCode(settingsPath);
+    expect(readFileSync(settingsPath, "utf8")).toBe(fixture);
+  });
+});
+
+// CHM-49's acceptance criteria: a dark pack sets dark-ansi, a light pack sets
+// light-ansi — the two variants that render straight from the terminal's own
+// ANSI palette, which Chameleon already writes and repairs (CHM-32).
+describe("claude code adapter — appearance mapping", () => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-claude-code-mapping-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, "{}", "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("sets dark-ansi for a dark pack", () => {
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+    expect(createClaudeCodeAdapter(settingsPath).read().theme).toBe("dark-ansi");
+  });
+
+  it("sets light-ansi for a light pack", () => {
+    createClaudeCodeAdapter(settingsPath).apply("light");
+    expect(createClaudeCodeAdapter(settingsPath).read().theme).toBe("light-ansi");
+  });
+});
+
+// CHM-49: "never silently discard an accessibility choice" — a user on
+// dark-daltonized or light-daltonized must stay daltonized, asserted by name,
+// with only the light/dark half moving.
+describe("claude code adapter — daltonized themes stay daltonized", () => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-claude-code-daltonized-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("keeps dark-daltonized when a dark pack is applied", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "dark-daltonized", effortLevel: "high" }, null, 2), "utf8");
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+    expect(createClaudeCodeAdapter(settingsPath).read().theme).toBe("dark-daltonized");
+  });
+
+  it("switches dark-daltonized to light-daltonized when a light pack is applied — the half moves, the choice doesn't", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "dark-daltonized", effortLevel: "high" }, null, 2), "utf8");
+    createClaudeCodeAdapter(settingsPath).apply("light");
+    expect(createClaudeCodeAdapter(settingsPath).read().theme).toBe("light-daltonized");
+  });
+
+  it("switches light-daltonized to dark-daltonized when a dark pack is applied", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "light-daltonized", effortLevel: "high" }, null, 2), "utf8");
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+    expect(createClaudeCodeAdapter(settingsPath).read().theme).toBe("dark-daltonized");
+  });
+
+  it("never moves a daltonized user onto a plain ansi variant", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "light-daltonized", effortLevel: "high" }, null, 2), "utf8");
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+    const theme = createClaudeCodeAdapter(settingsPath).read().theme;
+    expect(theme).not.toBe("dark-ansi");
+    expect(theme).toBe("dark-daltonized");
+  });
+});
+
+describe("claude code adapter — edge cases", () => {
+  let settingsDir: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-claude-code-edge-"));
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("names the file and the problem when a config it must edit is shaped wrong", () => {
+    const malformedPath = path.join(settingsDir, "malformed.json");
+    writeFileSync(malformedPath, JSON.stringify({ theme: 123 }), "utf8");
+    expect(() => createClaudeCodeAdapter(malformedPath).read()).toThrow(malformedPath);
+  });
+
+  it("refuses to apply when there is no settings.json to edit — Claude Code absent is skipped elsewhere, never guessed at here", () => {
+    const adapter = createClaudeCodeAdapter(path.join(settingsDir, "missing.json"));
+    expect(() => adapter.apply("dark")).toThrow();
+  });
+
+  it("never leaves a dangling comma when settings.json starts out empty", () => {
+    const settingsPath = path.join(settingsDir, "minimal.json");
+    writeFileSync(settingsPath, "{}", "utf8");
+
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(resultText).not.toMatch(/,\s*[\]}]/);
+  });
+
+  // CHM-49/CHM-45: Claude Code has no live reload of its own to trigger, so
+  // this must say so plainly rather than silently claiming success.
+  it("reload always names the restart the user needs, never a silent success", () => {
+    const settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, "{}", "utf8");
+    expect(createClaudeCodeAdapter(settingsPath).reload()).toBe("restart Claude Code to see it");
+  });
+});
+
+// CHM-27: this is the exact comparison `ch current`/`ch doctor` use to
+// notice a target that has drifted from the recorded pack.
+describe("claudeCodeMatchesAppearance", () => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-claude-code-drift-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, "{}", "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("matches right after apply", () => {
+    const adapter = createClaudeCodeAdapter(settingsPath);
+    adapter.apply("dark");
+
+    expect(claudeCodeMatchesAppearance(adapter.read(), "dark")).toBe(true);
+  });
+
+  it("does not match the other appearance", () => {
+    const adapter = createClaudeCodeAdapter(settingsPath);
+    adapter.apply("dark");
+
+    expect(claudeCodeMatchesAppearance(adapter.read(), "light")).toBe(false);
+  });
+
+  it("does not match a config that was never themed by Chameleon at all", () => {
+    expect(claudeCodeMatchesAppearance(createClaudeCodeAdapter(settingsPath).read(), "dark")).toBe(false);
+  });
+
+  it("still matches a daltonized theme against the appearance whose half it already carries", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "dark-daltonized" }), "utf8");
+    expect(claudeCodeMatchesAppearance(createClaudeCodeAdapter(settingsPath).read(), "dark")).toBe(true);
+    expect(claudeCodeMatchesAppearance(createClaudeCodeAdapter(settingsPath).read(), "light")).toBe(false);
+  });
+});
