@@ -9,6 +9,7 @@ import { resolveRoleHexes } from "../palette/repair.js";
 import { resolveSelectionAndBody } from "../palette/selection.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
+import { herdrConfigPath } from "./platform.js";
 
 /** Suffix for the pre-apply copy of config.toml that `undoHerdr` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -302,11 +303,9 @@ function extraAccentTokenValues(scheme: Scheme): Record<string, string> {
  */
 const UI_ACCENT_KEY = "accent";
 
-/** Where Herdr keeps config.toml, under the user's roaming app data. */
+/** Where Herdr keeps config.toml — see platform.ts's herdrConfigPath. */
 function defaultConfigPath(): string | undefined {
-  const appData = process.env["APPDATA"];
-  if (!appData) return undefined;
-  return path.join(appData, "herdr", "config.toml");
+  return herdrConfigPath();
 }
 
 function requireConfigPath(configPath: string | undefined): string {

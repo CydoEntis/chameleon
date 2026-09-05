@@ -871,3 +871,82 @@ describe("oh my posh adapter — edge cases", () => {
     expect(resultText).not.toMatch(/,\s*[\]}]/);
   });
 });
+
+// CHM-25: Oh My Posh's live reload worked only from PowerShell — the
+// Set-PoshContext hook was written into a PowerShell profile regardless of
+// which shell `ch` was actually run from. bash and zsh each get their own
+// hook, written into their own rc file; cmd.exe has no rc file at all, so
+// its hook is a Clink Lua script instead, and refuses to write one when
+// Clink itself is not on PATH rather than silently doing nothing.
+describe("shell-specific live-reload hooks (CHM-25)", () => {
+  let stateDir: string;
+  let configPath: string;
+  let pointerPath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-shells-"));
+    configPath = path.join(stateDir, "theme.omp.json");
+    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+    writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("writes a PROMPT_COMMAND-chaining hook into bash's own rc file", () => {
+    const profilePath = path.join(stateDir, ".bashrc");
+    writeFileSync(profilePath, 'export EDITOR="nvim"\n', "utf8");
+
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath, "bash").apply(ZEROX96F_SCHEME);
+
+    const resultText = readFileSync(profilePath, "utf8");
+    expect(resultText).toContain('export EDITOR="nvim"'); // the user's own line survives untouched
+    expect(resultText).toContain("__chameleon_ohmyposh_precmd");
+    expect(resultText).toContain("oh-my-posh init bash");
+    expect(resultText).toContain("PROMPT_COMMAND");
+  });
+
+  it("writes a precmd_functions hook into zsh's own rc file", () => {
+    const profilePath = path.join(stateDir, ".zshrc");
+    writeFileSync(profilePath, "", "utf8");
+
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath, "zsh").apply(ZEROX96F_SCHEME);
+
+    const resultText = readFileSync(profilePath, "utf8");
+    expect(resultText).toContain("__chameleon_ohmyposh_precmd");
+    expect(resultText).toContain("oh-my-posh init zsh");
+    expect(resultText).toContain("precmd_functions");
+  });
+
+  it("re-applying replaces its own bash block in place rather than chaining PROMPT_COMMAND twice", () => {
+    const profilePath = path.join(stateDir, ".bashrc");
+    writeFileSync(profilePath, "", "utf8");
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath, "bash");
+
+    adapter.apply(ZEROX96F_SCHEME);
+    adapter.apply(ZEROX96F_SCHEME);
+
+    const occurrences = readFileSync(profilePath, "utf8").split("__chameleon_ohmyposh_precmd() {").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it("refuses cmd.exe's Clink hook plainly when Clink is not installed, rather than skipping it silently", () => {
+    const profilePath = path.join(stateDir, "chameleon-oh-my-posh.lua");
+    vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ error: new Error("ENOENT"), status: null }));
+
+    expect(() => createOhMyPoshAdapter(configPath, profilePath, pointerPath, "cmd").apply(ZEROX96F_SCHEME)).toThrow(/Clink/);
+  });
+
+  it("writes a Clink prompt-filter script when Clink is installed", () => {
+    const profilePath = path.join(stateDir, "chameleon-oh-my-posh.lua");
+    vi.mocked(spawnSync).mockReturnValueOnce(makeSpawnResult({ status: 0, stdout: "1.6.5" }));
+
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath, "cmd").apply(ZEROX96F_SCHEME);
+
+    const resultText = readFileSync(profilePath, "utf8");
+    expect(resultText).toContain("clink.promptfilter");
+    expect(resultText).toContain("oh-my-posh print primary");
+    expect(resultText).toContain("-- ch:begin");
+  });
+});

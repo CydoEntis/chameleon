@@ -1,9 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildThemePack, parseUserPackManifest, type ThemePack } from "../palette/theme-pack.js";
-
-/** Chameleon's own state directory, under the user's local app data — see adapters/oh-my-posh.ts's STATE_DIR_NAME, which this mirrors. */
-const STATE_DIR_NAME = "chameleon";
+import { stateDir } from "./platform.js";
 
 /** Sub-directory of the state directory a user drops their own pack directories into. */
 const USER_THEMES_DIR_NAME = "themes";
@@ -11,13 +9,9 @@ const USER_THEMES_DIR_NAME = "themes";
 /** File name a pack directory must contain for the loader to find it. */
 const PACK_MANIFEST_FILE_NAME = "pack.json";
 
-/** Where `ch` looks for user-dropped packs: `%LOCALAPPDATA%\chameleon\themes\<pack>\pack.json`. */
+/** Where `ch` looks for user-dropped packs: `<chameleon state dir>/themes/<pack>/pack.json` — see platform.ts's stateDir. */
 export function defaultUserThemePackDir(): string {
-  const localAppData = process.env["LOCALAPPDATA"];
-  if (!localAppData) {
-    throw new Error("LOCALAPPDATA is not set — cannot locate the user theme pack directory");
-  }
-  return path.join(localAppData, STATE_DIR_NAME, USER_THEMES_DIR_NAME);
+  return path.join(stateDir(), USER_THEMES_DIR_NAME);
 }
 
 export interface UserThemePackLoadResult {
