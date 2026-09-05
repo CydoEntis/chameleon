@@ -1,14 +1,40 @@
+import type { SpawnSyncReturns } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  choosePowerShellEdition,
   clinkScriptPath,
   currentPlatform,
   detectShell,
+  documentsDirFromRegistryQueryOutput,
   herdrConfigPath,
   isWindows,
   ohMyPoshProfilePathFor,
   stateDir,
+  type PowerShellEdition,
 } from "../../src/adapters/platform.js";
+
+vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
+
+function makeSpawnResult(overrides: Partial<SpawnSyncReturns<string>> = {}): SpawnSyncReturns<string> {
+  return {
+    pid: 1234,
+    output: [null, "", ""],
+    stdout: "",
+    stderr: "",
+    status: 0,
+    signal: null,
+    ...overrides,
+  };
+}
+
+/** `reg query`'s own not-found shape — every spawnSync call in this file defaults to this so a test that never touches PowerShell detection or Documents redirection is unaffected by it. */
+const REG_QUERY_NOT_FOUND = makeSpawnResult({ error: new Error("ENOENT"), status: null });
+
+beforeEach(() => {
+  vi.mocked(spawnSync).mockReset().mockReturnValue(REG_QUERY_NOT_FOUND);
+});
 
 // CHM-25: before this file existed, every one of these paths was a scattered
 // LOCALAPPDATA/APPDATA/USERPROFILE read that threw outright when its own env
@@ -114,5 +140,78 @@ describe("ohMyPoshProfilePathFor", () => {
   it("gives pwsh, bash and zsh each their own, distinct path", () => {
     const paths = new Set(["pwsh", "bash", "zsh", "cmd"].map((shell) => ohMyPoshProfilePathFor(shell as never)));
     expect(paths.size).toBe(4);
+  });
+
+  // CHM-39: a real machine had Windows PowerShell 5.1, no pwsh at all, and
+  // Documents redirected to OneDrive — and Chameleon wrote its reload hook
+  // to `~/Documents/PowerShell/...` regardless, a file nothing ever loaded.
+  it("writes to Windows PowerShell's own profile, under a OneDrive-redirected Documents, when pwsh is not installed", () => {
+    const oneDriveDocuments = String.raw`C:\Users\cstin\OneDrive\Documents`;
+    vi.mocked(spawnSync)
+      .mockReturnValueOnce(
+        makeSpawnResult({
+          status: 0,
+          stdout: [
+            String.raw`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`,
+            `    Personal    REG_EXPAND_SZ    ${oneDriveDocuments}`,
+            "",
+          ].join("\r\n"),
+        }),
+      )
+      .mockReturnValueOnce(makeSpawnResult({ error: new Error("ENOENT"), status: null })) // pwsh: not installed
+      .mockReturnValueOnce(makeSpawnResult({ status: 0 })); // powershell: installed
+
+    expect(ohMyPoshProfilePathFor("pwsh")).toBe(path.join(oneDriveDocuments, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"));
+  });
+});
+
+describe("documentsDirFromRegistryQueryOutput", () => {
+  it("reads a literal, OneDrive-redirected path from a real `reg query` REG_EXPAND_SZ line", () => {
+    const stdout = [
+      String.raw`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`,
+      String.raw`    Personal    REG_EXPAND_SZ    C:\Users\cstin\OneDrive\Documents`,
+      "",
+    ].join("\r\n");
+    expect(documentsDirFromRegistryQueryOutput(stdout)).toBe(String.raw`C:\Users\cstin\OneDrive\Documents`);
+  });
+
+  it("expands a %USERPROFILE%-style reference the unredirected default is stored with", () => {
+    vi.stubEnv("USERPROFILE", String.raw`C:\Users\cstin`);
+    const stdout = String.raw`    Personal    REG_SZ    %USERPROFILE%\Documents`;
+    expect(documentsDirFromRegistryQueryOutput(stdout)).toBe(String.raw`C:\Users\cstin\Documents`);
+  });
+
+  it("returns undefined for output that names no Personal value — reg query failed or the key does not exist", () => {
+    expect(documentsDirFromRegistryQueryOutput("ERROR: The system was unable to find the specified registry key.")).toBeUndefined();
+  });
+});
+
+describe("choosePowerShellEdition", () => {
+  const installed = (pwsh: boolean, windowsPowerShell: boolean): Readonly<Record<PowerShellEdition, boolean>> => ({
+    pwsh,
+    windowsPowerShell,
+  });
+  const profileExists = (pwsh: boolean, windowsPowerShell: boolean): Readonly<Record<PowerShellEdition, boolean>> => ({
+    pwsh,
+    windowsPowerShell,
+  });
+
+  it("picks the only edition installed, regardless of which profile exists", () => {
+    expect(choosePowerShellEdition(installed(true, false), profileExists(false, true))).toBe("pwsh");
+    expect(choosePowerShellEdition(installed(false, true), profileExists(true, false))).toBe("windowsPowerShell");
+  });
+
+  it("returns undefined when neither edition is installed", () => {
+    expect(choosePowerShellEdition(installed(false, false), profileExists(false, false))).toBeUndefined();
+  });
+
+  it("prefers whichever edition's profile already exists when both are installed", () => {
+    expect(choosePowerShellEdition(installed(true, true), profileExists(true, false))).toBe("pwsh");
+    expect(choosePowerShellEdition(installed(true, true), profileExists(false, true))).toBe("windowsPowerShell");
+  });
+
+  it("falls back to Windows PowerShell — never pwsh — on a tie between two installed editions", () => {
+    expect(choosePowerShellEdition(installed(true, true), profileExists(false, false))).toBe("windowsPowerShell");
+    expect(choosePowerShellEdition(installed(true, true), profileExists(true, true))).toBe("windowsPowerShell");
   });
 });
