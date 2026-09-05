@@ -33,7 +33,7 @@
       "background": "#191724",
       "foreground": "#e0def4",
       "cursorColor": "#e0def4",
-      "selectionBackground": "#4a4a4a"
+      "selectionBackground": "#4a4855"
     },
     "oh-my-posh": {
       "ground": "#191724",
@@ -50,7 +50,7 @@
       "muted": "#6e6a86",
       "success": "#f6c177",
       "error": "#ebbcba",
-      "selection_bg": "#4a4a4a"
+      "selection_bg": "#4a4855"
     }
   }
 }
