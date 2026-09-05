@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { CurrentPackReport } from "../src/index.js";
-import { formatDriftLine, hasDrift } from "../src/cli.js";
+import type { CurrentPackReport, LoadedThemePack } from "../src/index.js";
+import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../src/index.js";
+import { formatDriftLine, formatThemeLine, hasDrift, normalizeThemeQuery, resolveThemeQuery, USAGE } from "../src/cli.js";
 
 // CHM-34: `ch doctor` was reporting "drift: none" — a comparison it never
 // performed — whenever the recorded pack could no longer be loaded (deleted
@@ -62,5 +63,87 @@ describe("hasDrift", () => {
 
   it("is true when a target no longer matches the recorded pack", () => {
     expect(hasDrift(driftedPackDrift("catppuccin-dark"))).toBe(true);
+  });
+});
+
+// Real bundled packs (loadCuratedThemePacks/mergeThemePacksBySlug), not
+// invented fixtures — see CLAUDE.md's "colour tests use real schemes' real
+// values." Catppuccin's own two packs (catppuccin-dark "Catppuccin Mocha",
+// catppuccin-light "Catppuccin Latte") share a slug and name prefix, which is
+// exactly what makes them useful here: real cases of an exact match, a
+// prefix that must read as ambiguous, and a near-miss with an obvious "did
+// you mean".
+const BUNDLED_PACKS: readonly LoadedThemePack[] = mergeThemePacksBySlug(loadCuratedThemePacks(), []);
+
+function findBundledPack(slug: string): LoadedThemePack {
+  const loaded = BUNDLED_PACKS.find((candidate) => candidate.pack.manifest.slug === slug);
+  if (!loaded) throw new Error(`test fixture error: no bundled pack named "${slug}"`);
+  return loaded;
+}
+
+describe("normalizeThemeQuery", () => {
+  it("lowercases and strips separators so a slug, a name and joined words all collapse to the same key", () => {
+    expect(normalizeThemeQuery("Catppuccin Mocha")).toBe("catppuccinmocha");
+    expect(normalizeThemeQuery("catppuccin-mocha")).toBe("catppuccinmocha");
+    expect(normalizeThemeQuery("catppuccin_mocha")).toBe("catppuccinmocha");
+    expect(normalizeThemeQuery("CATPPUCCIN MOCHA")).toBe("catppuccinmocha");
+  });
+});
+
+describe("formatThemeLine", () => {
+  it("shows the display name, never the slug", () => {
+    const line = formatThemeLine(findBundledPack("catppuccin-dark"));
+    expect(line).toContain("Catppuccin Mocha");
+    expect(line).not.toContain("catppuccin-dark");
+  });
+
+  it("carries no marker at all for the bundled default — CHM-42's 'a tag on every row means nothing'", () => {
+    const line = formatThemeLine(findBundledPack("catppuccin-dark"));
+    expect(line).not.toContain("(bundled)");
+    expect(line).not.toContain("(user)");
+  });
+
+  it("marks a user pack, and only a user pack", () => {
+    const bundled = findBundledPack("catppuccin-dark");
+    const userPack: LoadedThemePack = { ...bundled, origin: "user" };
+    expect(formatThemeLine(userPack)).toContain("(user)");
+  });
+});
+
+describe("resolveThemeQuery", () => {
+  it("resolves an exact slug", () => {
+    const result = resolveThemeQuery(BUNDLED_PACKS, ["catppuccin-dark"]);
+    expect(result).toEqual({ status: "resolved", loaded: findBundledPack("catppuccin-dark") });
+  });
+
+  it("resolves a quoted display name, case- and separator-insensitively", () => {
+    const result = resolveThemeQuery(BUNDLED_PACKS, ["CATPPUCCIN-MOCHA"]);
+    expect(result).toEqual({ status: "resolved", loaded: findBundledPack("catppuccin-dark") });
+  });
+
+  it("resolves several bare words joined into one name", () => {
+    const result = resolveThemeQuery(BUNDLED_PACKS, ["catppuccin", "mocha"]);
+    expect(result).toEqual({ status: "resolved", loaded: findBundledPack("catppuccin-dark") });
+  });
+
+  it("lists every candidate for an ambiguous prefix rather than guessing one", () => {
+    const result = resolveThemeQuery(BUNDLED_PACKS, ["catppuccin"]);
+    expect(result.status).toBe("ambiguous");
+    if (result.status !== "ambiguous") throw new Error("unreachable");
+    const candidateSlugs = result.candidates.map((loaded) => loaded.pack.manifest.slug).sort();
+    expect(candidateSlugs).toEqual(["catppuccin-dark", "catppuccin-light"]);
+  });
+
+  it("suggests the closest match for a name that resolves to nothing", () => {
+    const result = resolveThemeQuery(BUNDLED_PACKS, ["Catpuccin Mocha"]);
+    expect(result.status).toBe("unknown");
+    if (result.status !== "unknown") throw new Error("unreachable");
+    expect(result.closest?.pack.manifest.slug).toBe("catppuccin-dark");
+  });
+});
+
+describe("USAGE", () => {
+  it("names `chm themes` as the way to browse", () => {
+    expect(USAGE).toContain("chm themes");
   });
 });
