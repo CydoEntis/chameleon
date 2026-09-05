@@ -75,6 +75,29 @@ export function chromaOf(hex: string): number {
   return (Math.max(red, green, blue) - Math.min(red, green, blue)) / 255;
 }
 
+function clampByte(value: number): number {
+  return Math.min(255, Math.max(0, Math.round(value)));
+}
+
+function byteToHexPair(byte: number): string {
+  return byte.toString(16).padStart(2, "0");
+}
+
+/**
+ * Linear RGB interpolation between two hex colours: fraction 0 returns
+ * `hexA`, fraction 1 returns `hexB`. Used to build a neutral tone scale
+ * between two colours that are already known-good (e.g. a repaired ground
+ * and body) rather than reaching for the hue/chroma repair machinery, which
+ * exists to fix a *failing* candidate, not to invent a shade that was never
+ * there.
+ */
+export function mix(hexA: string, hexB: string, fraction: number): string {
+  const channelsA = toRgbChannels(hexA);
+  const channelsB = toRgbChannels(hexB);
+  const mixChannel = (a: number, b: number) => clampByte(a + (b - a) * fraction);
+  return `#${byteToHexPair(mixChannel(channelsA.red, channelsB.red))}${byteToHexPair(mixChannel(channelsA.green, channelsB.green))}${byteToHexPair(mixChannel(channelsA.blue, channelsB.blue))}`;
+}
+
 /**
  * A colour as hue (degrees, [0, 360)), chroma (see chromaOf, [0, 1]) and
  * matchValue — the offset every channel shares once the hue's chroma-scaled

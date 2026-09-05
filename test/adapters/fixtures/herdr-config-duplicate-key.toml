@@ -12,8 +12,8 @@ name = "legacy-theme" # picked from the built-in list
 # Solarized base01 — picked this shade of grey myself, don't overwrite the comment
 text = "#586E75"
 subtext0 = "#657B83" # inline comment, do not lose me
-# surface_dim isn't one of Chameleon's own tokens — must survive untouched
-surface_dim = "#001100"
+# tab_bg is one of Herdr's explicitly rejected keys, never Chameleon's — must survive untouched
+tab_bg = "#001100"
 
 [server]
 socket_path = "/tmp/herdr.sock"
