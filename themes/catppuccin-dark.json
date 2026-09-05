@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "Catppuccin Mocha",
-      "black": "#45475a",
+      "black": "#4f5164",
       "red": "#f38ba8",
       "green": "#a6e3a1",
       "yellow": "#f9e2af",

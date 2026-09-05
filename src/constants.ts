@@ -90,6 +90,16 @@ export const RATIO_CLEARANCE_MARGIN = 1.05;
 export const MIN_REPAIRED_CHROMA = 0.2;
 
 /**
+ * Minimum contrast an ANSI slot must clear against its own background.
+ * Lower than TEXT_MIN_RATIO because a slot's job is only to be
+ * distinguishable from the background it is drawn on, not to carry body
+ * text's own legibility guarantee — but 22 of the 26 bundled packs ship at
+ * least one ANSI slot below even this, four of them with black
+ * byte-identical to the background (contrast 1.00). See palette/ansi.ts.
+ */
+export const ANSI_MIN_RATIO = 2.0;
+
+/**
  * Hue boundaries, in degrees, used to classify an ANSI slot's *measured*
  * hue rather than trust its name — Rosé Pine Dawn's `green` slot holds a
  * blue (hue ~197°) and its `cyan` slot holds a pink (hue ~3°). A slot's

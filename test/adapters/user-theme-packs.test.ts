@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadUserThemePacks } from "../../src/adapters/user-theme-packs.js";
-import { MUTED_MIN_RATIO } from "../../src/constants.js";
+import { ANSI_MIN_RATIO, MUTED_MIN_RATIO } from "../../src/constants.js";
 import { contrastRatio } from "../../src/palette/color.js";
 import type { Scheme } from "../../src/palette/scheme.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
@@ -53,10 +53,14 @@ describe("loadUserThemePacks", () => {
     expect(result.packs[0]?.manifest.name).toBe("My Dracula");
     expect(result.packs[0]?.manifest.slug).toBe("my-dracula-dark");
     // Apart from selectionBackground, which CHM-30 resolves for every pack,
-    // user-supplied or bundled alike — see theme-pack.test.ts's equivalent
-    // assertion on a bundled pack.
+    // and black, which CHM-32 repairs (fixture: 1.11) — both for a
+    // user-supplied pack exactly as for a bundled one, see
+    // theme-pack.test.ts's equivalent assertions on Dracula as a bundled
+    // pack.
     const wtPayload = result.packs[0]?.payloads["windows-terminal"];
-    expect(wtPayload).toEqual({ ...MY_DRACULA_SCHEME, selectionBackground: wtPayload?.selectionBackground });
+    expect(wtPayload).toEqual({ ...MY_DRACULA_SCHEME, black: wtPayload?.black, selectionBackground: wtPayload?.selectionBackground });
+    expect(wtPayload?.black).not.toBe(MY_DRACULA_SCHEME.black);
+    expect(contrastRatio(wtPayload?.black ?? "", MY_DRACULA_SCHEME.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
   });
 
   it("never derives a slug from name or family when one is declared, even if it disagrees with them", () => {

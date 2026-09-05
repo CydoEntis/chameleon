@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "Ayu Mirage",
-      "black": "#171b24",
+      "black": "#51555e",
       "red": "#ed8274",
       "green": "#87d96c",
       "yellow": "#facc6e",
