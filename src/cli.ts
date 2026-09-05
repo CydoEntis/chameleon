@@ -5,6 +5,7 @@ import {
   applyThemePack,
   buildLayoutSegment,
   currentPack,
+  didAnyTargetFail,
   findFamilySibling,
   isKnownRole,
   isSegmentType,
@@ -25,12 +26,14 @@ import {
   writeOhMyPoshLayout,
   type Appearance,
   type DoctorNerdFontCheck,
+  type DoctorReport,
   type Layout,
   type LayoutBlockName,
   type LoadedThemePack,
   type PackActionResult,
   type Role,
   type SegmentType,
+  type Target,
 } from "./index.js";
 
 /** One line of `ch list` output — plain text, no Nerd Font glyph, so it reads before a font is set up. */
@@ -77,12 +80,43 @@ function formatNerdFontLine(nerdFont: DoctorNerdFontCheck): string {
   return `nerd font: installed and selected (${nerdFont.selectedFontFace})`;
 }
 
+/** Comma-joined target names, for a drift report — shared by `ch doctor` and `ch current`, see matchesVerbFor. */
+function formatDriftedTargets(driftedTargets: readonly Target[]): string {
+  return driftedTargets.join(", ");
+}
+
+/** "match"/"matches" agreeing with `driftedTargets`' count — the one piece of grammar both `ch doctor` and `ch current` need when reporting drift (CHM-27). */
+function matchesVerbFor(driftedTargets: readonly Target[]): string {
+  return driftedTargets.length === 1 ? "matches" : "match";
+}
+
+/**
+ * `ch doctor`'s drift row: undefined when nothing has ever been applied —
+ * there is nothing recorded to compare live configs against — "none" when
+ * every detected target still matches the recorded pack, and otherwise the
+ * targets that no longer do. See CHM-27: a partial apply that left targets
+ * disagreeing must be visible here, not just at the moment it happened.
+ */
+function formatDriftLine(drift: DoctorReport["drift"]): string {
+  if (!drift) return "drift: no pack has been applied yet — nothing to compare";
+  if (drift.driftedTargets.length === 0) return `drift: none — every detected target matches "${drift.slug}"`;
+  return `drift: ${formatDriftedTargets(drift.driftedTargets)} no longer ${matchesVerbFor(drift.driftedTargets)} "${drift.slug}"`;
+}
+
+/** Whether `drift` names at least one target that no longer matches the recorded pack — what turns `ch doctor`'s drift row into a non-zero exit. */
+function hasDrift(drift: DoctorReport["drift"]): boolean {
+  return drift !== undefined && drift.driftedTargets.length > 0;
+}
+
 /**
  * Reports what is installed, what is missing, and the one-line command that
  * would install each gap — never runs an installer itself, so there is
  * nothing here that blocks on a prompt stdin cannot answer. See CLAUDE.md,
  * "Delegating installs to winget / oh-my-posh font install rather than
- * reimplementing an installer."
+ * reimplementing an installer." Also reports drift (CHM-27): a detected
+ * target whose live config no longer matches the recorded pack is exactly
+ * the state a partial apply can leave behind, and it must show up here even
+ * when `ch current` was never run to notice it.
  */
 function runDoctor(): number {
   const report = runDoctorChecks();
@@ -99,7 +133,8 @@ function runDoctor(): number {
     process.stdout.write(`  would run: ${report.nerdFont.installCommand}\n`);
   }
 
-  return 0;
+  process.stdout.write(`${formatDriftLine(report.drift)}\n`);
+  return hasDrift(report.drift) ? 1 : 0;
 }
 
 /** The value following `flagName` in `args` — `ch edit`'s own flag values are always a single token, so this is all the parsing this command needs. */
@@ -290,21 +325,26 @@ function printPackActionResults(results: readonly PackActionResult[]): void {
   }
 }
 
-function hasFailure(results: readonly PackActionResult[]): boolean {
-  return results.some((result) => result.status === "failed");
-}
-
 /**
  * `ch <slug>` — applies that pack to every detected target, reporting per
  * target what changed. A target that is absent is skipped, never a failure;
- * this only returns non-zero when a target that *is* installed threw.
+ * this only returns non-zero when a target that *is* installed threw. A
+ * failure never leaves the false impression `applied <slug>`'s own first
+ * line might otherwise give — CHM-27 — so a partial result says so plainly,
+ * on stderr, naming that the state file was left untouched.
  */
 function runApply(slug: string): number {
   try {
     const report = applyThemePack(slug);
     process.stdout.write(`applied ${report.slug}\n`);
     printPackActionResults(report.results);
-    return hasFailure(report.results) ? 1 : 0;
+    if (!report.isFullyApplied) {
+      process.stderr.write(
+        `ch: ${report.slug} was only partially applied — the state file was left unchanged, and \`ch current\`/\`ch doctor\` may now report drift until this is fixed\n`,
+      );
+      return 1;
+    }
+    return 0;
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
@@ -316,7 +356,7 @@ function runUndo(): number {
   try {
     const results = undoAppliedPack();
     printPackActionResults(results);
-    return hasFailure(results) ? 1 : 0;
+    return didAnyTargetFail(results) ? 1 : 0;
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
@@ -381,7 +421,14 @@ function runFamilySwitch(appearance: Appearance): number {
   }
 }
 
-/** `ch current [--short]` — prints the active pack's slug, or just its name with `--short`, for embedding in a status bar. */
+/**
+ * `ch current [--short]` — prints the active pack's slug, or just its name
+ * with `--short`, for embedding in a status bar. The slug always goes to
+ * stdout even when drifted (CHM-27), so a script reading it still gets a
+ * usable value; drift itself is a warning on stderr plus a non-zero exit,
+ * the same "value on stdout, problem on stderr" split as `ch <slug>`'s own
+ * per-target report.
+ */
 function runCurrent(args: readonly string[]): number {
   const current = currentPack();
   if (!current) {
@@ -390,6 +437,13 @@ function runCurrent(args: readonly string[]): number {
   }
   const showNameOnly = args.includes("--short");
   process.stdout.write(`${showNameOnly ? (current.name ?? current.slug) : current.slug}\n`);
+
+  if (current.driftedTargets.length > 0) {
+    process.stderr.write(
+      `ch current: drifted — ${formatDriftedTargets(current.driftedTargets)} no longer ${matchesVerbFor(current.driftedTargets)} "${current.slug}"\n`,
+    );
+    return 1;
+  }
   return 0;
 }
 

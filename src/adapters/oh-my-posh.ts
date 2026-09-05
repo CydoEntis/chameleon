@@ -56,6 +56,16 @@ const OhMyPoshConfigSchema = z
 
 export type OhMyPoshConfig = z.infer<typeof OhMyPoshConfigSchema>;
 
+/**
+ * Whether `config`'s own palette table already carries every one of
+ * `roleHexes`' six role values — the same keys recoloredPaletteTable itself
+ * writes on apply, so a missing or mismatched key means this target has
+ * drifted from whatever pack `ch` last recorded as active. See CHM-27.
+ */
+export function ohMyPoshMatchesRoleHexes(config: OhMyPoshConfig, roleHexes: Readonly<Record<Role, string>>): boolean {
+  return ROLES.every((role) => config.palette?.[role] === roleHexes[role]);
+}
+
 const PointerSchema = z.object({
   configPath: z.string().min(1),
   updatedAtMs: z.number(),

@@ -13,6 +13,7 @@ import {
   isSegmentType,
   layoutBlocksOnSide,
   moveSegmentBetweenBlocks,
+  ohMyPoshMatchesRoleHexes,
   readOhMyPoshLayout,
   removeSegment,
   reorderSegment,
@@ -22,6 +23,7 @@ import {
   type LayoutSegment,
 } from "../../src/adapters/oh-my-posh.js";
 import { ROLES } from "../../src/constants.js";
+import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 
@@ -764,6 +766,48 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
       const resultPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
       expect(undefinedPaletteReferences(resultText, resultPalette)).toEqual([]);
     }
+  });
+});
+
+// CHM-27: this is the exact comparison `ch current`/`ch doctor` use to
+// notice a target that has drifted from the recorded pack.
+describe("ohMyPoshMatchesRoleHexes", () => {
+  let stateDir: string;
+  let configPath: string;
+  let profilePath: string;
+  let pointerPath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-drift-"));
+    configPath = path.join(stateDir, "theme.omp.json");
+    profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
+    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+    writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
+    writeFileSync(profilePath, LF_PROFILE_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("matches right after apply", () => {
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    adapter.apply(ZEROX96F_SCHEME);
+
+    expect(ohMyPoshMatchesRoleHexes(adapter.read(), resolveRoleHexes(ZEROX96F_SCHEME))).toBe(true);
+  });
+
+  it("does not match a scheme other than the one last applied", () => {
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    adapter.apply(ZEROX96F_SCHEME);
+
+    expect(ohMyPoshMatchesRoleHexes(adapter.read(), resolveRoleHexes(AARDVARK_BLUE_SCHEME))).toBe(false);
+  });
+
+  it("does not match a config that was never themed by Chameleon at all", () => {
+    const config = createOhMyPoshAdapter(configPath, profilePath, pointerPath).read();
+
+    expect(ohMyPoshMatchesRoleHexes(config, resolveRoleHexes(ZEROX96F_SCHEME))).toBe(false);
   });
 });
 
