@@ -25,10 +25,11 @@ import {
 } from "../../src/adapters/oh-my-posh.js";
 import { isWindows, resetPlatformProbeCache } from "../../src/adapters/platform.js";
 import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
-import { contrastRatio } from "../../src/palette/color.js";
+import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
+import type { ThemePack } from "../../src/palette/theme-pack.js";
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
@@ -1146,6 +1147,88 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
         }
       }
     }
+  });
+});
+
+/** `pack.manifest.slug === slug`'s own scheme payload — the fixture data every CHM-53 test below applies chips against, looked up by name rather than array position so a reordering of themes/ never silently swaps which pack a test means. */
+function schemeForSlug(curatedPacks: readonly ThemePack[], slug: string): Scheme {
+  const pack = curatedPacks.find((candidate) => candidate.manifest.slug === slug);
+  if (!pack) throw new Error(`no bundled pack named "${slug}" — has themes/ been renamed?`);
+  return pack.payloads["windows-terminal"];
+}
+
+/** The mean rgbDistance between `paletteA` and `paletteB`, over every key present in both — the "how far apart do these two renders actually look" measure CHM-53's own bug report needs: a single key could coincidentally repeat under two themes even when the mapping is working, but the config as a whole should not. */
+function meanRgbDistanceOverSharedKeys(paletteA: Readonly<Record<string, string>>, paletteB: Readonly<Record<string, string>>): number {
+  const sharedKeys = Object.keys(paletteA).filter((key) => paletteB[key] !== undefined);
+  const distances = sharedKeys.map((key) => rgbDistance(paletteA[key]!, paletteB[key]!));
+  return distances.reduce((total, distance) => total + distance, 0) / distances.length;
+}
+
+// The minimum mean rgbDistance (see color.ts) two unrelated destination
+// packs' own renders of the same 47-key config must clear — chosen well
+// above the 2-3 RGB units the ticket's own bug report measured, and shared
+// by every pairwise comparison below so the floor cannot quietly drift
+// between them.
+const MIN_MEAN_CROSS_THEME_RGB_DISTANCE = 30;
+
+describe("recolouring reflects the destination theme, not the source (CHM-53)", () => {
+  let stateDir: string;
+  let configPath: string;
+  let profilePath: string;
+  let pointerPath: string;
+  let originalChipsText: string;
+  let originalPaletteKeys: string[];
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm53-"));
+    configPath = path.join(stateDir, "chips.omp.json");
+    profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
+    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+    originalChipsText = readFileSync(CHIPS_FIXTURE_PATH, "utf8");
+    originalPaletteKeys = Object.keys((parseWritten(originalChipsText) as { palette: Record<string, string> }).palette);
+    writeFileSync(configPath, originalChipsText, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  /** Recolours the pristine chips fixture under `scheme` and returns just the original 47 keys' resolved hexes — never a "-legible" override CHM-40 minted only for one of the two themes being compared, which would not be a shared key at all. */
+  function recolouredOriginalKeys(scheme: Scheme): Record<string, string> {
+    writeFileSync(configPath, originalChipsText, "utf8");
+    createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(scheme);
+    const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+    return Object.fromEntries(originalPaletteKeys.map((key) => [key, resultPalette[key]!]));
+  }
+
+  it("renders chips's own 47 keys far apart between Dracula and Nord — not the 2-3 RGB-unit nudge CHM-53 exists to fix", () => {
+    // The ticket's own measured regression: four unrelated destination packs
+    // (nord-dark, dracula-dark, gruvbox-light, everforest-dark) rendered the
+    // reporter's Solarized-derived config as the same olive/gold/blue,
+    // moving only 2-3 RGB units. Dracula (pink/purple) and Nord (a muted
+    // blue-grey) share nothing, so a real fix must move the *whole config*,
+    // not one hand-picked key, by far more than that.
+    const curatedPacks = loadCuratedThemePacks();
+    const draculaPalette = recolouredOriginalKeys(schemeForSlug(curatedPacks, "dracula-dark"));
+    const nordPalette = recolouredOriginalKeys(schemeForSlug(curatedPacks, "nord-dark"));
+
+    expect(meanRgbDistanceOverSharedKeys(draculaPalette, nordPalette)).toBeGreaterThanOrEqual(MIN_MEAN_CROSS_THEME_RGB_DISTANCE);
+  });
+
+  it("renders chips's own 47 keys far apart across three unrelated destination packs, not just a light/dark pair of the same family", () => {
+    // The ticket's own warning: Solarized Light vs Solarized Dark would pass
+    // a naive distance check for the wrong reason — they share accent
+    // colours and differ mainly in ground. Dracula, Nord and Gruvbox share
+    // no family with each other, so every pair among the three must clear
+    // the same floor as the Dracula/Nord pair above.
+    const curatedPacks = loadCuratedThemePacks();
+    const draculaPalette = recolouredOriginalKeys(schemeForSlug(curatedPacks, "dracula-dark"));
+    const nordPalette = recolouredOriginalKeys(schemeForSlug(curatedPacks, "nord-dark"));
+    const gruvboxPalette = recolouredOriginalKeys(schemeForSlug(curatedPacks, "gruvbox-light"));
+
+    expect(meanRgbDistanceOverSharedKeys(draculaPalette, nordPalette)).toBeGreaterThanOrEqual(MIN_MEAN_CROSS_THEME_RGB_DISTANCE);
+    expect(meanRgbDistanceOverSharedKeys(draculaPalette, gruvboxPalette)).toBeGreaterThanOrEqual(MIN_MEAN_CROSS_THEME_RGB_DISTANCE);
+    expect(meanRgbDistanceOverSharedKeys(nordPalette, gruvboxPalette)).toBeGreaterThanOrEqual(MIN_MEAN_CROSS_THEME_RGB_DISTANCE);
   });
 });
 
