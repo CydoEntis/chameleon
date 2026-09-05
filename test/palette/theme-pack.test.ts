@@ -44,12 +44,16 @@ describe("buildThemePack", () => {
     expect(contrastRatio(wtPayload.black, scheme.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
   });
 
-  it("resolves a role hex table for oh-my-posh and herdr, agreeing on every role but body — herdr's own selection_bg is extra", () => {
+  it("resolves a role hex table for oh-my-posh and herdr, agreeing on every role but body and muted — herdr's own selection_bg is extra", () => {
     const scheme = readVendoredScheme("Dracula.json");
     const pack = buildThemePack(scheme, "Dracula", ATTRIBUTION);
 
+    // body and muted are herdr-specific: both are repaired a second time
+    // against the selected row's own background (CHM-50's
+    // resolveActiveRowAndText), on top of CHM-30's selection-vs-body nudge to
+    // body alone — see ThemePackPayloads' own doc comment.
     for (const role of ROLES) {
-      if (role === "body") continue;
+      if (role === "body" || role === "muted") continue;
       expect(pack.payloads.herdr[role]).toBe(pack.payloads["oh-my-posh"][role]);
     }
     expect(pack.payloads.herdr.selection_bg).toMatch(/^#[0-9a-f]{6}$/i);

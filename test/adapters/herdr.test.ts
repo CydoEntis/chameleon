@@ -6,9 +6,29 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HERDR_BUILTIN_GROUNDS, createHerdrAdapter, herdrMatchesRoleHexes, nearestHerdrBuiltinThemeNameFor, undoHerdr } from "../../src/adapters/herdr.js";
-import { rgbDistance } from "../../src/palette/color.js";
+import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, TEXT_MIN_RATIO, type Role } from "../../src/constants.js";
+import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
+import { resolveSelectionAndBody } from "../../src/palette/selection.js";
+import { ACTIVE_ROW_IDEAL_FRACTION, resolveActiveRowAndText } from "../../src/palette/surfaces.js";
+import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
+
+/**
+ * The exact role table `applyHerdrScheme` itself writes for `text` and
+ * `subtext0` — CHM-50: herdr's own `body`/`muted` are repaired a second time
+ * against the selected row (see resolveActiveRowAndText), so they can differ
+ * from the plain `resolveRoleHexes` table a bare role lookup would give. Every
+ * test that asserts on the written `text`/`subtext0` (or feeds
+ * herdrMatchesRoleHexes) needs this, not the unrepaired table, or it is
+ * pinning a value the adapter never actually writes.
+ */
+function expectedHerdrRoleHexes(scheme: Scheme): Record<Role, string> {
+  const roleHexes = resolveRoleHexes(scheme);
+  const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, roleHexes.ground, roleHexes.body);
+  const rowAndText = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
+  return { ...roleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
+}
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
@@ -395,7 +415,7 @@ describe("herdrMatchesRoleHexes", () => {
     const adapter = createHerdrAdapter(configPath);
     adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
-    expect(herdrMatchesRoleHexes(adapter.read(), resolveRoleHexes(ZEROX96F_SCHEME))).toBe(true);
+    expect(herdrMatchesRoleHexes(adapter.read(), expectedHerdrRoleHexes(ZEROX96F_SCHEME))).toBe(true);
   });
 
   it("does not match a scheme other than the one last applied", () => {
@@ -497,7 +517,7 @@ describe("herdr adapter — theme name and token mapping", () => {
     const config = createHerdrAdapter(configPath).read();
     expect(config.theme.name).toBe("solarized");
 
-    const expectedColorTable = resolveRoleHexes(AARDVARK_BLUE_SCHEME);
+    const expectedColorTable = expectedHerdrRoleHexes(AARDVARK_BLUE_SCHEME);
     expect(config.theme.custom["sidebar_bg"]).toBe(expectedColorTable.ground);
     expect(config.theme.custom["text"]).toBe(expectedColorTable.body);
     expect(config.theme.custom["accent"]).toBe(expectedColorTable.accent);
@@ -712,6 +732,92 @@ describe("herdr adapter — full custom token vocabulary (CHM-28)", () => {
   });
 });
 
+// CHM-50: CHM-48 fixed the selected row's subtext0 by moving active_row_bg
+// almost onto sidebar_bg — readable, but no longer visibly selected in 17 of
+// the 26 bundled packs (dracula-dark measured 1.00, the same colour). These
+// tests pin the actual fix: row-vs-sidebar visibility, text-on-row and
+// subtext0-on-row are asserted together, per pack, so a fix that only checks
+// one of the three (the way CHM-48 shipped) fails here.
+describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", () => {
+  function customTokensFor(scheme: Scheme, slug: string): Record<string, string> {
+    const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-active-row-"));
+    const configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+    try {
+      createHerdrAdapter(configPath).apply(scheme, slug);
+      return createHerdrAdapter(configPath).read().theme.custom;
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  }
+
+  it("clears row-vs-sidebar visibility, text-on-row (4.5) and subtext0-on-row (3.0) together, for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const customTokens = customTokensFor(pack.payloads["windows-terminal"], pack.manifest.slug);
+      const sidebarBg = customTokens["sidebar_bg"];
+      const activeRowBg = customTokens["active_row_bg"];
+      const text = customTokens["text"];
+      const subtext0 = customTokens["subtext0"];
+      if (!sidebarBg || !activeRowBg || !text || !subtext0) {
+        throw new Error(`"${pack.manifest.slug}" wrote no sidebar_bg/active_row_bg/text/subtext0 tokens`);
+      }
+
+      expect(contrastRatio(activeRowBg, sidebarBg), `${pack.manifest.slug}: row-vs-sidebar`).toBeGreaterThanOrEqual(ACTIVE_ROW_MIN_VISIBLE_RATIO);
+      expect(contrastRatio(text, activeRowBg), `${pack.manifest.slug}: text-on-row`).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+      expect(contrastRatio(subtext0, activeRowBg), `${pack.manifest.slug}: subtext0-on-row`).toBeGreaterThanOrEqual(MUTED_MIN_RATIO);
+    }
+  });
+
+  // The four packs this ticket names by hand, with the exact ratios each one
+  // achieves — pinned so a future change that narrows coverage back down
+  // shows up as a specific number moving, not just a boolean flipping.
+  const NAMED_FIXTURES = [
+    { slug: "dracula-dark", rowVsSidebar: 2.8351, textOnRow: 4.712, subtextOnRow: 3.1596 },
+    { slug: "monokai-dark", rowVsSidebar: 2.956, textOnRow: 4.9684, subtextOnRow: 3.1629 },
+    { slug: "night-owl-dark", rowVsSidebar: 2.5358, textOnRow: 5.3393, subtextOnRow: 3.1564 },
+    { slug: "nord-dark", rowVsSidebar: 2.4, textOnRow: 4.7218, subtextOnRow: 3.175 },
+  ];
+
+  it.each(NAMED_FIXTURES)(
+    "$slug: row-vs-sidebar $rowVsSidebar, text-on-row $textOnRow, subtext0-on-row $subtextOnRow",
+    ({ slug, rowVsSidebar, textOnRow, subtextOnRow }) => {
+      const packs = loadCuratedThemePacks();
+      const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+      if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+      const customTokens = customTokensFor(pack.payloads["windows-terminal"], pack.manifest.slug);
+      const sidebarBg = customTokens["sidebar_bg"];
+      const activeRowBg = customTokens["active_row_bg"];
+      const text = customTokens["text"];
+      const subtext0 = customTokens["subtext0"];
+      if (!sidebarBg || !activeRowBg || !text || !subtext0) throw new Error(`"${slug}" wrote no sidebar_bg/active_row_bg/text/subtext0 tokens`);
+
+      expect(contrastRatio(activeRowBg, sidebarBg)).toBeCloseTo(rowVsSidebar, 3);
+      expect(contrastRatio(text, activeRowBg)).toBeCloseTo(textOnRow, 3);
+      expect(contrastRatio(subtext0, activeRowBg)).toBeCloseTo(subtextOnRow, 3);
+    },
+  );
+
+  it("never needed to trade row visibility away for readability on any bundled pack — see resolveActiveRowAndText's own retreat fallback", () => {
+    // Positive evidence for CHM-33's own warning: rather than asserting an
+    // impossibility band exists somewhere, this confirms none of the real 26
+    // ever reaches resolveActiveRowAndText's retreat branch — the mechanism
+    // exists for a pack this library does not ship, and is exercised
+    // directly (with the retreat forced) in palette/surfaces.test.ts instead.
+    const packs = loadCuratedThemePacks();
+    for (const pack of packs) {
+      const scheme = pack.payloads["windows-terminal"];
+      const roleHexes = resolveRoleHexes(scheme);
+      const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, roleHexes.ground, roleHexes.body);
+      const rowAndText = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
+      expect(rowAndText.wasVisibilityTraded, pack.manifest.slug).toBe(false);
+    }
+  });
+});
+
 // CHM-22: Chameleon's marked block wrote `text` and `subtext0` a second time
 // even when the user already had them further down [theme.custom]. TOML
 // forbids a duplicate key in a table, so Herdr rejected the whole file and
@@ -743,7 +849,7 @@ describe("herdr adapter — duplicate key dedup", () => {
     createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
     const resultText = readFileSync(configPath, "utf8");
 
-    const expectedColorTable = resolveRoleHexes(ZEROX96F_SCHEME);
+    const expectedColorTable = expectedHerdrRoleHexes(ZEROX96F_SCHEME);
     expect(countOccurrences(resultText, "text = ")).toBe(1);
     expect(countOccurrences(resultText, "subtext0 = ")).toBe(1);
     expect(resultText).toContain(`text = "${expectedColorTable.body}"`);
