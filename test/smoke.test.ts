@@ -19,7 +19,13 @@ describe("package surface", () => {
     expect(packageJson.files).not.toContain("vendor");
   });
 
-  it("does not include a vendored scheme in what `npm pack` would publish", () => {
+  // CHM-35: skipped under a simulated process.platform (vitest.config.linux.ts /
+  // vitest.config.darwin.ts) — execSync's own shell choice reads the real,
+  // global process.platform at call time, so faking it here would make Node
+  // hunt for /bin/sh (or cmd.exe) on a host that does not have it under that
+  // name. That is a Node internal, not a platform branch of this project's
+  // own code, so it is not what those configs exist to exercise.
+  it.skipIf(process.env["CHAMELEON_TEST_PLATFORM"] !== undefined)("does not include a vendored scheme in what `npm pack` would publish", () => {
     // No user-controlled input in this command — a fixed, literal string is
     // simpler here than execFileSync's shell-escaping caveats on Windows,
     // where npm itself is a .cmd shim that requires a shell to invoke.

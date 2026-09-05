@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isWindows } from "../src/adapters/platform.js";
 import { MUTED_MIN_RATIO, TEXT_MIN_RATIO } from "../src/constants.js";
 import { loadAllThemePacks, runDoctorChecks } from "../src/index.js";
 import { contrastRatio } from "../src/palette/color.js";
@@ -113,9 +114,21 @@ describe("runDoctorChecks", () => {
     expect(typeof report.nerdFont.isSelected).toBe("boolean");
   });
 
-  it("marks every target applicable when platform checks are left alone", () => {
+  // CHM-35: windows-terminal is the only target whose applicability is
+  // platform-gated at all (see DoctorTargetCheck's own doc comment) — every
+  // other target is applicable everywhere. This used to hardcode `true` for
+  // every target, which is only ever true on Windows: off Windows,
+  // windows-terminal is correctly not applicable, and the old assertion
+  // failed there. Comparing against the real, unmocked `isWindows()` instead
+  // makes the assertion true on every platform the suite runs on — see the
+  // mocked "off Windows" describe block below for the synthetic case.
+  it("marks windows-terminal applicable only on Windows, and every other target applicable everywhere", () => {
     const report = runDoctorChecks();
-    expect(report.targets.every((check) => check.isApplicable)).toBe(true);
+    const windowsTerminalCheck = report.targets.find((check) => check.target === "windows-terminal");
+    const otherChecks = report.targets.filter((check) => check.target !== "windows-terminal");
+
+    expect(windowsTerminalCheck?.isApplicable).toBe(isWindows());
+    expect(otherChecks.every((check) => check.isApplicable)).toBe(true);
   });
 });
 
