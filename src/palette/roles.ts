@@ -31,8 +31,12 @@ export type RoleAssignment = Readonly<Record<Role, RoleColor>>;
  * The order is a tiebreak only, used when two candidates share a hue
  * category and tie on contrast (Gruvbox's blue and purple both measure
  * 3.48 against its dark background) — never a substitute for measuring.
+ *
+ * Exported for palette/role-mapping.ts, which scans these same six slots to
+ * find which of a *destination* theme's own colours a foreign palette key's
+ * hue is nearest to — see CHM-53's nearestHueFamilyHue.
  */
-const BASE_COLOR_SLOTS: readonly SlotName[] = ["blue", "cyan", "purple", "green", "red", "yellow"];
+export const BASE_COLOR_SLOTS: readonly SlotName[] = ["blue", "cyan", "purple", "green", "red", "yellow"];
 
 type HueCategory = "red" | "green" | "cool" | "other";
 
