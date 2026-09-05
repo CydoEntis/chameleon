@@ -22,7 +22,7 @@ import {
   type Layout,
   type LayoutSegment,
 } from "../../src/adapters/oh-my-posh.js";
-import { ANSI_MIN_RATIO, ROLES } from "../../src/constants.js";
+import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { contrastRatio } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
@@ -189,6 +189,65 @@ function segmentForegroundBackgroundPairs(configText: string): ReadonlyArray<rea
     }
   }
   return pairs;
+}
+
+/** Every segment across `configText`'s own blocks that carries at least one resolvable foreground key *and* at least one resolvable background key — CHM-40's own "count of segments actually checked": a fixture, or a check, that only ever exercises one such segment (CHM-37's own miss — see its ticket note) must fail outright, not silently pass on a sample of one. */
+function segmentsWithResolvablePairCount(configText: string): number {
+  const parsed = parseJsonc(configText, [], { allowTrailingComma: true }) as { blocks: Array<{ segments: Array<Record<string, unknown>> }> };
+  let segmentsWithPairs = 0;
+  for (const block of parsed.blocks) {
+    for (const segment of block.segments) {
+      const foregroundTemplates = Array.isArray(segment["foreground_templates"]) ? (segment["foreground_templates"] as unknown[]) : [];
+      const backgroundTemplates = Array.isArray(segment["background_templates"]) ? (segment["background_templates"] as unknown[]) : [];
+      const foregroundKeys = [...paletteReferencesIn(segment["foreground"]), ...foregroundTemplates.flatMap(paletteReferencesIn)];
+      const backgroundKeys = [...paletteReferencesIn(segment["background"]), ...backgroundTemplates.flatMap(paletteReferencesIn)];
+      if (foregroundKeys.length > 0 && backgroundKeys.length > 0) segmentsWithPairs += 1;
+    }
+  }
+  return segmentsWithPairs;
+}
+
+/** One segment's own foreground key(s) and its fully-resolved background hex(es) — the unit CHM-40's own contrast check walks, and the shape segmentsWithResolvablePairCount counts. */
+interface SegmentContrastCheck {
+  readonly segmentType: string;
+  readonly foregroundKeys: readonly string[];
+  readonly backgroundHexes: readonly string[];
+}
+
+/** Every segment across `configText`'s own blocks that carries at least one resolvable foreground key and at least one resolvable background hex, resolved through `palette` — the RESULT palette, so an override key CHM-40 minted (see repairSegmentForegrounds) resolves the same as any of chips's own original keys. */
+function segmentContrastChecks(configText: string, palette: Readonly<Record<string, string>>): SegmentContrastCheck[] {
+  const parsed = parseJsonc(configText, [], { allowTrailingComma: true }) as { blocks: Array<{ segments: Array<Record<string, unknown>> }> };
+  const checks: SegmentContrastCheck[] = [];
+  for (const block of parsed.blocks) {
+    for (const segment of block.segments) {
+      const foregroundTemplates = Array.isArray(segment["foreground_templates"]) ? (segment["foreground_templates"] as unknown[]) : [];
+      const backgroundTemplates = Array.isArray(segment["background_templates"]) ? (segment["background_templates"] as unknown[]) : [];
+      const foregroundKeys = [...new Set([...paletteReferencesIn(segment["foreground"]), ...foregroundTemplates.flatMap(paletteReferencesIn)])];
+      const backgroundKeys = [...new Set([...paletteReferencesIn(segment["background"]), ...backgroundTemplates.flatMap(paletteReferencesIn)])];
+      const backgroundHexes = backgroundKeys.flatMap((key) => (palette[key] !== undefined ? [palette[key]!] : []));
+      if (foregroundKeys.length > 0 && backgroundHexes.length > 0) {
+        checks.push({ segmentType: String(segment["type"]), foregroundKeys, backgroundHexes });
+      }
+    }
+  }
+  return checks;
+}
+
+/**
+ * Whether some single colour could clear TEXT_MIN_RATIO against every one
+ * of `backgroundHexes` at once, checked against literal black and white —
+ * the two extremes able to reach the widest possible contrast ratio at any
+ * background. If neither clears every one of them, no colour can: any
+ * other hue or chroma only narrows the reachable range further (see
+ * repairForegroundAgainstBackgrounds's own "neither pole clears
+ * everything"). A segment can genuinely land here — e.g. chips's own
+ * battery segment mixes several light, pastel charge-level backgrounds
+ * with one dark, implied-"error" one, and no single foreground can read
+ * against a background this dark and one this light at once.
+ */
+function isSingleForegroundAchievable(backgroundHexes: readonly string[]): boolean {
+  const clearsEveryBackground = (foregroundHex: string) => backgroundHexes.every((backgroundHex) => contrastRatio(foregroundHex, backgroundHex) >= TEXT_MIN_RATIO);
+  return clearsEveryBackground("#000000") || clearsEveryBackground("#ffffff");
 }
 
 function parseWritten(text: string): unknown {
@@ -747,7 +806,11 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
     createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
 
     const resultPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
-    expect(Object.keys(resultPalette)).toHaveLength(47 + ROLES.length);
+    // At least the original 47 plus Chameleon's six roles — CHM-40 may add
+    // further keys of its own, one per segment foreground it had to repair
+    // (see "repairs a segment's own foreground..." below), so this is a
+    // floor, not an exact count.
+    expect(Object.keys(resultPalette).length).toBeGreaterThanOrEqual(47 + ROLES.length);
     for (const key of Object.keys(originalPalette)) {
       expect(resultPalette[key]).toBeDefined();
     }
@@ -756,16 +819,48 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
     }
   });
 
-  it("leaves every segment, block and non-colour field byte-identical", () => {
-    const originalBlocks = (parseWritten(originalChipsText) as { blocks: unknown }).blocks;
+  it("leaves every segment's own type and background(s) byte-identical, touching only a foreground CHM-40 had to repair", () => {
+    const originalBlocks = (parseWritten(originalChipsText) as { blocks: Array<{ segments: Array<Record<string, unknown>> }> }).blocks;
     const originalConsoleTitle = (parseWritten(originalChipsText) as { console_title_template: unknown }).console_title_template;
 
     createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
 
     const resultText = readFileSync(configPath, "utf8");
-    const resultParsed = parseWritten(resultText) as { blocks: unknown; console_title_template: unknown };
-    expect(resultParsed.blocks).toEqual(originalBlocks);
+    const resultParsed = parseWritten(resultText) as {
+      blocks: Array<{ segments: Array<Record<string, unknown>> }>;
+      console_title_template: unknown;
+    };
     expect(resultParsed.console_title_template).toEqual(originalConsoleTitle);
+    expect(resultParsed.blocks).toHaveLength(originalBlocks.length);
+
+    // Chips's own "c-badge-text" foreground fails TEXT_MIN_RATIO against a
+    // couple of its own error-flavoured backgrounds once recoloured for
+    // ZEROX96F — see repair.test.ts's own real-value regression for this
+    // exact key. Every OTHER field of every segment — type, background(s),
+    // template, options, diamonds — must still come through untouched; only
+    // `foreground`/`foreground_templates` may differ, and only where a
+    // segment actually needed the fix.
+    let repairedSegmentCount = 0;
+    originalBlocks.forEach((originalBlock, blockIndex) => {
+      const resultBlock = resultParsed.blocks[blockIndex]!;
+      expect(resultBlock.segments).toHaveLength(originalBlock.segments.length);
+      originalBlock.segments.forEach((originalSegment, segmentIndex) => {
+        const resultSegment = resultBlock.segments[segmentIndex]!;
+        const { foreground: _originalForeground, foreground_templates: _originalForegroundTemplates, ...originalRest } = originalSegment;
+        const { foreground: resultForeground, foreground_templates: resultForegroundTemplates, ...resultRest } = resultSegment;
+        expect(resultRest).toEqual(originalRest);
+
+        const wasForegroundRepaired =
+          JSON.stringify(resultForeground) !== JSON.stringify(originalSegment["foreground"]) ||
+          JSON.stringify(resultForegroundTemplates) !== JSON.stringify(originalSegment["foreground_templates"]);
+        if (wasForegroundRepaired) repairedSegmentCount += 1;
+      });
+    });
+    // A test that cannot fail is not a test: this fixture/scheme pair is
+    // known (see repair.test.ts) to need at least one repair, so if none
+    // happened the repair itself silently stopped running, not that there
+    // was nothing to fix.
+    expect(repairedSegmentCount).toBeGreaterThan(0);
   });
 
   it("undoes back to chips's exact original palette", () => {
@@ -824,7 +919,10 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
     // so the text vanished into its own background. Pairs are extracted
     // from the real fixture's own foreground/background (and their
     // *_templates variants) rather than hand-listed, so this stays correct
-    // if the fixture ever changes.
+    // if the fixture ever changes. This is CHM-37's own distinctness floor
+    // (ANSI_MIN_RATIO) — see the next test for CHM-40's stricter, per-segment
+    // TEXT_MIN_RATIO floor, checked against what a segment actually renders
+    // after CHM-40's own repair, not the shared palette entry alone.
     const pairs = segmentForegroundBackgroundPairs(originalChipsText);
     expect(pairs.length).toBeGreaterThan(0);
     const curatedPacks = loadCuratedThemePacks();
@@ -839,6 +937,76 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
         expect(contrast).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
       }
     }
+  });
+
+  it("clears TEXT_MIN_RATIO between every segment's own resolved foreground and background, across every bundled theme (CHM-40)", () => {
+    // CHM-37's own verification gap: only chips's "git" segment carries both
+    // a plain "foreground" and a plain "background" — every other segment's
+    // background only ever shows up in background_templates — so a check
+    // that skipped templates ended up sampling exactly one segment and
+    // calling that "every segment". segmentsWithResolvablePairCount is what
+    // that gap looks like as a number, asserted below so a fixture (or a
+    // future check) that regresses back to a one-segment sample fails loudly
+    // rather than silently passing on too little coverage again.
+    const resolvableSegmentCount = segmentsWithResolvablePairCount(originalChipsText);
+    expect(resolvableSegmentCount).toBeGreaterThan(1);
+
+    const curatedPacks = loadCuratedThemePacks();
+    let totalPairsChecked = 0;
+    let sawAnUnachievableSegment = false;
+
+    for (const pack of curatedPacks) {
+      writeFileSync(configPath, originalChipsText, "utf8");
+      createOhMyPoshAdapter(configPath, profilePath, pointerPath).apply(pack.payloads["windows-terminal"]);
+
+      // Checked from the RESULT config, not the original — a segment CHM-40
+      // had to repair now names a different foreground key than chips
+      // shipped with (see repairSegmentForegrounds), and it is that final
+      // pairing a real prompt actually renders, not the original one.
+      const resultText = readFileSync(configPath, "utf8");
+      const resultPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
+      const checks = segmentContrastChecks(resultText, resultPalette);
+      expect(checks.length).toBeGreaterThanOrEqual(resolvableSegmentCount);
+
+      for (const { segmentType, foregroundKeys, backgroundHexes } of checks) {
+        // A segment can mix backgrounds so far apart in luminance — chips's
+        // own battery segment pairs several light charge-level pastels with
+        // one dark, implied-"error" background — that no single shared
+        // foreground can read against every one of them at once (see
+        // isSingleForegroundAchievable). CHM-40 still repairs toward the
+        // best a single colour can do there, but TEXT_MIN_RATIO itself is
+        // only asserted where it is mathematically reachable at all.
+        const isAchievable = isSingleForegroundAchievable(backgroundHexes);
+        if (!isAchievable) sawAnUnachievableSegment = true;
+
+        for (const foregroundKey of foregroundKeys) {
+          const foregroundHex = resultPalette[foregroundKey]!;
+          for (const backgroundHex of backgroundHexes) {
+            totalPairsChecked += 1;
+            const contrast = contrastRatio(foregroundHex, backgroundHex);
+            const label = `${pack.manifest.slug} "${segmentType}": ${foregroundKey} (${foregroundHex}) on ${backgroundHex}`;
+            if (isAchievable) {
+              expect(contrast, label).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+            } else {
+              // Even where TEXT_MIN_RATIO itself is unreachable, the repair
+              // must still land at least at muted's own, lower floor —
+              // never something worse than a de-emphasised colour would be.
+              expect(contrast, label).toBeGreaterThanOrEqual(MUTED_MIN_RATIO);
+            }
+          }
+        }
+      }
+    }
+
+    // The count of pairs actually checked, across every theme — a fixture
+    // that silently stopped exercising more than a couple of pairs would
+    // still pass an empty loop above without this.
+    expect(totalPairsChecked).toBeGreaterThan(resolvableSegmentCount * curatedPacks.length);
+    // A test that cannot fail is not a test: chips's own battery/project
+    // segments are known (see repair.test.ts) to hit the unreachable case
+    // for every light theme, so if this never triggered, the achievability
+    // check itself stopped running, not that the case stopped existing.
+    expect(sawAnUnachievableSegment).toBe(true);
   });
 });
 

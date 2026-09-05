@@ -360,6 +360,73 @@ export function repairFailingRoles(assignment: RoleAssignment): ContrastReport {
   };
 }
 
+/** The lowest contrast `foregroundHex` measures against any of `backgroundHexes` — the pairing that actually decides whether text reads, since only one candidate background renders at a time but any of them could be the one showing. */
+function worstContrastAgainst(foregroundHex: string, backgroundHexes: readonly string[]): number {
+  return Math.min(...backgroundHexes.map((backgroundHex) => contrastRatio(foregroundHex, backgroundHex)));
+}
+
+/**
+ * The repaired foreground a segment needs in place of `foregroundHex`, or
+ * undefined when it already clears TEXT_MIN_RATIO against every one of
+ * `backgroundHexes` and needs no change. See CHM-40: a segment's background
+ * is often templated — Oh My Posh swaps it at render time between several
+ * candidates (one per battery level, one per git state, …) — so a fix has
+ * to hold up against every candidate that could actually render behind this
+ * text, not just whichever one a check happened to sample.
+ *
+ * Searches both directions a fixed hue/chroma can move away from a fixed
+ * point — see repairAtHue — anchored on whichever background is hardest
+ * for that direction: the darkest background is what limits how much
+ * contrast a *darker* foreground can still gain (the two are already close
+ * in luminance there), and the lightest background limits a *lighter* one
+ * the same way. A foreground that clears its hardest case in a direction
+ * clears every easier one in that same direction for free, since contrast
+ * against a fixed foreground only grows as a background moves further away
+ * from it.
+ *
+ * When both directions clear every background, the one nearer the original
+ * foreground's own luminance wins, so the repair reads as a nudge rather
+ * than a swap. When neither does — the backgrounds this one foreground has
+ * to share a segment with span too wide a luminance range for any single
+ * colour to read against all of them — this ships whichever direction
+ * leaves the least-bad worst case, rather than a direction picked at
+ * random that is merely differently wrong.
+ */
+export function repairForegroundAgainstBackgrounds(
+  foregroundHex: string,
+  backgroundHexes: readonly string[],
+): string | undefined {
+  if (backgroundHexes.length === 0 || worstContrastAgainst(foregroundHex, backgroundHexes) >= TEXT_MIN_RATIO) {
+    return undefined;
+  }
+
+  const minAcceptableRatio = TEXT_MIN_RATIO * RATIO_CLEARANCE_MARGIN;
+  const { hue } = toHsl(foregroundHex);
+  const chroma = chromaOf(foregroundHex);
+  const darkestBackground = backgroundHexes.reduce((darkest, candidate) =>
+    relativeLuminance(candidate) < relativeLuminance(darkest) ? candidate : darkest,
+  );
+  const lightestBackground = backgroundHexes.reduce((lightest, candidate) =>
+    relativeLuminance(candidate) > relativeLuminance(lightest) ? candidate : lightest,
+  );
+
+  const darker = repairAtHue(hue, chroma, darkestBackground, minAcceptableRatio, minAcceptableRatio, false).hex;
+  const lighter = repairAtHue(hue, chroma, lightestBackground, minAcceptableRatio, minAcceptableRatio, true).hex;
+  const doesDarkerClearEverything = worstContrastAgainst(darker, backgroundHexes) >= TEXT_MIN_RATIO;
+  const doesLighterClearEverything = worstContrastAgainst(lighter, backgroundHexes) >= TEXT_MIN_RATIO;
+
+  if (doesDarkerClearEverything !== doesLighterClearEverything) {
+    return doesDarkerClearEverything ? darker : lighter;
+  }
+  if (doesDarkerClearEverything && doesLighterClearEverything) {
+    const originalLuminance = relativeLuminance(foregroundHex);
+    return Math.abs(relativeLuminance(darker) - originalLuminance) <= Math.abs(relativeLuminance(lighter) - originalLuminance)
+      ? darker
+      : lighter;
+  }
+  return worstContrastAgainst(darker, backgroundHexes) >= worstContrastAgainst(lighter, backgroundHexes) ? darker : lighter;
+}
+
 /**
  * Runs the full pipeline — parse, assign, repair — and reduces it to the
  * flat role-to-hex table every colour-consuming adapter needs. Oh My
