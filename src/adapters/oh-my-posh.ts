@@ -319,16 +319,19 @@ function upsertPaletteTable(configPath: string, text: string, paletteTable: Reco
  * A key that is already one of Chameleon's own roles (from a layout `ch
  * edit` built, or a previous apply) is recoloured by that same role, never
  * reclassified by its current colour — its name already says exactly what
- * it is. Every other key is recoloured by recoloredHexFor, which retints its
- * own colour into the new theme's space rather than snapping it onto one of
+ * it is. Every other key is recoloured by recoloredHexFor, which re-expresses
+ * it in `targetScheme`'s own colour space rather than snapping it onto one of
  * six roles — see CHM-37: that snap once collapsed 46 of a real 47-key
  * prompt palette onto three or four colours, leaving its segments illegible.
+ * `targetScheme` is what CHM-53 adds: recoloredHexFor needs the destination's
+ * own base ANSI colours, not just its six resolved roles, to draw a foreign
+ * key's new hue from — see role-mapping.ts's nearestHueFamilyHue.
  */
-function recoloredPaletteTable(existingPalette: Record<string, string> | undefined, resolvedRoleHexes: Record<Role, string>): Record<string, string> {
+function recoloredPaletteTable(existingPalette: Record<string, string> | undefined, resolvedRoleHexes: Record<Role, string>, targetScheme: Scheme): Record<string, string> {
   const recoloredExisting = Object.fromEntries(
     Object.entries(existingPalette ?? {})
       .filter(([key]) => !isGeneratedOverrideKey(key))
-      .map(([key, hex]) => [key, isKnownRole(key) ? resolvedRoleHexes[key] : recoloredHexFor(key, hex, resolvedRoleHexes)]),
+      .map(([key, hex]) => [key, isKnownRole(key) ? resolvedRoleHexes[key] : recoloredHexFor(key, hex, resolvedRoleHexes, targetScheme)]),
   );
   const missingRoles = ROLES.filter((role) => !(role in recoloredExisting));
   const additions = Object.fromEntries(missingRoles.map((role) => [role, resolvedRoleHexes[role]]));
@@ -1023,7 +1026,7 @@ function applyOhMyPoshScheme(
   copyFileSync(configPath, backupPathFor(configPath));
   const originalText = readFileSync(configPath, "utf8");
   const existingConfig = readOhMyPoshConfig(configPath);
-  const paletteTable = recoloredPaletteTable(existingConfig.palette, resolveRoleHexes(scheme));
+  const paletteTable = recoloredPaletteTable(existingConfig.palette, resolveRoleHexes(scheme), scheme);
 
   // Segment repair reads the recoloured table above, never the config's own
   // original palette — a segment must be checked against the colours it is

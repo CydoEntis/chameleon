@@ -6,13 +6,20 @@
  * prompt's segments referenced. See CHM-37: the fix for that, mapping every
  * key onto one of six roles, was still wrong — 46 of a real 47-key prompt
  * palette landed on the same three or four role colours, so the prompt
- * still rendered as flat, illegible blobs. What a palette's keys are for is
- * the relationships between them, not merely their surviving as keys.
+ * still rendered as flat, illegible blobs. See CHM-53: the fix for *that*
+ * overcorrected the other way — carrying a key's own hue and chroma through
+ * unchanged reproduced the source theme so faithfully that the destination
+ * theme barely participated; four unrelated destination packs rendered the
+ * same Solarized olive/gold/blue a user's config started with. What a
+ * palette's keys are for is the relationships between them, not the literal
+ * colours — those belong to whichever theme is active.
  */
 
-import type { Role } from "../constants.js";
+import { MIN_REPAIRED_CHROMA, type Role } from "../constants.js";
 import { chromaOf, fromHueChromaMatch, relativeLuminance, toHsl } from "./color.js";
 import { matchValueForLuminance, poleWithMoreHeadroom } from "./repair.js";
+import { BASE_COLOR_SLOTS } from "./roles.js";
+import type { Scheme } from "./scheme.js";
 
 /**
  * Name fragments reliable enough to pick a role without looking at the
@@ -34,8 +41,51 @@ function roleImpliedByName(name: string): Extract<Role, "error" | "success"> | u
 }
 
 /**
- * Recolours `hex` by carrying its own hue and chroma through unchanged and
- * moving only its WCAG relative luminance, from wherever it sat between
+ * Circular distance, in degrees, between two hues on the 360° colour wheel —
+ * 0 for identical hues, at most 180 for two sitting directly opposite each
+ * other. Plain subtraction is wrong here because hue wraps: 350° and 10° are
+ * 20° apart, not 340°.
+ */
+function hueDistanceDegrees(hueA: number, hueB: number): number {
+  const rawDistance = Math.abs(hueA - hueB);
+  return Math.min(rawDistance, 360 - rawDistance);
+}
+
+/**
+ * The hue of whichever of the destination scheme's own base ANSI colours
+ * measures closest to `sourceHue` — never the slot sharing the source key's
+ * own name or hue category, for the same reason role assignment never
+ * trusts a slot's name over what it measures (roles.ts: Rosé Pine Dawn's
+ * `green` slot measures as a blue). This is what CHM-53 means by
+ * "re-express using the target pack's colours for that family": the six
+ * base slots (BASE_COLOR_SLOTS) are the only hue-bearing colours a theme
+ * actually ships, so the nearest of those six *is* the family, for both the
+ * source key and the destination alike.
+ */
+function nearestHueFamilyHue(sourceHue: number, targetScheme: Scheme): number {
+  const candidateHues = BASE_COLOR_SLOTS.map((slot) => toHsl(targetScheme[slot]).hue);
+  return candidateHues.reduce((nearest, candidate) =>
+    hueDistanceDegrees(candidate, sourceHue) < hueDistanceDegrees(nearest, sourceHue) ? candidate : nearest,
+  );
+}
+
+/**
+ * Recolours `hex` into `targetScheme`'s own colour space rather than a
+ * perturbation of `hex` itself. A genuinely coloured source — chroma at or
+ * above MIN_REPAIRED_CHROMA, the same "recognisably tinted, not a grey"
+ * floor repair.ts holds a repaired role to — is re-expressed at the hue of
+ * whichever of `targetScheme`'s own six base ANSI colours reads as the same
+ * hue family (see nearestHueFamilyHue); a near-neutral source keeps its own
+ * (largely irrelevant) hue, since there is no family for a grey border or
+ * label to belong to. Chroma is always the source's own, both cases: two
+ * keys that started at different saturations — chips's own vivid battery-
+ * error red next to its muted date-segment grey-blue — must stay
+ * distinguishable by more than luminance alone once several keys land in the
+ * same destination hue family, and a theme's own base colour is one fixed
+ * chroma, not a range a source's whole spread of them could map onto without
+ * collapsing most of it.
+ *
+ * Either way, only luminance moves — from wherever the source sat between
  * black (0) and white (1), to the same relative point between `groundHex`
  * and whichever of pure black or pure white sits farthest from it —
  * poleWithMoreHeadroom, the same "which extreme has more room" question
@@ -64,15 +114,18 @@ function roleImpliedByName(name: string): Extract<Role, "error" | "success"> | u
  * search, reused rather than duplicated) is what makes targeting the real
  * luminance possible without giving up hue or chroma.
  *
- * Holding hue and chroma fixed, and only ever sliding luminance along a
- * fixed line between two fixed points, is what keeps two keys that differed
- * before still differing after: the map is monotonic in luminance, so two
- * different inputs collide only if they already agreed on hue, chroma *and*
- * luminance — i.e. were already the same colour.
+ * This is what keeps CHM-37's distinctness guarantee even though CHM-53
+ * changes whose hue is carried through: within one destination hue family
+ * the map is still monotonic in both chroma and luminance, so two sources
+ * land on the same colour only if they already agreed on family, chroma
+ * *and* relative luminance — never merely a rough similarity in one alone.
  */
-function retintByLuminance(hex: string, groundHex: string): string {
-  const { hue } = toHsl(hex);
+function retintByLuminance(hex: string, targetScheme: Scheme, groundHex: string): string {
+  const originalHue = toHsl(hex).hue;
   const chroma = chromaOf(hex);
+  const isGenuinelyColoured = chroma >= MIN_REPAIRED_CHROMA;
+  const hue = isGenuinelyColoured ? nearestHueFamilyHue(originalHue, targetScheme) : originalHue;
+
   const groundLuminance = relativeLuminance(groundHex);
   const farPoleLuminance = poleWithMoreHeadroom(groundHex) ? 1 : 0;
   const darkPoleLuminance = Math.min(groundLuminance, farPoleLuminance);
@@ -86,14 +139,16 @@ function retintByLuminance(hex: string, groundHex: string): string {
 /**
  * The colour a foreign palette key becomes when Chameleon retints a scheme.
  * A name that reliably announces its own intent is pinned to that role's
- * resolved colour outright; everything else keeps its own hue and chroma
- * and has only its luminance carried into the new theme's own dark/light
- * range — see retintByLuminance. This is CHM-37's replacement for CHM-31's
- * nearestRoleFor, which threw away that distinction and snapped every key
- * onto one of six flat roles.
+ * resolved colour outright; everything else is re-expressed in
+ * `targetScheme`'s own colour space, at the same relative lightness the
+ * source held in its own scheme — see retintByLuminance. This is CHM-37's
+ * replacement for CHM-31's nearestRoleFor, which threw away the distinction
+ * between keys and snapped every one onto one of six flat roles, and
+ * CHM-53's replacement for CHM-37's own retintByLuminance, which carried a
+ * key's hue and chroma through unchanged and so barely moved at all.
  */
-export function recoloredHexFor(name: string, hex: string, resolvedRoleHexes: Readonly<Record<Role, string>>): string {
+export function recoloredHexFor(name: string, hex: string, resolvedRoleHexes: Readonly<Record<Role, string>>, targetScheme: Scheme): string {
   const impliedRole = roleImpliedByName(name);
   if (impliedRole) return resolvedRoleHexes[impliedRole];
-  return retintByLuminance(hex, resolvedRoleHexes.ground);
+  return retintByLuminance(hex, targetScheme, resolvedRoleHexes.ground);
 }

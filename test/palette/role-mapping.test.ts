@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { contrastRatio } from "../../src/palette/color.js";
+import { contrastRatio, rgbDistance, toHsl } from "../../src/palette/color.js";
 import { recoloredHexFor } from "../../src/palette/role-mapping.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
+import { BASE_COLOR_SLOTS } from "../../src/palette/roles.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 
@@ -87,21 +88,21 @@ describe("recoloredHexFor", () => {
     const roleHexes = resolveRoleHexes(ZEROX96F_SCHEME);
     // c-badge-return-fail-term is a pale red in chips, but the name alone is
     // reason enough — a name hint never needs the colour it started with.
-    expect(recoloredHexFor("c-badge-return-fail-term", "#FF8A80", roleHexes)).toBe(roleHexes.error);
-    expect(recoloredHexFor("c-battery-state-error", "#FF867F", roleHexes)).toBe(roleHexes.error);
+    expect(recoloredHexFor("c-badge-return-fail-term", "#FF8A80", roleHexes, ZEROX96F_SCHEME)).toBe(roleHexes.error);
+    expect(recoloredHexFor("c-battery-state-error", "#FF867F", roleHexes, ZEROX96F_SCHEME)).toBe(roleHexes.error);
   });
 
   it("pins a name that says success, regardless of its current colour", () => {
     const roleHexes = resolveRoleHexes(ZEROX96F_SCHEME);
-    expect(recoloredHexFor("c-badge-return-success", "#B2FF59", roleHexes)).toBe(roleHexes.success);
+    expect(recoloredHexFor("c-badge-return-success", "#B2FF59", roleHexes, ZEROX96F_SCHEME)).toBe(roleHexes.success);
   });
 
   it("keeps two keys that differed only in hue still differing after recolouring", () => {
     const roleHexes = resolveRoleHexes(ZEROX96F_SCHEME);
     // c-badge-return-custom (purple) and c-git-ahead (cyan) — real chips
     // hex, same rough lightness, different hue.
-    const custom = recoloredHexFor("c-badge-return-custom", "#E7B9FF", roleHexes);
-    const ahead = recoloredHexFor("c-git-ahead", "#6EFFFF", roleHexes);
+    const custom = recoloredHexFor("c-badge-return-custom", "#E7B9FF", roleHexes, ZEROX96F_SCHEME);
+    const ahead = recoloredHexFor("c-git-ahead", "#6EFFFF", roleHexes, ZEROX96F_SCHEME);
     expect(custom).not.toBe(ahead);
   });
 
@@ -109,8 +110,8 @@ describe("recoloredHexFor", () => {
     const roleHexes = resolveRoleHexes(ZEROX96F_SCHEME);
     // c-battery-15-less and c-battery-90-less — real chips hex, same rough
     // yellow-green hue family, different lightness.
-    const fifteenLess = recoloredHexFor("c-battery-15-less", "#FF8A80", roleHexes);
-    const ninetyLess = recoloredHexFor("c-battery-90-less", "#B9F6CA", roleHexes);
+    const fifteenLess = recoloredHexFor("c-battery-15-less", "#FF8A80", roleHexes, ZEROX96F_SCHEME);
+    const ninetyLess = recoloredHexFor("c-battery-90-less", "#B9F6CA", roleHexes, ZEROX96F_SCHEME);
     expect(fifteenLess).not.toBe(ninetyLess);
   });
 
@@ -120,7 +121,7 @@ describe("recoloredHexFor", () => {
     // retint used to reproduce for any near-black generic key. Retinting
     // toward the true black/white extreme instead of body is what fixes it.
     const roleHexes = resolveRoleHexes(SOLARIZED_LIGHT_SCHEME);
-    const text = recoloredHexFor("c-badge-text", "#212121", roleHexes);
+    const text = recoloredHexFor("c-badge-text", "#212121", roleHexes, SOLARIZED_LIGHT_SCHEME);
     expect(contrastRatio(text, roleHexes.error)).toBeGreaterThan(2);
   });
 
@@ -132,10 +133,59 @@ describe("recoloredHexFor", () => {
     expect(curatedPacks.length).toBeGreaterThan(0);
 
     for (const pack of curatedPacks) {
-      const roleHexes = resolveRoleHexes(pack.payloads["windows-terminal"]);
-      const recoloured = FORTY_SEVEN_DISTINCT_HEXES.map((hex, index) => recoloredHexFor(`c-key-${index}`, hex, roleHexes));
+      const targetScheme = pack.payloads["windows-terminal"];
+      const roleHexes = resolveRoleHexes(targetScheme);
+      const recoloured = FORTY_SEVEN_DISTINCT_HEXES.map((hex, index) => recoloredHexFor(`c-key-${index}`, hex, roleHexes, targetScheme));
       const distinctCount = new Set(recoloured.map((hex) => hex.toLowerCase())).size;
       expect(distinctCount).toBeGreaterThanOrEqual(40);
+    }
+  });
+
+  it("moves a key's colour far apart between two unrelated destination themes (CHM-53)", () => {
+    // CHM-53's own bug report: a Solarized-derived chips config rendered the
+    // same olive/gold/blue under Dracula, Nord, Gruvbox and Everforest — a
+    // 2-3 RGB-unit nudge dressed up as "recolouring". Dracula (pink/purple,
+    // #ff79c6/#bd93f9) and Nord (a muted blue-grey, #88c0d0/#a3be8c) share
+    // nothing, so a real fix must move a genuinely coloured key a large
+    // distance between the two, not merely "some" distance.
+    const curatedPacks = loadCuratedThemePacks();
+    const draculaScheme = curatedPacks.find((pack) => pack.manifest.slug === "dracula-dark")!.payloads["windows-terminal"];
+    const nordScheme = curatedPacks.find((pack) => pack.manifest.slug === "nord-dark")!.payloads["windows-terminal"];
+    expect(draculaScheme).toBeDefined();
+    expect(nordScheme).toBeDefined();
+
+    // Solarized's own green chip background (see the ticket's own measured
+    // table) — real vendored hex, not invented.
+    const solarizedGreen = "#859900";
+    const underDracula = recoloredHexFor("c-badge-background", solarizedGreen, resolveRoleHexes(draculaScheme), draculaScheme);
+    const underNord = recoloredHexFor("c-badge-background", solarizedGreen, resolveRoleHexes(nordScheme), nordScheme);
+
+    const MIN_CROSS_THEME_RGB_DISTANCE = 50;
+    expect(rgbDistance(underDracula, underNord)).toBeGreaterThanOrEqual(MIN_CROSS_THEME_RGB_DISTANCE);
+  });
+
+  it("re-expresses a genuinely coloured key close to the destination theme's own hue, across every bundled theme (CHM-53)", () => {
+    // "Close to that pack's own palette": the recoloured hue should sit near
+    // one of the destination's own six base ANSI hues, not the source's own
+    // — checked as hue distance (degrees on the colour wheel) rather than
+    // raw RGB distance, since luminance is deliberately still driven by the
+    // source key's own relative lightness, not the destination's.
+    const curatedPacks = loadCuratedThemePacks();
+    const solarizedGreen = "#859900"; // chroma 0.600 — comfortably above MIN_REPAIRED_CHROMA.
+
+    for (const pack of curatedPacks) {
+      const targetScheme = pack.payloads["windows-terminal"];
+      const roleHexes = resolveRoleHexes(targetScheme);
+      const recoloured = recoloredHexFor("c-badge-background", solarizedGreen, roleHexes, targetScheme);
+      const recolouredHue = toHsl(recoloured).hue;
+      const nearestPackHueDistance = Math.min(
+        ...BASE_COLOR_SLOTS.map((slot) => {
+          const rawDistance = Math.abs(toHsl(targetScheme[slot]).hue - recolouredHue);
+          return Math.min(rawDistance, 360 - rawDistance);
+        }),
+      );
+      const MAX_HUE_DISTANCE_DEGREES = 1;
+      expect(nearestPackHueDistance).toBeLessThanOrEqual(MAX_HUE_DISTANCE_DEGREES);
     }
   });
 });
