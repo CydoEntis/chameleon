@@ -3,12 +3,14 @@ import { realpathSync } from "node:fs";
 import { emitKeypressEvents, type Key } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
+  acquireLock,
   addSegment,
   ANSI_SLOT_NAMES,
   applyPromptPack,
   applyThemePack,
   buildLayoutSegment,
   createDefaultOhMyPoshAdapter,
+  currentLockHolder,
   currentPack,
   currentPromptPack,
   didAnyTargetFail,
@@ -43,6 +45,7 @@ import {
   type Layout,
   type LayoutBlockName,
   type LoadedThemePack,
+  type LockInfo,
   type PackActionResult,
   type PromptPackListEntry,
   type Role,
@@ -380,42 +383,84 @@ function printPackActionResults(results: readonly PackActionResult[]): void {
   }
 }
 
+// --- Chameleon's single-writer lock (CHM-56) --------------------------------
+//
+// Two `chm` processes have no idea the other exists: an open picker holds
+// the theme that was active when it opened and restores it on exit, silently
+// undoing a real `chm <theme>` applied by a second process while it was up.
+// The fix is one exclusive lock every write goes through — a one-shot
+// command for the duration of its own apply/undo, a picker for its whole
+// browsing session (see runThemes/runPrompts) — so a second `chm` that
+// cannot take it says so, naming what holds it, rather than proceeding.
+
+/** `chm`'s own "someone else is writing" message — names the pid and the command holding the lock, rather than silently racing it or queueing behind it. `holder` is only ever undefined when the lock file exists but could not be read — still held by someone, just not nameable. */
+export function formatLockHeldMessage(holder: LockInfo | undefined): string {
+  if (!holder) return "chm: another chm process is writing right now — try again in a moment";
+  return `chm: another chm process is writing right now ("${holder.command}", pid ${holder.pid}) — try again once it exits`;
+}
+
+/**
+ * Runs `body` while holding Chameleon's single-writer lock for `commandLabel`
+ * — see the section comment above. A lock some other live process holds is
+ * reported by name and nothing runs at all; `body` never starts, so nothing
+ * it would have written ever gets written.
+ */
+function runWithWriteLock(commandLabel: string, body: () => number): number {
+  const lock = acquireLock(commandLabel);
+  if (lock.status === "held") {
+    process.stderr.write(`${formatLockHeldMessage(lock.holder)}\n`);
+    return 1;
+  }
+  try {
+    return body();
+  } finally {
+    lock.release();
+  }
+}
+
 /**
  * `chm <theme>` — applies that pack to every detected target, reporting per
  * target what changed. A target that is absent is skipped, never a failure;
  * this only returns non-zero when a target that *is* installed threw. A
  * failure never leaves the false impression `applied <slug>`'s own first
  * line might otherwise give — CHM-27 — so a partial result says so plainly,
- * on stderr, naming that the state file was left untouched.
+ * on stderr, naming that the state file was left untouched. Also the funnel
+ * every one-shot command that changes the active theme runs through —
+ * runNext, runPrev and runFamilySwitch all call this — so wrapping it here in
+ * runWithWriteLock (CHM-56) covers them all in one place.
  */
 function runApply(slug: string): number {
-  try {
-    const report = applyThemePack(slug);
-    process.stdout.write(`applied ${report.slug}\n`);
-    printPackActionResults(report.results);
-    if (!report.isFullyApplied) {
-      process.stderr.write(
-        `chm: ${report.slug} was only partially applied — the state file was left unchanged, and \`chm current\`/\`chm doctor\` may now report drift until this is fixed\n`,
-      );
+  return runWithWriteLock(`chm ${slug}`, () => {
+    try {
+      const report = applyThemePack(slug);
+      process.stdout.write(`applied ${report.slug}\n`);
+      printPackActionResults(report.results);
+      if (!report.isFullyApplied) {
+        process.stderr.write(
+          `chm: ${report.slug} was only partially applied — the state file was left unchanged, and \`chm current\`/\`chm doctor\` may now report drift until this is fixed\n`,
+        );
+        return 1;
+      }
+      return 0;
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       return 1;
     }
-    return 0;
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    return 1;
-  }
+  });
 }
 
 /** `chm undo` — restores every detected target from the backup its own adapter's most recent apply wrote. */
 function runUndo(): number {
-  try {
-    const results = undoAppliedPack();
-    printPackActionResults(results);
-    return didAnyTargetFail(results) ? 1 : 0;
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    return 1;
-  }
+  return runWithWriteLock("chm undo", () => {
+    try {
+      const results = undoAppliedPack();
+      printPackActionResults(results);
+      return didAnyTargetFail(results) ? 1 : 0;
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  });
 }
 
 /** `chm next` — cycles to the next pack in `chm themes` order, wrapping past the end, and applies it. */
@@ -467,6 +512,11 @@ function formatPromptLine(promptReport: CurrentPromptReport): string {
   return `prompt: ${label}`;
 }
 
+/** `chm current`'s own message when Chameleon's write lock is held live (CHM-56) — a target's live config can legitimately disagree with the recorded pack for as long as a debounced preview write is in flight, and that is not the drift `chm current`/`chm doctor` exist to catch. */
+export function formatPreviewInProgressLine(holder: LockInfo): string {
+  return `a preview is running ("${holder.command}") — drift not checked until it finishes`;
+}
+
 /**
  * `chm current [--short]` — prints the active pack's slug, or just its name
  * with `--short`, for embedding in a status bar. The slug always goes to
@@ -487,6 +537,17 @@ function runCurrent(args: readonly string[]): number {
   const promptReport = currentPromptPack();
   if (promptReport) {
     process.stdout.write(`${formatPromptLine(promptReport)}\n`);
+  }
+
+  // CHM-56: a picker's debounced write, or a one-shot apply/undo, can be
+  // mid-flight right now — a target briefly disagreeing with the recorded
+  // pack in that window is not drift, it just hasn't landed yet. Reported
+  // instead of drift, not alongside it, since the comparison below cannot
+  // tell the two apart while a write is still in progress.
+  const activeLockHolder = currentLockHolder();
+  if (activeLockHolder) {
+    process.stderr.write(`chm current: ${formatPreviewInProgressLine(activeLockHolder)}\n`);
+    return 0;
   }
 
   // CHM-34: the recorded pack itself is gone — there is nothing left to
@@ -708,6 +769,20 @@ function clearPickerFrame(lineCount: number): void {
 }
 
 /**
+ * Whether the picker's Esc/Ctrl-C should restore `originalSlug` on exit —
+ * only when the active selection is still exactly what it was when the
+ * picker opened (CHM-56). A real `chm <theme>`/`chm prompt <name>` from
+ * another process while the picker was up changes `currentActiveSlug`
+ * without ever touching the picker's own `originalSlug` — and that is the
+ * user's more recent explicit choice, so the picker must leave it alone
+ * rather than silently reverting it. Both undefined (nothing was active
+ * before, and nothing is active now) still counts as unchanged.
+ */
+export function shouldRestoreOriginalSelectionOnExit(originalSlug: string | undefined, currentActiveSlug: string | undefined): boolean {
+  return currentActiveSlug === originalSlug;
+}
+
+/**
  * Drives the arrow-key picker: renders the filtered list with colour
  * swatches, moves the highlight on the arrow keys, narrows the list as the
  * user types, and previews the highlighted pack immediately on every move —
@@ -721,8 +796,18 @@ function clearPickerFrame(lineCount: number): void {
  * Esc/Ctrl-C, after restoring `originalSlug` (or undoing every target's
  * change, when nothing was active before the picker opened) and restoring
  * the terminal's own colours the same way — see restoreTerminalPreview.
+ * CHM-56: Esc only restores when nothing else changed the active theme
+ * while the picker was open (shouldRestoreOriginalSelectionOnExit) — a real
+ * apply from another process wins over the picker's own restore. `releaseLock`
+ * is the caller's own session-wide write lock (see runThemes), released the
+ * moment this resolves either way, so the picker never keeps holding it a
+ * moment longer than it is actually open.
  */
-async function runInteractivePicker(packs: readonly LoadedThemePack[], originalSlug: string | undefined): Promise<string | undefined> {
+async function runInteractivePicker(
+  packs: readonly LoadedThemePack[],
+  originalSlug: string | undefined,
+  releaseLock: () => void,
+): Promise<string | undefined> {
   const allEntries = packs.map(toPickerEntry);
   const startIndex = originalSlug === undefined ? 0 : Math.max(0, allEntries.findIndex((entry) => entry.slug === originalSlug));
   const originalEntry = originalSlug === undefined ? undefined : allEntries.find((entry) => entry.slug === originalSlug);
@@ -792,16 +877,27 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
       // createSettledFileTargetPreview's own "supersede, not queue".
       settledFileTargetPreview.cancel();
       restoreTerminalPreview();
-      try {
-        if (originalSlug === undefined) {
-          undoAppliedPack();
-        } else {
-          applyThemePack(originalSlug);
+      // CHM-56: a real `chm <theme>` from another process while this picker
+      // was open already changed the active pack — that is a more recent,
+      // explicit choice, and restoring originalSlug over it would be exactly
+      // the silent revert this ticket exists to stop.
+      if (shouldRestoreOriginalSelectionOnExit(originalSlug, currentPack()?.slug)) {
+        try {
+          if (originalSlug === undefined) {
+            undoAppliedPack();
+          } else {
+            applyThemePack(originalSlug);
+          }
+        } catch {
+          // Best effort — the picker still exits either way; a cancel is not
+          // itself a command whose failure `chm` needs to report.
         }
-      } catch {
-        // Best effort — the picker still exits either way; a cancel is not
-        // itself a command whose failure `chm` needs to report.
+      } else {
+        process.stderr.write(
+          `chm: the active theme changed while the picker was open — leaving it as "${currentPack()?.slug ?? "nothing"}"\n`,
+        );
       }
+      releaseLock();
       stopListening();
       resolve(undefined);
     }
@@ -817,8 +913,11 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
       // The caller's own runApply(chosenSlug) is what actually commits — a
       // full four-target apply, including windows-terminal, which no
       // preview here ever wrote to disk (CHM-52's "Enter still applies to
-      // every target, including the ones a preview could not reach").
+      // every target, including the ones a preview could not reach"). The
+      // session lock is released here, before that final apply runs, so
+      // runApply's own lock (CHM-56) is a fresh acquisition, not nested.
       settledFileTargetPreview.cancel();
+      releaseLock();
       stopListening();
       resolve(chosenSlug);
     }
@@ -881,7 +980,16 @@ async function runThemes(args: readonly string[]): Promise<number> {
     return 1;
   }
 
-  const chosenSlug = await runInteractivePicker(packs, currentPack()?.slug);
+  // CHM-56: held for the picker's whole browsing session, not per preview —
+  // a second `chm` cannot write while this is open, and must say so rather
+  // than racing it. See runInteractivePicker's own release of this at Esc/Enter.
+  const lock = acquireLock("chm themes");
+  if (lock.status === "held") {
+    process.stderr.write(`${formatLockHeldMessage(lock.holder)}\n`);
+    return 1;
+  }
+
+  const chosenSlug = await runInteractivePicker(packs, currentPack()?.slug, lock.release);
   if (chosenSlug === undefined) {
     process.stderr.write("chm: no theme chosen\n");
     return 1;
@@ -1061,10 +1169,15 @@ function renderPromptPickerFrame(entries: readonly PromptPackListEntry[], highli
  * with. Resolves to the slug Enter committed, or undefined on Esc/Ctrl-C,
  * after restoring whatever was active before the picker opened — the
  * previous bundled slug, or the user's own config when nothing was active.
+ * CHM-56: Esc only restores when nothing else changed the active layout
+ * while the picker was open (shouldRestoreOriginalSelectionOnExit), and
+ * `releaseLock` — the caller's own session-wide write lock, see runPrompts —
+ * is released the moment this resolves either way.
  */
 async function runInteractivePromptPicker(
   entries: readonly PromptPackListEntry[],
   originalSlug: string | undefined,
+  releaseLock: () => void,
 ): Promise<string | undefined> {
   const startIndex = originalSlug === undefined ? 0 : Math.max(0, entries.findIndex((entry) => entry.slug === originalSlug));
 
@@ -1122,18 +1235,29 @@ async function runInteractivePromptPicker(
 
     function cancel(): void {
       settledPreview.cancel();
-      try {
-        if (originalSlug === undefined) {
-          restorePromptToMine();
-        } else {
-          applyPromptPack(originalSlug);
+      // CHM-56: a real `chm prompt <name>`/`chm prompt mine` from another
+      // process while this picker was open already changed the active
+      // layout — leave it alone rather than reverting a more recent,
+      // explicit choice.
+      if (shouldRestoreOriginalSelectionOnExit(originalSlug, currentPromptPack()?.slug)) {
+        try {
+          if (originalSlug === undefined) {
+            restorePromptToMine();
+          } else {
+            applyPromptPack(originalSlug);
+          }
+        } catch {
+          // Best effort — the picker still exits either way; a cancel is not
+          // itself a command whose failure `chm` needs to report. Covers
+          // "nothing was ever applied" too, the same case runInteractivePicker
+          // swallows for undoAppliedPack.
         }
-      } catch {
-        // Best effort — the picker still exits either way; a cancel is not
-        // itself a command whose failure `chm` needs to report. Covers
-        // "nothing was ever applied" too, the same case runInteractivePicker
-        // swallows for undoAppliedPack.
+      } else {
+        process.stderr.write(
+          `chm: the active prompt layout changed while the picker was open — leaving it as "${currentPromptPack()?.slug ?? "mine"}"\n`,
+        );
       }
+      releaseLock();
       stopListening();
       resolve(undefined);
     }
@@ -1142,6 +1266,7 @@ async function runInteractivePromptPicker(
       const chosenSlug = visibleEntries[highlightedIndex]?.slug;
       if (chosenSlug === undefined) return;
       settledPreview.cancel();
+      releaseLock();
       stopListening();
       resolve(chosenSlug);
     }
@@ -1169,28 +1294,32 @@ async function runInteractivePromptPicker(
 
 /** `chm prompt <name>`'s report: applied, plus the Nerd Font warning CHM-47 asks for — never hidden, never blocking. */
 function runPromptApply(slug: string): number {
-  try {
-    const result = applyPromptPack(slug);
-    process.stdout.write(`applied prompt layout "${result.name}"\n`);
-    if (result.detail) process.stdout.write(`  ${result.detail}\n`);
-    if (result.nerdFontWarning) process.stderr.write(`chm: ${result.nerdFontWarning}\n`);
-    return 0;
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    return 1;
-  }
+  return runWithWriteLock(`chm prompt ${slug}`, () => {
+    try {
+      const result = applyPromptPack(slug);
+      process.stdout.write(`applied prompt layout "${result.name}"\n`);
+      if (result.detail) process.stdout.write(`  ${result.detail}\n`);
+      if (result.nerdFontWarning) process.stderr.write(`chm: ${result.nerdFontWarning}\n`);
+      return 0;
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  });
 }
 
 /** `chm prompt mine` — puts the user's own config back, exactly where CLAUDE.md's "eat one user's config and the tool is dead" demands it still is. */
 function runPromptMine(): number {
-  try {
-    restorePromptToMine();
-    process.stdout.write("restored your own prompt config\n");
-    return 0;
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    return 1;
-  }
+  return runWithWriteLock("chm prompt mine", () => {
+    try {
+      restorePromptToMine();
+      process.stdout.write("restored your own prompt config\n");
+      return 0;
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  });
 }
 
 /** Resolves what a person typed after `chm prompt` against the bundled list — by slug or by display name, case- and separator-insensitive, the same normalizeThemeQuery themes' own resolution uses. Prompt layouts are few enough (six, at last count) that an ambiguous-prefix report is not worth the machinery resolveThemeQuery carries for it — ties fail with the same "run `chm prompts`" message an unknown name gets. */
@@ -1243,7 +1372,15 @@ async function runPrompts(args: readonly string[]): Promise<number> {
     return 1;
   }
 
-  const chosenSlug = await runInteractivePromptPicker(entries, currentPromptPack()?.slug);
+  // CHM-56: see runThemes' own acquireLock — the same single-writer lock,
+  // held for this picker's whole browsing session.
+  const lock = acquireLock("chm prompts");
+  if (lock.status === "held") {
+    process.stderr.write(`${formatLockHeldMessage(lock.holder)}\n`);
+    return 1;
+  }
+
+  const chosenSlug = await runInteractivePromptPicker(entries, currentPromptPack()?.slug, lock.release);
   if (chosenSlug === undefined) {
     process.stderr.write("chm: no prompt layout chosen\n");
     return 1;

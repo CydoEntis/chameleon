@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readActivePackState, writeActivePackState } from "../src/adapters/state.js";
+import { shouldRestoreOriginalSelectionOnExit } from "../src/cli.js";
 import {
   applyThemePack,
   currentPack,
@@ -433,6 +434,50 @@ describe("undoAppliedPack", () => {
       { target: "herdr", status: "restored", detail: "Herdr is not running — nothing to reload" },
       { target: "claude-code", status: "restored" },
     ]);
+  });
+});
+
+// CHM-56's own reproduction: a picker open on solarized-dark previews
+// gruvbox-dark (a debounced file-target write, never the state pointer),
+// while a second `chm dracula-dark` in another pane applies for real — and
+// the picker's own Esc must not silently revert that. shouldRestoreOriginalSelectionOnExit
+// is the decision the picker's cancel() consults before restoring anything;
+// this proves it against the exact four-step sequence from the ticket,
+// through the real applyThemePack/previewThemePackToFileTargets orchestration,
+// not a hand-rolled stand-in for it.
+describe("CHM-56: the picker must not restore blindly over a real apply made while it was open", () => {
+  it("dracula survives: preview does not touch the recorded pack, and Esc leaves a later real apply alone", () => {
+    // 1. picker opened — records original = solarized-dark
+    applyThemePack("solarized-dark", userThemeDir, statePath);
+    const originalSlug = currentPack(userThemeDir, statePath)?.slug;
+
+    // 2. arrowed to gruvbox — debounced preview writes gruvbox into the
+    // file-writable targets, never the state pointer.
+    previewThemePackToFileTargets("gruvbox-dark", userThemeDir);
+    expect(currentPack(userThemeDir, statePath)?.slug).toBe("solarized-dark");
+
+    // 3. `chm dracula-dark` run from a second process — a real, full apply.
+    applyThemePack("dracula-dark", userThemeDir, statePath);
+    expect(currentPack(userThemeDir, statePath)?.slug).toBe("dracula-dark");
+
+    // 4. picker exits (Esc) — must not restore originalSlug, since the
+    // active pack changed since the picker opened.
+    expect(shouldRestoreOriginalSelectionOnExit(originalSlug, currentPack(userThemeDir, statePath)?.slug)).toBe(false);
+
+    // Dracula survives: nothing here calls applyThemePack(originalSlug), so
+    // solarized-dark never comes back.
+    expect(currentPack(userThemeDir, statePath)?.slug).toBe("dracula-dark");
+  });
+
+  it("still restores normally when nothing else changed the active pack while the picker was open", () => {
+    applyThemePack("solarized-dark", userThemeDir, statePath);
+    const originalSlug = currentPack(userThemeDir, statePath)?.slug;
+
+    previewThemePackToFileTargets("gruvbox-dark", userThemeDir);
+
+    // CHM-52's own unchanged path: nobody else applied anything, so Esc's
+    // restore is still exactly what it was before this ticket.
+    expect(shouldRestoreOriginalSelectionOnExit(originalSlug, currentPack(userThemeDir, statePath)?.slug)).toBe(true);
   });
 });
 
