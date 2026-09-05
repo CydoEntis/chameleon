@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ensureOhMyPoshOwnedConfigSeeded,
   restoreOriginalPrompt,
@@ -81,9 +81,16 @@ beforeEach(() => {
   promptStatePath = path.join(stateDir, "prompt-state.json");
   writeFileSync(userConfigPath, USER_CONFIG_TEXT, "utf8");
   writeFileSync(profilePath, PROFILE_TEXT, "utf8");
+  // Discovery prefers $POSH_CONFIG over the profile's own init line, so a
+  // real one in the environment running the suite would be found instead of
+  // this fixture — and the test would silently assert against the developer's
+  // own prompt. Clear both so the profile is the only source here.
+  vi.stubEnv("POSH_CONFIG", "");
+  vi.stubEnv("POSH_THEME", "");
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(stateDir, { recursive: true, force: true });
 });
 
