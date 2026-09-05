@@ -1,0 +1,97 @@
+{
+  "$schema": "https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/main/themes/schema.json",
+  "version": 3,
+  "final_space": true,
+  "blocks": [
+    {
+      "type": "prompt",
+      "alignment": "left",
+      "segments": [
+        {
+          "type": "os",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:accent",
+          "template": " {{ .HostName }} "
+        },
+        {
+          "type": "session",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:body",
+          "template": " {{ .UserName }} "
+        },
+        {
+          "type": "path",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:body",
+          "template": " {{ .Path }} "
+        },
+        {
+          "type": "git",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:success",
+          "template": " {{ .HEAD }} "
+        },
+        {
+          "type": "executiontime",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:accent",
+          "template": " {{ .FormattedMs }} "
+        }
+      ]
+    },
+    {
+      "type": "prompt",
+      "alignment": "right",
+      "segments": [
+        {
+          "type": "time",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:body",
+          "template": " {{ .CurrentDate | date .Format }} "
+        },
+        {
+          "type": "battery",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:body",
+          "template": " {{ .Percentage }}% "
+        },
+        {
+          "type": "shell",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:accent",
+          "template": " {{ .Name }} "
+        },
+        {
+          "type": "exit",
+          "style": "powerline",
+          "powerline_symbol": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:error",
+          "template": " {{ .Meaning }} "
+        },
+        {
+          "type": "text",
+          "style": "plain",
+          "foreground": "p:accent",
+          "template": "\\uf061"
+        }
+      ]
+    }
+  ]
+}
