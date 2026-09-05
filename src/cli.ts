@@ -15,7 +15,6 @@ import {
   loadAllThemePacks,
   moveSegmentBetweenBlocks,
   nextPackSlug,
-  packSlugAtRow,
   prevPackSlug,
   readOhMyPoshLayout,
   removeSegment,
@@ -40,32 +39,39 @@ import {
   type Target,
 } from "./index.js";
 
-/** One line of `ch list` output — plain text, no Nerd Font glyph, so it reads before a font is set up. */
-function formatPackLine(loaded: LoadedThemePack): string {
-  return `${loaded.pack.manifest.slug}  ${loaded.pack.manifest.name}  (${loaded.origin})`;
+/**
+ * One line of `chm themes` output: two colour swatches, then the name a
+ * person actually reads — never the slug (CHM-42's "show the name, drop the
+ * slug from the display"). Only a user pack carries a marker; the bundled
+ * default gets none, since a tag on every row means nothing — see CLAUDE.md,
+ * "Drop (bundled) entirely — it is the default and it is on every row."
+ */
+export function formatThemeLine(loaded: LoadedThemePack): string {
+  const roleHexes = loaded.pack.payloads["oh-my-posh"];
+  const userMarker = loaded.origin === "user" ? "  (user)" : "";
+  return `${swatch(roleHexes.ground)}${swatch(roleHexes.accent)} ${loaded.pack.manifest.name}${userMarker}`;
 }
 
 /**
- * Lists every pack `ch` can apply right now: the bundled library plus
- * anything dropped into the user's own theme directory, each line marked
- * with its origin, and a pack that overrides a bundled one shown only once
- * — see CLAUDE.md, "ch list shows bundled and user packs together, marking
- * which is which." A malformed user pack is reported by name on stderr and
- * does not stop the rest of the list from printing.
+ * Lists every pack `chm` can apply right now: the bundled library plus
+ * anything dropped into the user's own theme directory, and a pack that
+ * overrides a bundled one shown only once. A malformed user pack is
+ * reported by name on stderr and does not stop the rest of the list from
+ * printing.
  */
-function runList(): number {
+function runThemes(): number {
   const { packs, warnings } = loadAllThemePacks();
   for (const warning of warnings) {
     process.stderr.write(`${warning}\n`);
   }
   for (const loaded of packs) {
-    process.stdout.write(`${formatPackLine(loaded)}\n`);
+    process.stdout.write(`${formatThemeLine(loaded)}\n`);
   }
   return 0;
 }
 
 /**
- * One `ch doctor` row for a themeable target: plain text, no Nerd Font glyph,
+ * One `chm doctor` row for a themeable target: plain text, no Nerd Font glyph,
  * so it reads before a font is set up. A target this platform cannot ever
  * have — Windows Terminal outside Windows — reads "not available on this
  * platform" rather than "not found": the latter would tell a Linux user a
@@ -91,12 +97,12 @@ function formatNerdFontLine(nerdFont: DoctorNerdFontCheck): string {
   return `nerd font: installed and selected (${nerdFont.selectedFontFace})`;
 }
 
-/** Comma-joined target names, for a drift report — shared by `ch doctor` and `ch current`, see matchesVerbFor. */
+/** Comma-joined target names, for a drift report — shared by `chm doctor` and `chm current`, see matchesVerbFor. */
 function formatDriftedTargets(driftedTargets: readonly Target[]): string {
   return driftedTargets.join(", ");
 }
 
-/** "match"/"matches" agreeing with `driftedTargets`' count — the one piece of grammar both `ch doctor` and `ch current` need when reporting drift (CHM-27). */
+/** "match"/"matches" agreeing with `driftedTargets`' count — the one piece of grammar both `chm doctor` and `chm current` need when reporting drift (CHM-27). */
 function matchesVerbFor(driftedTargets: readonly Target[]): string {
   return driftedTargets.length === 1 ? "matches" : "match";
 }
@@ -108,7 +114,7 @@ function matchesVerbFor(driftedTargets: readonly Target[]): string {
  * empty in exactly this case too (see currentPack), since there is nothing
  * to compare against — but empty-because-nothing-was-checked and
  * empty-because-everything-matched are different facts, and CHM-34 is what
- * happens when `ch doctor`/`ch current` conflate them: they must never claim
+ * happens when `chm doctor`/`chm current` conflate them: they must never claim
  * a match for a comparison that never ran.
  */
 function isPackUnloadable(report: CurrentPackReport): boolean {
@@ -116,7 +122,7 @@ function isPackUnloadable(report: CurrentPackReport): boolean {
 }
 
 /**
- * `ch doctor`'s drift row: undefined when nothing has ever been applied —
+ * `chm doctor`'s drift row: undefined when nothing has ever been applied —
  * there is nothing recorded to compare live configs against — "cannot
  * check" when the recorded pack no longer loads at all (CHM-34), "none"
  * when every detected target still matches the recorded pack, and otherwise
@@ -132,7 +138,7 @@ export function formatDriftLine(drift: DoctorReport["drift"]): string {
 }
 
 /**
- * Whether `ch doctor`'s drift row should turn into a non-zero exit: either a
+ * Whether `chm doctor`'s drift row should turn into a non-zero exit: either a
  * target no longer matches the recorded pack, or the recorded pack could not
  * be loaded at all, so the comparison never ran (CHM-34) — the exit code
  * must not read as success in a case that was never checked.
@@ -150,7 +156,7 @@ export function hasDrift(drift: DoctorReport["drift"]): boolean {
  * reimplementing an installer." Also reports drift (CHM-27): a detected
  * target whose live config no longer matches the recorded pack is exactly
  * the state a partial apply can leave behind, and it must show up here even
- * when `ch current` was never run to notice it.
+ * when `chm current` was never run to notice it.
  */
 function runDoctor(): number {
   const report = runDoctorChecks();
@@ -171,7 +177,7 @@ function runDoctor(): number {
   return hasDrift(report.drift) ? 1 : 0;
 }
 
-/** The value following `flagName` in `args` — `ch edit`'s own flag values are always a single token, so this is all the parsing this command needs. */
+/** The value following `flagName` in `args` — `chm edit`'s own flag values are always a single token, so this is all the parsing this command needs. */
 function flagValue(args: readonly string[], flagName: string): string | undefined {
   const flagIndex = args.indexOf(flagName);
   return flagIndex === -1 ? undefined : args[flagIndex + 1];
@@ -180,16 +186,16 @@ function flagValue(args: readonly string[], flagName: string): string | undefine
 function requireFlagValue(args: readonly string[], flagName: string): string {
   const value = flagValue(args, flagName);
   if (value === undefined) {
-    throw new Error(`ch edit: missing required ${flagName} flag`);
+    throw new Error(`chm edit: missing required ${flagName} flag`);
   }
   return value;
 }
 
-/** Parses `flagName`'s value as "left" or "right" — the two blocks CHM-8 lets `ch edit` move a segment between. */
+/** Parses `flagName`'s value as "left" or "right" — the two blocks CHM-8 lets `chm edit` move a segment between. */
 function parseBlockName(args: readonly string[], flagName: string): LayoutBlockName {
   const rawValue = requireFlagValue(args, flagName);
   if (rawValue !== "left" && rawValue !== "right") {
-    throw new Error(`ch edit: ${flagName} must be "left" or "right", got "${rawValue}"`);
+    throw new Error(`chm edit: ${flagName} must be "left" or "right", got "${rawValue}"`);
   }
   return rawValue;
 }
@@ -198,7 +204,7 @@ function parseBlockName(args: readonly string[], flagName: string): LayoutBlockN
 function parseRole(args: readonly string[], flagName: string): Role {
   const rawValue = requireFlagValue(args, flagName);
   if (!isKnownRole(rawValue)) {
-    throw new Error(`ch edit: unknown role "${rawValue}" for ${flagName} — pick one of: ${ROLES.join(", ")}`);
+    throw new Error(`chm edit: unknown role "${rawValue}" for ${flagName} — pick one of: ${ROLES.join(", ")}`);
   }
   return rawValue;
 }
@@ -211,7 +217,7 @@ function parseOptionalRole(args: readonly string[], flagName: string): Role | un
 function parseSegmentType(args: readonly string[]): SegmentType {
   const rawValue = requireFlagValue(args, "--type");
   if (!isSegmentType(rawValue)) {
-    throw new Error(`ch edit: unknown segment type "${rawValue}" — pick one of: ${SEGMENT_TYPES.join(", ")}`);
+    throw new Error(`chm edit: unknown segment type "${rawValue}" — pick one of: ${SEGMENT_TYPES.join(", ")}`);
   }
   return rawValue;
 }
@@ -220,7 +226,7 @@ function parseIndex(args: readonly string[], flagName: string): number {
   const rawValue = requireFlagValue(args, flagName);
   const parsedValue = Number(rawValue);
   if (!Number.isInteger(parsedValue) || parsedValue < 0) {
-    throw new Error(`ch edit: ${flagName} must be a whole number, got "${rawValue}"`);
+    throw new Error(`chm edit: ${flagName} must be a whole number, got "${rawValue}"`);
   }
   return parsedValue;
 }
@@ -236,25 +242,25 @@ function parseOptionalIndex(args: readonly string[], flagName: string): number |
  * flag by name, naming the count. See CHM-16's "operates on a config with
  * multiple blocks per side, addressing them unambiguously" — a config like
  * the real "chips" theme, which carries two "left" blocks, must not have
- * `ch edit` silently guess which one a bare `--block left` means.
+ * `chm edit` silently guess which one a bare `--block left` means.
  */
 function parseBlockIndex(args: readonly string[], layout: Layout, alignment: LayoutBlockName, flagName: string): number {
   const rawValue = flagValue(args, flagName);
   if (rawValue === undefined) {
     const existingBlockCount = layoutBlocksOnSide(layout, alignment).length;
     if (existingBlockCount > 1) {
-      throw new Error(`ch edit: the "${alignment}" side has ${existingBlockCount} blocks — specify ${flagName} to pick one`);
+      throw new Error(`chm edit: the "${alignment}" side has ${existingBlockCount} blocks — specify ${flagName} to pick one`);
     }
     return 0;
   }
   const parsedValue = Number(rawValue);
   if (!Number.isInteger(parsedValue) || parsedValue < 0) {
-    throw new Error(`ch edit: ${flagName} must be a whole number, got "${rawValue}"`);
+    throw new Error(`chm edit: ${flagName} must be a whole number, got "${rawValue}"`);
   }
   return parsedValue;
 }
 
-/** `ch edit add --block <left|right> [--block-index <n>] --type <type> --foreground <role> [--background <role>] [--at <index>]` — appends by default, inserts at `--at` when given. */
+/** `chm edit add --block <left|right> [--block-index <n>] --type <type> --foreground <role> [--background <role>] [--at <index>]` — appends by default, inserts at `--at` when given. */
 function runEditAdd(args: readonly string[]): number {
   const block = parseBlockName(args, "--block");
   const segmentType = parseSegmentType(args);
@@ -270,7 +276,7 @@ function runEditAdd(args: readonly string[]): number {
   return 0;
 }
 
-/** `ch edit remove --block <left|right> [--block-index <n>] --at <index>` */
+/** `chm edit remove --block <left|right> [--block-index <n>] --at <index>` */
 function runEditRemove(args: readonly string[]): number {
   const block = parseBlockName(args, "--block");
   const atIndex = parseIndex(args, "--at");
@@ -282,7 +288,7 @@ function runEditRemove(args: readonly string[]): number {
   return 0;
 }
 
-/** `ch edit reorder --block <left|right> [--block-index <n>] --from <index> --to <index>` */
+/** `chm edit reorder --block <left|right> [--block-index <n>] --from <index> --to <index>` */
 function runEditReorder(args: readonly string[]): number {
   const block = parseBlockName(args, "--block");
   const fromIndex = parseIndex(args, "--from");
@@ -296,7 +302,7 @@ function runEditReorder(args: readonly string[]): number {
 }
 
 /**
- * `ch edit move --from-block <left|right> [--from-block-index <n>] --at <index>
+ * `chm edit move --from-block <left|right> [--from-block-index <n>] --at <index>
  * --to-block <left|right> [--to-block-index <n>] [--to <index>]` — the one
  * command that crosses a segment between the prompt and the status line, or
  * between two blocks on the same side.
@@ -318,7 +324,7 @@ function runEditMove(args: readonly string[]): number {
 }
 
 /**
- * `ch edit` — add, remove, reorder and move a segment between the left
+ * `chm edit` — add, remove, reorder and move a segment between the left
  * prompt block and the right-hand status line. Every error this or a
  * subcommand throws — a bad flag, an undefined role, an out-of-range index —
  * is reported by message on stderr rather than as an uncaught crash, since
@@ -331,7 +337,7 @@ function runEdit(argv: string[]): number {
     if (subcommand === "remove") return runEditRemove(rest);
     if (subcommand === "reorder") return runEditReorder(rest);
     if (subcommand === "move") return runEditMove(rest);
-    process.stderr.write("ch edit: unknown subcommand — use add, remove, reorder or move\n");
+    process.stderr.write("chm edit: unknown subcommand — use add, remove, reorder or move\n");
     return 1;
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -340,7 +346,7 @@ function runEdit(argv: string[]): number {
 }
 
 /**
- * One line of `ch <slug>`/`ch undo`'s per-target report — plain text, no
+ * One line of `chm <theme>`/`chm undo`'s per-target report — plain text, no
  * Nerd Font glyph. An "applied" result can still carry a `detail` — see
  * CHM-39's profile-creation notice — which is shown rather than dropped,
  * since it is exactly the "says which path it would create and why" this
@@ -366,7 +372,7 @@ function printPackActionResults(results: readonly PackActionResult[]): void {
 }
 
 /**
- * `ch <slug>` — applies that pack to every detected target, reporting per
+ * `chm <theme>` — applies that pack to every detected target, reporting per
  * target what changed. A target that is absent is skipped, never a failure;
  * this only returns non-zero when a target that *is* installed threw. A
  * failure never leaves the false impression `applied <slug>`'s own first
@@ -380,7 +386,7 @@ function runApply(slug: string): number {
     printPackActionResults(report.results);
     if (!report.isFullyApplied) {
       process.stderr.write(
-        `ch: ${report.slug} was only partially applied — the state file was left unchanged, and \`ch current\`/\`ch doctor\` may now report drift until this is fixed\n`,
+        `chm: ${report.slug} was only partially applied — the state file was left unchanged, and \`chm current\`/\`chm doctor\` may now report drift until this is fixed\n`,
       );
       return 1;
     }
@@ -391,7 +397,7 @@ function runApply(slug: string): number {
   }
 }
 
-/** `ch undo` — restores every detected target from the backup its own adapter's most recent apply wrote. */
+/** `chm undo` — restores every detected target from the backup its own adapter's most recent apply wrote. */
 function runUndo(): number {
   try {
     const results = undoAppliedPack();
@@ -403,7 +409,7 @@ function runUndo(): number {
   }
 }
 
-/** `ch next` — cycles to the next pack in `ch list` order, wrapping past the end, and applies it. */
+/** `chm next` — cycles to the next pack in `chm themes` order, wrapping past the end, and applies it. */
 function runNext(): number {
   try {
     return runApply(nextPackSlug());
@@ -413,7 +419,7 @@ function runNext(): number {
   }
 }
 
-/** `ch prev` — the mirror of `ch next`: cycles to the previous pack in `ch list` order, wrapping past the start, and applies it. */
+/** `chm prev` — the mirror of `chm next`: cycles to the previous pack in `chm themes` order, wrapping past the start, and applies it. */
 function runPrev(): number {
   try {
     return runApply(prevPackSlug());
@@ -423,23 +429,8 @@ function runPrev(): number {
   }
 }
 
-/** Whether `token` is usable as `ch <n>`'s row number — a bare non-negative integer, never a slug that merely happens to start with a digit. */
-function parsePackRowNumber(token: string): number | undefined {
-  return /^[0-9]+$/.test(token) ? Number(token) : undefined;
-}
-
-/** `ch <n>` — applies the pack at row `n` of `ch list`, the direct-argument counterpart CHM-24 adds so that number works outside the interactive picker too. */
-function runApplyByRow(oneBasedRow: number): number {
-  const slug = packSlugAtRow(oneBasedRow);
-  if (slug === undefined) {
-    process.stderr.write(`ch: no pack at row ${oneBasedRow} — run \`ch list\` to see what's available\n`);
-    return 1;
-  }
-  return runApply(slug);
-}
-
 /**
- * `ch dark` / `ch light` — switches to the active pack's sibling in the same
+ * `chm dark` / `chm light` — switches to the active pack's sibling in the same
  * family. A family with no sibling in that mode never fails silently: it
  * names the nearest alternative instead, or says plainly that none exists.
  */
@@ -450,7 +441,7 @@ function runFamilySwitch(appearance: Appearance): number {
       return runApply(result.siblingSlug);
     }
     if (result.nearestAlternativeSlug) {
-      process.stderr.write(`"${result.family}" has no ${appearance} pack — try \`ch ${result.nearestAlternativeSlug}\`\n`);
+      process.stderr.write(`"${result.family}" has no ${appearance} pack — try \`chm ${result.nearestAlternativeSlug}\`\n`);
     } else {
       process.stderr.write(`"${result.family}" has no ${appearance} pack, and no ${appearance} pack is available at all\n`);
     }
@@ -462,17 +453,17 @@ function runFamilySwitch(appearance: Appearance): number {
 }
 
 /**
- * `ch current [--short]` — prints the active pack's slug, or just its name
+ * `chm current [--short]` — prints the active pack's slug, or just its name
  * with `--short`, for embedding in a status bar. The slug always goes to
  * stdout even when drifted (CHM-27), so a script reading it still gets a
  * usable value; drift itself is a warning on stderr plus a non-zero exit,
- * the same "value on stdout, problem on stderr" split as `ch <slug>`'s own
+ * the same "value on stdout, problem on stderr" split as `chm <theme>`'s own
  * per-target report.
  */
 function runCurrent(args: readonly string[]): number {
   const current = currentPack();
   if (!current) {
-    process.stderr.write("ch current: no pack has been applied yet\n");
+    process.stderr.write("chm current: no pack has been applied yet\n");
     return 1;
   }
   const showNameOnly = args.includes("--short");
@@ -483,13 +474,13 @@ function runCurrent(args: readonly string[]): number {
   // through to the driftedTargets check below, which is empty for this
   // reason too and would otherwise read as a clean match.
   if (isPackUnloadable(current)) {
-    process.stderr.write(`ch current: cannot check drift: pack "${current.slug}" is no longer available\n`);
+    process.stderr.write(`chm current: cannot check drift: pack "${current.slug}" is no longer available\n`);
     return 1;
   }
 
   if (current.driftedTargets.length > 0) {
     process.stderr.write(
-      `ch current: drifted — ${formatDriftedTargets(current.driftedTargets)} no longer ${matchesVerbFor(current.driftedTargets)} "${current.slug}"\n`,
+      `chm current: drifted — ${formatDriftedTargets(current.driftedTargets)} no longer ${matchesVerbFor(current.driftedTargets)} "${current.slug}"\n`,
     );
     return 1;
   }
@@ -544,9 +535,11 @@ function matchesPickerFilter(entry: PickerEntry, filterText: string): boolean {
   return entry.slug.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle);
 }
 
+/** One picker row: swatches and the display name, matching `chm themes`' own formatting (CHM-42) — the slug stays typeable for the filter, but is never shown. */
 function renderPickerRow(entry: PickerEntry, isHighlighted: boolean): string {
   const cursor = isHighlighted ? ">" : " ";
-  return `${cursor} ${swatch(entry.groundHex)}${swatch(entry.accentHex)} ${entry.slug}  ${entry.name}  (${entry.origin})`;
+  const userMarker = entry.origin === "user" ? "  (user)" : "";
+  return `${cursor} ${swatch(entry.groundHex)}${swatch(entry.accentHex)} ${entry.name}${userMarker}`;
 }
 
 const PICKER_HINT_LINE = "up/down move, type to filter, enter apply, esc cancel";
@@ -636,7 +629,7 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
         }
       } catch {
         // Best effort — the picker still exits either way; a cancel is not
-        // itself a command whose failure `ch` needs to report.
+        // itself a command whose failure `chm` needs to report.
       }
       stopListening();
       resolve(undefined);
@@ -676,10 +669,10 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
 }
 
 /**
- * `ch` with no argument — picks a pack with the interactive picker, cursor
- * starting on whichever pack is currently applied. When stdin is not a TTY
- * there is nobody to drive a picker, so this prints the same list `ch list`
- * would and exits, rather than blocking on input that would never arrive.
+ * `chm pick` — picks a pack with the interactive picker, cursor starting on
+ * whichever pack is currently applied. When stdin is not a TTY there is
+ * nobody to drive a picker, so this prints the same list `chm themes` would
+ * and exits, rather than blocking on input that would never arrive.
  */
 async function runPick(): Promise<number> {
   const { packs, warnings } = loadAllThemePacks();
@@ -689,29 +682,168 @@ async function runPick(): Promise<number> {
 
   if (!process.stdin.isTTY) {
     for (const loaded of packs) {
-      process.stdout.write(`${formatPackLine(loaded)}\n`);
+      process.stdout.write(`${formatThemeLine(loaded)}\n`);
     }
     return 0;
   }
 
   if (packs.length === 0) {
-    process.stderr.write("ch: no packs available\n");
+    process.stderr.write("chm: no themes available\n");
     return 1;
   }
 
   const chosenSlug = await runInteractivePicker(packs, currentPack()?.slug);
   if (chosenSlug === undefined) {
-    process.stderr.write("ch: no pack chosen\n");
+    process.stderr.write("chm: no theme chosen\n");
     return 1;
   }
   return runApply(chosenSlug);
 }
 
 /**
- * Entry point: `ch <slug>` applies that pack; `ch <n>` applies the pack at
- * row `n` of `ch list`; `ch` with no argument picks one interactively; the
- * rest are the named commands below. An argument that matches none of them
- * is tried as a pack slug, so `ch catppuccin-dark` needs no verb of its own.
+ * Strips everything but letters and digits, and lowercases what is left —
+ * so "Catppuccin Mocha", "catppuccin-mocha" and "catppuccin_mocha" all
+ * collapse to the same comparison key regardless of the separator or case a
+ * person typed (CHM-42's "matched case- and separator-insensitively").
+ */
+export function normalizeThemeQuery(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** `loaded`'s own slug and display name, each normalized — the two forms `chm <theme>` accepts for naming it. */
+function themeMatchKeys(loaded: LoadedThemePack): readonly string[] {
+  return [normalizeThemeQuery(loaded.pack.manifest.slug), normalizeThemeQuery(loaded.pack.manifest.name)];
+}
+
+/**
+ * Classic edit distance between two strings — used only to pick `chm`'s
+ * "did you mean" suggestion for a theme name it could not resolve at all, so
+ * a typo like "catpucin" still lands on the right pack.
+ */
+function levenshteinDistance(queryText: string, candidateKey: string): number {
+  const rowCount = queryText.length + 1;
+  const columnCount = candidateKey.length + 1;
+  const distances: number[][] = Array.from({ length: rowCount }, (_unused, rowIndex) => new Array(columnCount).fill(rowIndex));
+  for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) distances[0]![columnIndex] = columnIndex;
+
+  for (let rowIndex = 1; rowIndex < rowCount; rowIndex += 1) {
+    for (let columnIndex = 1; columnIndex < columnCount; columnIndex += 1) {
+      const substitutionCost = queryText[rowIndex - 1] === candidateKey[columnIndex - 1] ? 0 : 1;
+      distances[rowIndex]![columnIndex] = Math.min(
+        distances[rowIndex - 1]![columnIndex]! + 1,
+        distances[rowIndex]![columnIndex - 1]! + 1,
+        distances[rowIndex - 1]![columnIndex - 1]! + substitutionCost,
+      );
+    }
+  }
+  return distances[rowCount - 1]![columnCount - 1]!;
+}
+
+/** The pack whose normalized slug or name is the closest edit-distance match to `normalizedQuery` — `chm`'s "did you mean" for a name it could not resolve at all. Undefined only when `packs` is empty. */
+function closestThemeByName(packs: readonly LoadedThemePack[], normalizedQuery: string): LoadedThemePack | undefined {
+  let closest: LoadedThemePack | undefined;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const loaded of packs) {
+    for (const key of themeMatchKeys(loaded)) {
+      const distance = levenshteinDistance(normalizedQuery, key);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closest = loaded;
+      }
+    }
+  }
+  return closest;
+}
+
+export type ThemeQueryResult =
+  | { readonly status: "resolved"; readonly loaded: LoadedThemePack }
+  | { readonly status: "ambiguous"; readonly candidates: readonly LoadedThemePack[] }
+  | { readonly status: "unknown"; readonly closest: LoadedThemePack | undefined };
+
+/**
+ * Resolves what a person typed after `chm` — a slug, a quoted display name,
+ * or several bare words meant to be read as one name ("chm catppuccin
+ * mocha") — against the loaded pack list. Matching is case- and
+ * separator-insensitive (normalizeThemeQuery): an exact match is tried
+ * first, then a prefix match, so "chm catppuccin" reports every Catppuccin
+ * variant as ambiguous rather than silently guessing one — see CHM-42's "an
+ * ambiguous prefix lists the candidates rather than guessing."
+ */
+export function resolveThemeQuery(packs: readonly LoadedThemePack[], rawTokens: readonly string[]): ThemeQueryResult {
+  const normalizedQuery = normalizeThemeQuery(rawTokens.join(" "));
+
+  const exactMatches = packs.filter((loaded) => themeMatchKeys(loaded).includes(normalizedQuery));
+  if (exactMatches.length === 1) return { status: "resolved", loaded: exactMatches[0]! };
+  if (exactMatches.length > 1) return { status: "ambiguous", candidates: exactMatches };
+
+  const prefixMatches = packs.filter((loaded) => themeMatchKeys(loaded).some((key) => key.startsWith(normalizedQuery)));
+  if (prefixMatches.length === 1) return { status: "resolved", loaded: prefixMatches[0]! };
+  if (prefixMatches.length > 1) return { status: "ambiguous", candidates: prefixMatches };
+
+  return { status: "unknown", closest: closestThemeByName(packs, normalizedQuery) };
+}
+
+/** One line of an ambiguous-match report: the name a person reads, plus the exact slug that would resolve it unambiguously. */
+function formatAmbiguousCandidateLine(loaded: LoadedThemePack): string {
+  return `  ${loaded.pack.manifest.name}  (chm ${loaded.pack.manifest.slug})`;
+}
+
+/**
+ * `chm <theme>` — resolves `rawTokens` against the loaded pack list
+ * (resolveThemeQuery) and applies the single match it finds. An ambiguous
+ * prefix lists every candidate rather than guessing; a name that matches
+ * nothing at all names the closest match instead, when one exists.
+ */
+function runApplyByQuery(rawTokens: readonly string[]): number {
+  const { packs, warnings } = loadAllThemePacks();
+  for (const warning of warnings) {
+    process.stderr.write(`${warning}\n`);
+  }
+
+  const result = resolveThemeQuery(packs, rawTokens);
+  if (result.status === "resolved") return runApply(result.loaded.pack.manifest.slug);
+
+  const typedQuery = rawTokens.join(" ");
+  if (result.status === "ambiguous") {
+    const candidateLines = result.candidates.map(formatAmbiguousCandidateLine).join("\n");
+    process.stderr.write(`chm: "${typedQuery}" matches more than one theme:\n${candidateLines}\n`);
+    return 1;
+  }
+
+  if (result.closest) {
+    process.stderr.write(`chm: no theme named "${typedQuery}" — did you mean "${result.closest.pack.manifest.name}"?\n`);
+  } else {
+    process.stderr.write(`chm: no theme named "${typedQuery}" — run \`chm themes\` to see what's available\n`);
+  }
+  return 1;
+}
+
+export const USAGE = `usage: chm <command> [args]
+
+chm themes             list every theme, with swatches
+chm pick               pick a theme interactively
+chm <theme>            apply a theme, by slug or by name
+chm dark / chm light   flip mode, same family
+chm next / chm prev    cycle either way
+chm current            print the active theme
+chm undo               put it back
+chm doctor             what is installed
+chm edit ...           edit the Oh My Posh prompt layout
+
+run \`chm themes\` to browse what you can apply
+`;
+
+/** `chm` with no argument — prints usage and exits non-zero, applying nothing. CHM-42 makes the subcommand required; the interactive picker moved to the explicit `chm pick`. */
+function runUsage(): number {
+  process.stderr.write(USAGE);
+  return 1;
+}
+
+/**
+ * Entry point: `chm <theme>` applies a pack, matched by slug or by display
+ * name (resolveThemeQuery); the rest are the named commands below. `chm`
+ * with no argument prints usage rather than applying anything — see
+ * runUsage.
  */
 async function main(argv: string[]): Promise<number> {
   if (argv.includes("--version") || argv.includes("-v")) {
@@ -720,8 +852,9 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const [command, ...rest] = argv;
-  if (command === undefined) return runPick();
-  if (command === "list") return runList();
+  if (command === undefined) return runUsage();
+  if (command === "themes") return runThemes();
+  if (command === "pick") return runPick();
   if (command === "doctor") return runDoctor();
   if (command === "edit") return runEdit(rest);
   if (command === "current") return runCurrent(rest);
@@ -730,17 +863,15 @@ async function main(argv: string[]): Promise<number> {
   if (command === "prev") return runPrev();
   if (command === "dark") return runFamilySwitch("dark");
   if (command === "light") return runFamilySwitch("light");
-  const packRowNumber = parsePackRowNumber(command);
-  if (packRowNumber !== undefined) return runApplyByRow(packRowNumber);
-  return runApply(command);
+  return runApplyByQuery(argv);
 }
 
 /**
- * True only when this file was launched directly — as the `ch`/`chameleon`
+ * True only when this file was launched directly — as the `chm`/`chameleon`
  * bin script, or via `node dist/cli.js` — never when a test imports it to
  * exercise its exported formatting functions. `realpathSync` resolves both
  * sides through whatever symlink npm's bin shim uses, so this holds whether
- * `ch` was invoked straight or through that shim.
+ * `chm` was invoked straight or through that shim.
  */
 function isRunAsScript(): boolean {
   if (process.argv[1] === undefined) return false;

@@ -201,8 +201,8 @@ describe("applyThemePack", () => {
     expect(secondCallScheme).toEqual(firstCallScheme);
   });
 
-  it("throws a message naming `ch list` for a slug that does not exist", () => {
-    expect(() => applyThemePack("not-a-real-pack", userThemeDir, statePath)).toThrow(/no pack named "not-a-real-pack".*ch list/);
+  it("throws a message naming `chm themes` for a slug that does not exist", () => {
+    expect(() => applyThemePack("not-a-real-pack", userThemeDir, statePath)).toThrow(/no pack named "not-a-real-pack".*chm themes/);
   });
 });
 

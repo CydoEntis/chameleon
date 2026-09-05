@@ -325,12 +325,12 @@ export function didAnyTargetFail(results: readonly PackActionResult[]): boolean 
   return results.some((result) => result.status === "failed");
 }
 
-/** The loaded pack named `slug`, or a message naming `ch list` as the way to see what is actually available. */
+/** The loaded pack named `slug`, or a message naming `chm themes` as the way to see what is actually available. */
 function findLoadedPack(slug: string, userThemeDir: string | undefined): LoadedThemePack {
   const { packs } = loadAllThemePacks(userThemeDir);
   const loaded = packs.find((candidate) => candidate.pack.manifest.slug === slug);
   if (!loaded) {
-    throw new Error(`no pack named "${slug}" — run \`ch list\` to see what's available`);
+    throw new Error(`no pack named "${slug}" — run \`chm themes\` to see what's available`);
   }
   return loaded;
 }
@@ -536,7 +536,7 @@ export function findFamilySibling(appearance: Appearance, userThemeDir?: string,
   const { packs } = loadAllThemePacks(userThemeDir);
   const active = packs.find((candidate) => candidate.pack.manifest.slug === state.slug);
   if (!active) {
-    throw new Error(`the active pack "${state.slug}" is no longer available — run \`ch list\` and pick one`);
+    throw new Error(`the active pack "${state.slug}" is no longer available — run \`chm themes\` and pick one`);
   }
 
   const family = active.pack.manifest.family;

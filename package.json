@@ -8,7 +8,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/CydoEntis/chameleon.git" },
   "type": "module",
   "engines": { "node": ">=20" },
-  "bin": { "ch": "dist/cli.js", "chameleon": "dist/cli.js" },
+  "bin": { "chm": "dist/cli.js", "chameleon": "dist/cli.js" },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist", "themes"],
