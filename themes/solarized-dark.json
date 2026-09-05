@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "iTerm2 Solarized Dark",
-      "black": "#073642",
+      "black": "#2f5e6a",
       "red": "#dc322f",
       "green": "#859900",
       "yellow": "#b58900",

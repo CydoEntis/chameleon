@@ -1,8 +1,10 @@
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { ANSI_SLOT_NAMES } from "../src/palette/ansi.js";
 import { contrastRatio } from "../src/palette/color.js";
 import { buildThemePack, type PackAttribution, type ThemePack } from "../src/palette/theme-pack.js";
 import type { Appearance } from "../src/palette/palette.js";
+import type { Scheme } from "../src/palette/scheme.js";
 import { readVendoredScheme } from "./vendor-scheme-library.js";
 
 // Resolved from process.cwd(), not import.meta.url — see the comment on
@@ -66,7 +68,13 @@ const CURATED_SCHEMES: readonly CuratedEntry[] = [
 /** The twelve two-appearance families plus Dracula and Monokai — see CHM-6's "What". */
 const EXPECTED_PACK_COUNT = 26;
 
-function buildPackFor(entry: CuratedEntry): ThemePack {
+/** A built pack alongside the source scheme it was built from — describeAnsiRepairs needs both, to diff shipped against upstream. */
+interface BuiltPack {
+  readonly scheme: Scheme;
+  readonly pack: ThemePack;
+}
+
+function buildPackFor(entry: CuratedEntry): BuiltPack {
   const scheme = readVendoredScheme(entry.fileName);
   const pack = buildThemePack(scheme, entry.family, ATTRIBUTION);
 
@@ -76,7 +84,7 @@ function buildPackFor(entry: CuratedEntry): ThemePack {
     );
   }
 
-  return pack;
+  return { scheme, pack };
 }
 
 /** themes/index.json — the curated list a future `ch` first run reads, without every pack's full colour payload. */
@@ -143,6 +151,21 @@ function describeSelectionTradeoff(pack: ThemePack): string {
 }
 
 /**
+ * One line per pack naming which ANSI slots CHM-32's floor repair touched —
+ * "report which slots were repaired per pack, so the change is inspectable
+ * rather than silent" (CHM-32), the same contract describeSelectionTradeoff
+ * follows for the selection trade-off above. Diffed against the pack's own
+ * source scheme rather than recomputed, so this can never report something
+ * other than what actually shipped.
+ */
+function describeAnsiRepairs({ scheme, pack }: BuiltPack): string {
+  const shippedScheme = pack.payloads["windows-terminal"];
+  const repairedSlots = ANSI_SLOT_NAMES.filter((slotName) => shippedScheme[slotName] !== scheme[slotName]);
+  const summary = repairedSlots.length > 0 ? repairedSlots.join(", ") : "none";
+  return `  ${pack.manifest.slug.padEnd(24)} ANSI slots repaired: ${summary}`;
+}
+
+/**
  * Generates the twelve curated theme families (light + dark) plus Dracula
  * and Monokai (dark only) under themes/ — see CHM-6. Run with
  * `npm run generate:themes`; the output is committed, not built on every
@@ -154,7 +177,8 @@ function main(): void {
     throw new Error(`expected ${EXPECTED_PACK_COUNT} curated schemes, the table has ${CURATED_SCHEMES.length}`);
   }
 
-  const packs = CURATED_SCHEMES.map(buildPackFor);
+  const built = CURATED_SCHEMES.map(buildPackFor);
+  const packs = built.map((entry) => entry.pack);
 
   const slugs = packs.map((pack) => pack.manifest.slug);
   if (new Set(slugs).size !== slugs.length) {
@@ -164,6 +188,7 @@ function main(): void {
   writeThemesDir(packs);
   process.stdout.write(`wrote ${packs.length} theme packs to ${path.relative(process.cwd(), THEMES_DIR)}\n`);
   process.stdout.write(`${packs.map(describeSelectionTradeoff).join("\n")}\n`);
+  process.stdout.write(`${built.map(describeAnsiRepairs).join("\n")}\n`);
 }
 
 main();

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
+import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
+import { repairAnsiSlots, type AnsiSlotName } from "./ansi.js";
 import { contrastRatio } from "./color.js";
 import { toPalette, type Appearance } from "./palette.js";
 import { repairFailingRoles } from "./repair.js";
@@ -118,6 +119,23 @@ function assertSelectionReadableUnderBody(selectionHex: string, bodyHex: string,
 }
 
 /**
+ * Fails loudly if a repaired ANSI slot does not actually clear
+ * ANSI_MIN_RATIO — the same build-time gate as assertRoleClearsFloor and
+ * assertSelectionReadableUnderBody, this time on what repairAnsiSlots is
+ * expected to guarantee (CHM-32).
+ */
+function assertAnsiSlotsClearFloor(slots: Readonly<Record<AnsiSlotName, string>>, groundHex: string, schemeName: string): void {
+  for (const [slotName, hex] of Object.entries(slots)) {
+    const ratio = contrastRatio(hex, groundHex);
+    if (ratio < ANSI_MIN_RATIO) {
+      throw new Error(
+        `"${schemeName}" ANSI slot "${slotName}" measures ${ratio.toFixed(2)} against ground, below its floor of ${ANSI_MIN_RATIO}`,
+      );
+    }
+  }
+}
+
+/**
  * Runs a scheme through the full contrast engine — assign, then repair —
  * and packages the result as a shippable pack: a manifest carrying identity
  * and attribution, plus every target's payload. Pure: no file I/O, so the
@@ -153,6 +171,12 @@ export function buildThemePack(
   const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedPalette.ground.hex, resolvedPalette.body.hex);
   assertSelectionReadableUnderBody(selection.hex, body.hex, scheme.name);
 
+  // The 16 ANSI slots an application paints text with directly, repaired
+  // against ANSI_MIN_RATIO independently of the six roles above — see
+  // palette/ansi.ts (CHM-32).
+  const ansiRepair = repairAnsiSlots(scheme);
+  assertAnsiSlotsClearFloor(ansiRepair.slots, resolvedPalette.ground.hex, scheme.name);
+
   const roleHexes = roleHexTable(resolvedPalette);
   const herdrRoleHexes = { ...roleHexes, body: body.hex };
 
@@ -165,7 +189,7 @@ export function buildThemePack(
       ...(attribution !== undefined ? { attribution } : {}),
     },
     payloads: {
-      "windows-terminal": { ...scheme, selectionBackground: selection.hex },
+      "windows-terminal": { ...scheme, ...ansiRepair.slots, selectionBackground: selection.hex },
       "oh-my-posh": roleHexes,
       herdr: { ...herdrRoleHexes, selection_bg: selection.hex },
     },
