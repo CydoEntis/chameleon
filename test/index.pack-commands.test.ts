@@ -11,6 +11,7 @@ import {
   loadAllThemePacks,
   nextPackSlug,
   packSlugAtRow,
+  previewThemePackToFileTargets,
   prevPackSlug,
   undoAppliedPack,
 } from "../src/index.js";
@@ -285,6 +286,74 @@ describe("applyThemePack", () => {
 
   it("throws a message naming `chm themes` for a slug that does not exist", () => {
     expect(() => applyThemePack("not-a-real-pack", userThemeDir, statePath)).toThrow(/no pack named "not-a-real-pack".*chm themes/);
+  });
+});
+
+// CHM-52: the picker's own live preview now applies to Herdr, Oh My Posh and
+// Claude Code — the three targets a terminal escape-sequence preview cannot
+// reach — without ever touching Windows Terminal (previewed with escape
+// codes instead, see cli.ts's buildTerminalPreviewSequence) and without
+// recording anything as the active pack. A preview is not a command the
+// user issued, and must leave nothing for `chm current`/`chm undo` to
+// mistake for one.
+describe("previewThemePackToFileTargets", () => {
+  it("applies to oh-my-posh, herdr and claude-code, in that target order, but never windows-terminal", () => {
+    const results = previewThemePackToFileTargets("catppuccin-dark", userThemeDir);
+
+    expect(results).toEqual([
+      { target: "oh-my-posh", status: "applied" },
+      { target: "herdr", status: "applied" },
+      { target: "claude-code", status: "applied" },
+    ]);
+    expect(windowsTerminalAdapter.apply).not.toHaveBeenCalled();
+    expect(ohMyPoshAdapter.apply).toHaveBeenCalledTimes(1);
+    expect(herdrAdapter.apply).toHaveBeenCalledTimes(1);
+    expect(claudeCodeAdapter.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("never records the previewed slug as the active pack — chm current and chm undo must never see a preview as a committed choice", () => {
+    previewThemePackToFileTargets("catppuccin-dark", userThemeDir);
+
+    expect(readActivePackState(statePath)).toBeUndefined();
+  });
+
+  it("leaves a previously recorded active pack exactly as it was, even after previewing a different one", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+
+    previewThemePackToFileTargets("catppuccin-light", userThemeDir);
+
+    expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
+  });
+
+  it("skips a target that is not installed, never treating that as a failure", () => {
+    herdrAdapter.detect.mockReturnValue(false);
+
+    const results = previewThemePackToFileTargets("catppuccin-dark", userThemeDir);
+
+    expect(results).toEqual([
+      { target: "oh-my-posh", status: "applied" },
+      { target: "herdr", status: "skipped", detail: "not installed" },
+      { target: "claude-code", status: "applied" },
+    ]);
+    expect(herdrAdapter.apply).not.toHaveBeenCalled();
+  });
+
+  it("reports one target's own failure without stopping the targets after it", () => {
+    herdrAdapter.apply.mockImplementation(() => {
+      throw new Error("no Herdr config found at C:\\fake\\config.toml");
+    });
+
+    const results = previewThemePackToFileTargets("catppuccin-dark", userThemeDir);
+
+    expect(results).toEqual([
+      { target: "oh-my-posh", status: "applied" },
+      { target: "herdr", status: "failed", detail: "no Herdr config found at C:\\fake\\config.toml" },
+      { target: "claude-code", status: "applied" },
+    ]);
+  });
+
+  it("throws a message naming `chm themes` for a slug that does not exist", () => {
+    expect(() => previewThemePackToFileTargets("not-a-real-pack", userThemeDir)).toThrow(/no pack named "not-a-real-pack".*chm themes/);
   });
 });
 
