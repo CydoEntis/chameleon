@@ -77,6 +77,16 @@ export function herdrConfigPath(): string | undefined {
   return path.join(xdgConfigHome(), "herdr", "config.toml");
 }
 
+/**
+ * Where Claude Code keeps settings.json — always under the user's home
+ * directory, on every platform Claude Code ships for. Unlike Herdr or
+ * Windows Terminal there is no OS-specific app-data directory to resolve and
+ * no env var that can be missing, so this never returns undefined. See CHM-49.
+ */
+export function claudeCodeSettingsPath(): string {
+  return path.join(homedir(), ".claude", "settings.json");
+}
+
 // --- Shell detection, for Oh My Posh's own live-reload hook -----------------
 //
 // Oh My Posh's live reload works by extending whichever shell is running
