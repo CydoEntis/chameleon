@@ -19,6 +19,7 @@ import {
   undoOhMyPosh,
 } from "./adapters/oh-my-posh.js";
 import { isWindows } from "./adapters/platform.js";
+import { clearPreviewState, readPreviewState, writePreviewState } from "./adapters/preview-state.js";
 import { readPromptState, writePromptState } from "./adapters/prompt-state.js";
 import { readActivePackState, writeActivePackState } from "./adapters/state.js";
 import { loadUserThemePacks } from "./adapters/user-theme-packs.js";
@@ -251,7 +252,7 @@ function checkNerdFont(): DoctorNerdFontCheck {
  * — see CLAUDE.md, "Herdr stays detect-only, never installed." `userThemeDir`
  * and `statePath` are only ever overridden by tests.
  */
-export function runDoctorChecks(userThemeDir?: string, statePath?: string): DoctorReport {
+export function runDoctorChecks(userThemeDir?: string, statePath?: string, previewStatePath?: string): DoctorReport {
   return {
     targets: [
       checkTarget(
@@ -265,7 +266,7 @@ export function runDoctorChecks(userThemeDir?: string, statePath?: string): Doct
       checkTarget("claude-code", true, detectSafely(() => createClaudeCodeAdapter().detect()), undefined),
     ],
     nerdFont: checkNerdFont(),
-    drift: currentPack(userThemeDir, statePath),
+    drift: currentPack(userThemeDir, statePath, previewStatePath),
     claudeCodeTheme: currentClaudeCodeTheme(),
   };
 }
@@ -438,8 +439,16 @@ function findLoadedPack(slug: string, userThemeDir: string | undefined): LoadedT
  * claiming a pack that was never fully applied. `statePath`, like
  * `userThemeDir`, is only ever overridden by tests; `ch` itself always reads
  * and writes the real one.
+ *
+ * Every call also clears CHM-55's own preview-in-flight marker (see
+ * beginThemePreview), whether or not this apply itself fully succeeds — a
+ * real, explicit apply is the authoritative word on what every target should
+ * show, and it supersedes whatever a preview left behind. Cleared first, so
+ * a throw partway through this function never leaves the marker set.
  */
-export function applyThemePack(slug: string, userThemeDir?: string, statePath?: string): ApplyPackReport {
+export function applyThemePack(slug: string, userThemeDir?: string, statePath?: string, previewStatePath?: string): ApplyPackReport {
+  clearPreviewState(previewStatePath);
+
   const loaded = findLoadedPack(slug, userThemeDir);
   const scheme = loaded.pack.payloads["windows-terminal"];
 
@@ -454,37 +463,100 @@ export function applyThemePack(slug: string, userThemeDir?: string, statePath?: 
 }
 
 /**
- * Targets a live terminal preview cannot reach — Herdr, Oh My Posh and
- * Claude Code all read their colours from a config file, never from the
- * terminal's own escape-sequence palette, so previewing them needs a real
- * (if debounced) write. Windows Terminal is deliberately excluded: CHM-52's
- * whole point is that its own preview is OSC 4/10-12, pushed straight to the
- * terminal by cli.ts's buildTerminalPreviewSequence, never a settings.json
- * write until Enter commits (applyThemePack).
- */
-const FILE_PREVIEWABLE_TARGETS: readonly Target[] = ["oh-my-posh", "herdr", "claude-code"];
-
-/**
- * Applies `slug` to every detected target a terminal-escape preview cannot
- * reach (see FILE_PREVIEWABLE_TARGETS) — never windows-terminal, and never
+ * Applies `slug` to every detected target, Windows Terminal included — CHM-55:
+ * settings.json is watched by Windows Terminal itself and repaints every pane
+ * of it, which is what lets a debounced write here reach panes the picker's
+ * own OSC 4/10-12 preview (buildTerminalPreviewSequence) never could. Never
  * recorded as the active pack (contrast applyThemePack's own
- * writeActivePackState). CHM-52: the picker calls this, debounced, while the
- * highlight moves — a preview is not a command the user issued, and must
- * leave nothing behind for `chm current`/`chm undo` to mistake for one.
- * Errors are swallowed target by target the same way the picker's previous,
- * synchronous preview always did — a broken preview write is reported
- * properly once Enter's own commit (applyThemePack, via runApply) hits it
- * for real. `userThemeDir` is only ever overridden by tests.
+ * writeActivePackState) — the picker calls this, debounced, while the
+ * highlight moves, and a preview is not a command the user issued. Errors are
+ * swallowed target by target the same way the picker's previous, synchronous
+ * preview always did — a broken preview write is reported properly once
+ * Enter's own commit (applyThemePack, via runApply) hits it for real.
+ * `userThemeDir` is only ever overridden by tests.
  */
 export function previewThemePackToFileTargets(slug: string, userThemeDir?: string): readonly PackActionResult[] {
   const loaded = findLoadedPack(slug, userThemeDir);
   const scheme = loaded.pack.payloads["windows-terminal"];
-  return FILE_PREVIEWABLE_TARGETS.map((target) => runOnInstalledTarget(target, "applied", () => applyToTarget(target, scheme, slug)));
+  return TARGETS.map((target) => runOnInstalledTarget(target, "applied", () => applyToTarget(target, scheme, slug)));
 }
 
-/** Restores every detected target from the backup its own adapter's most recent `apply` wrote — the counterpart to applyThemePack. */
-export function undoAppliedPack(): readonly PackActionResult[] {
+/**
+ * Restores every detected target from the backup its own adapter's most
+ * recent `apply` wrote — the counterpart to applyThemePack. Also clears
+ * CHM-55's own preview-in-flight marker, for the same reason applyThemePack
+ * does: a real `chm undo` is an authoritative word on target state too.
+ */
+export function undoAppliedPack(previewStatePath?: string): readonly PackActionResult[] {
+  clearPreviewState(previewStatePath);
   return TARGETS.map((target) => runOnInstalledTarget(target, "restored", () => undoTarget(target)));
+}
+
+// --- CHM-55: a preview marker, so an interrupted preview is never mistaken
+// for drift ------------------------------------------------------------------
+//
+// previewThemePackToFileTargets now writes Windows Terminal's own
+// settings.json too, so a preview reaches every pane of a multiplexer the
+// same way a real apply does. That closes the "two panes, two themes" gap,
+// but opens a new one: nothing before this recorded that a preview — as
+// opposed to a command the user actually issued — was what last touched
+// those targets. A picker killed outright (a closed terminal, `kill -9`, a
+// crash) never runs its own cancel handler, and would otherwise leave every
+// target on a previewed theme with nothing on record to say so.
+
+/**
+ * Records that a theme preview has started, naming `originalSlug` — the pack
+ * active before the picker opened, or undefined when nothing had ever been
+ * applied — so a preview that never gets a clean exit can still be resynced
+ * (resyncInterruptedPreview) to what was there before it. Called once, when
+ * the picker opens; cleared by whichever real command ends the session
+ * (applyThemePack on Enter, applyThemePack or undoAppliedPack on Esc/Ctrl-C —
+ * see cli.ts's runInteractivePicker). `previewStatePath` is only ever
+ * overridden by tests.
+ */
+export function beginThemePreview(originalSlug: string | undefined, previewStatePath?: string): void {
+  writePreviewState(originalSlug, previewStatePath);
+}
+
+/**
+ * Whether a theme preview is currently recorded as in flight — either a
+ * picker genuinely running in another pane, or one that never cleaned up
+ * after itself. `previewStatePath` is only ever overridden by tests.
+ */
+export function isPreviewInFlight(previewStatePath?: string): boolean {
+  return readPreviewState(previewStatePath) !== undefined;
+}
+
+export type PreviewResyncOutcome =
+  | { readonly status: "not-in-flight" }
+  | { readonly status: "resynced-to-pack"; readonly report: ApplyPackReport }
+  | { readonly status: "resynced-to-undo"; readonly results: readonly PackActionResult[] };
+
+/**
+ * `chm undo`'s own resync path (CHM-55): when a preview is recorded as in
+ * flight, restoring from each adapter's own backup is not safe — a preview
+ * session can settle more than once before it ends (arrowing through several
+ * rows, each settle backed up over the last), so the backup Chameleon holds
+ * by the time this runs may itself be an intermediate preview, not the pack
+ * the user actually had before the picker opened. This instead re-derives
+ * the right answer from ground truth: the pack `chm` last recorded as active
+ * (readActivePackState), reapplied fresh to every target — or, when nothing
+ * had ever been applied, the same backup-restoring `undoAppliedPack` a plain
+ * `chm undo` already uses, since there is no applied pack for a fresh
+ * reapply to target. Either branch clears the marker itself, as part of the
+ * same authoritative apply/undo every other exit from a preview already goes
+ * through. Returns `{ status: "not-in-flight" }` when there is nothing to
+ * resync, so a caller can fall through to a plain `chm undo`. `userThemeDir`,
+ * `statePath` and `previewStatePath` are only ever overridden by tests.
+ */
+export function resyncInterruptedPreview(userThemeDir?: string, statePath?: string, previewStatePath?: string): PreviewResyncOutcome {
+  if (!isPreviewInFlight(previewStatePath)) return { status: "not-in-flight" };
+
+  const state = readActivePackState(statePath);
+  if (!state) {
+    return { status: "resynced-to-undo", results: undoAppliedPack(previewStatePath) };
+  }
+  return { status: "resynced-to-pack", report: applyThemePack(state.slug, userThemeDir, statePath, previewStatePath) };
 }
 
 /**
@@ -542,6 +614,16 @@ export interface CurrentPackReport {
    * undefined already carries that case.
    */
   readonly driftedTargets: readonly Target[];
+  /**
+   * True when CHM-55's preview marker is on disk — a picker genuinely
+   * running in another pane, or one that never got a clean exit. `chm
+   * current`/`chm doctor` must report this as a preview, never as drift: a
+   * target that disagrees with the recorded pack because a preview is
+   * showing it is a different fact from a target something else changed
+   * behind Chameleon's back, even though driftedTargets looks the same
+   * either way. See isPreviewInFlight.
+   */
+  readonly previewInFlight: boolean;
 }
 
 /**
@@ -551,7 +633,7 @@ export interface CurrentPackReport {
  * say — but the slug itself is still reported rather than treated as absent.
  * `statePath`, like `userThemeDir`, is only ever overridden by tests.
  */
-export function currentPack(userThemeDir?: string, statePath?: string): CurrentPackReport | undefined {
+export function currentPack(userThemeDir?: string, statePath?: string, previewStatePath?: string): CurrentPackReport | undefined {
   const state = readActivePackState(statePath);
   if (!state) return undefined;
 
@@ -561,6 +643,7 @@ export function currentPack(userThemeDir?: string, statePath?: string): CurrentP
     slug: state.slug,
     name: loaded?.pack.manifest.name,
     driftedTargets: loaded ? detectPackDrift(state.slug, userThemeDir) : [],
+    previewInFlight: isPreviewInFlight(previewStatePath),
   };
 }
 
