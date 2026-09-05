@@ -1,0 +1,83 @@
+{
+  "$schema": "https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/main/themes/schema.json",
+  "version": 3,
+  "final_space": true,
+  "blocks": [
+    {
+      "type": "prompt",
+      "alignment": "left",
+      "segments": [
+        {
+          "type": "os",
+          "style": "diamond",
+          "leading_diamond": "\\ue0b6",
+          "trailing_diamond": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:accent",
+          "template": " {{ .HostName }} "
+        },
+        {
+          "type": "path",
+          "style": "diamond",
+          "trailing_diamond": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:success",
+          "template": " {{ .Path }} "
+        },
+        {
+          "type": "git",
+          "style": "diamond",
+          "trailing_diamond": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:body",
+          "template": " {{ .HEAD }} "
+        }
+      ]
+    },
+    {
+      "type": "prompt",
+      "alignment": "right",
+      "segments": [
+        {
+          "type": "time",
+          "style": "diamond",
+          "leading_diamond": "\\ue0b6",
+          "trailing_diamond": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:body",
+          "template": " {{ .CurrentDate | date .Format }} "
+        },
+        {
+          "type": "executiontime",
+          "style": "diamond",
+          "trailing_diamond": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:accent",
+          "template": " {{ .FormattedMs }} "
+        }
+      ]
+    },
+    {
+      "type": "prompt",
+      "alignment": "left",
+      "newline": true,
+      "segments": [
+        {
+          "type": "exit",
+          "style": "diamond",
+          "leading_diamond": "\\ue0b6",
+          "trailing_diamond": "\\ue0b0",
+          "foreground": "p:ground",
+          "background": "p:error",
+          "template": " {{ .Meaning }} "
+        },
+        {
+          "type": "text",
+          "style": "plain",
+          "foreground": "p:accent",
+          "template": "\\uf061 "
+        }
+      ]
+    }
+  ]
+}

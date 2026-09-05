@@ -1,0 +1,17 @@
+{
+  "blocks": [
+    {
+      "segments": [
+        {
+          "foreground": "p:body",
+          "background": "p:accent",
+          "template": "neither side is ground"
+        },
+        {
+          "foreground": "#ff0000",
+          "template": "a literal hex colour, not a role reference"
+        }
+      ]
+    }
+  ]
+}
