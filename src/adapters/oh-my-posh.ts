@@ -6,7 +6,7 @@ import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
 import { isKnownRole, ROLES, type Role } from "../constants.js";
 import { resolveRoleHexes } from "../palette/repair.js";
-import { nearestRoleFor } from "../palette/role-mapping.js";
+import { recoloredHexFor } from "../palette/role-mapping.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
   buildPropertyBlockContent,
@@ -290,13 +290,16 @@ function upsertPaletteTable(configPath: string, text: string, paletteTable: Reco
  * A key that is already one of Chameleon's own roles (from a layout `ch
  * edit` built, or a previous apply) is recoloured by that same role, never
  * reclassified by its current colour — its name already says exactly what
- * it is.
+ * it is. Every other key is recoloured by recoloredHexFor, which retints its
+ * own colour into the new theme's space rather than snapping it onto one of
+ * six roles — see CHM-37: that snap once collapsed 46 of a real 47-key
+ * prompt palette onto three or four colours, leaving its segments illegible.
  */
 function recoloredPaletteTable(existingPalette: Record<string, string> | undefined, resolvedRoleHexes: Record<Role, string>): Record<string, string> {
   const recoloredExisting = Object.fromEntries(
     Object.entries(existingPalette ?? {}).map(([key, hex]) => [
       key,
-      resolvedRoleHexes[isKnownRole(key) ? key : nearestRoleFor(key, hex)],
+      isKnownRole(key) ? resolvedRoleHexes[key] : recoloredHexFor(key, hex, resolvedRoleHexes),
     ]),
   );
   const missingRoles = ROLES.filter((role) => !(role in recoloredExisting));
