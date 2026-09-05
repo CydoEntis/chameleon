@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHerdrAdapter, undoHerdr } from "../../src/adapters/herdr.js";
+import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "../../src/adapters/herdr.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
@@ -371,6 +371,43 @@ describe.each([
 
     undoHerdr(configPath);
     expect(readFileSync(configPath, "utf8")).toBe(fixture);
+  });
+});
+
+// CHM-27: this is the exact comparison `ch current`/`ch doctor` use to
+// notice a target that has drifted from the recorded pack.
+describe("herdrMatchesRoleHexes", () => {
+  let configDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-drift-"));
+    configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, LF_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("matches right after apply", () => {
+    const adapter = createHerdrAdapter(configPath);
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    expect(herdrMatchesRoleHexes(adapter.read(), resolveRoleHexes(ZEROX96F_SCHEME))).toBe(true);
+  });
+
+  it("does not match a scheme other than the one last applied", () => {
+    const adapter = createHerdrAdapter(configPath);
+    adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
+
+    expect(herdrMatchesRoleHexes(adapter.read(), resolveRoleHexes(AARDVARK_BLUE_SCHEME))).toBe(false);
+  });
+
+  it("does not match a config that was never themed by Chameleon at all", () => {
+    const config = createHerdrAdapter(configPath).read();
+
+    expect(herdrMatchesRoleHexes(config, resolveRoleHexes(ZEROX96F_SCHEME))).toBe(false);
   });
 });
 

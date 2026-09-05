@@ -5,19 +5,21 @@
  */
 
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
-import { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
-import { createOhMyPoshAdapter, OH_MY_POSH_WINGET_PACKAGE_ID, undoOhMyPosh } from "./adapters/oh-my-posh.js";
+import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters/herdr.js";
+import { createOhMyPoshAdapter, ohMyPoshMatchesRoleHexes, OH_MY_POSH_WINGET_PACKAGE_ID, undoOhMyPosh } from "./adapters/oh-my-posh.js";
 import { readActivePackState, writeActivePackState } from "./adapters/state.js";
 import { loadUserThemePacks } from "./adapters/user-theme-packs.js";
 import {
   createWindowsTerminalAdapter,
   selectedFontFace,
   undoWindowsTerminal,
+  windowsTerminalMatchesScheme,
   WINDOWS_TERMINAL_WINGET_PACKAGE_ID,
 } from "./adapters/windows-terminal.js";
 import type { Appearance } from "./palette/palette.js";
 import type { Scheme } from "./palette/scheme.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug, type LoadedThemePack } from "./palette/theme-pack-library.js";
+import type { ThemePackPayloads } from "./palette/theme-pack.js";
 
 export const VERSION = "0.0.0";
 
@@ -116,6 +118,8 @@ export interface DoctorNerdFontCheck {
 export interface DoctorReport {
   readonly targets: readonly DoctorTargetCheck[];
   readonly nerdFont: DoctorNerdFontCheck;
+  /** Undefined when nothing has ever been applied — there is nothing recorded to compare live configs against. See CurrentPackReport.driftedTargets. */
+  readonly drift: CurrentPackReport | undefined;
 }
 
 /**
@@ -177,11 +181,14 @@ function checkNerdFont(): DoctorNerdFontCheck {
 
 /**
  * Runs every check `ch doctor` reports: whether each themeable target is
- * installed, and whether a Nerd Font is installed and actually selected in
- * Windows Terminal. Herdr is detect-only and never offered an install
- * command — see CLAUDE.md, "Herdr stays detect-only, never installed."
+ * installed, whether a Nerd Font is installed and actually selected in
+ * Windows Terminal, and whether any detected target has drifted from the
+ * pack `ch` last recorded as active (CHM-27) — see currentPack's own
+ * driftedTargets. Herdr is detect-only and never offered an install command
+ * — see CLAUDE.md, "Herdr stays detect-only, never installed." `userThemeDir`
+ * and `statePath` are only ever overridden by tests.
  */
-export function runDoctorChecks(): DoctorReport {
+export function runDoctorChecks(userThemeDir?: string, statePath?: string): DoctorReport {
   return {
     targets: [
       checkTarget("windows-terminal", detectSafely(() => createWindowsTerminalAdapter().detect()), WINDOWS_TERMINAL_WINGET_PACKAGE_ID),
@@ -189,6 +196,7 @@ export function runDoctorChecks(): DoctorReport {
       checkTarget("herdr", detectSafely(() => createHerdrAdapter().detect()), undefined),
     ],
     nerdFont: checkNerdFont(),
+    drift: currentPack(userThemeDir, statePath),
   };
 }
 
@@ -261,6 +269,17 @@ function runOnInstalledTarget(target: Target, succeededStatus: PackActionStatus,
 export interface ApplyPackReport {
   readonly slug: string;
   readonly results: readonly PackActionResult[];
+  /**
+   * False when at least one detected target failed to apply — see CHM-27. A
+   * partial apply is never recorded as the active pack (see applyThemePack)
+   * and `ch` must say so plainly rather than reporting success.
+   */
+  readonly isFullyApplied: boolean;
+}
+
+/** Whether any of `results` failed — the one fact that gates recording a pack as active (applyThemePack) and turns a per-target report into a non-zero exit (cli.ts's runApply/runUndo). */
+export function didAnyTargetFail(results: readonly PackActionResult[]): boolean {
+  return results.some((result) => result.status === "failed");
 }
 
 /** The loaded pack named `slug`, or a message naming `ch list` as the way to see what is actually available. */
@@ -279,23 +298,31 @@ function findLoadedPack(slug: string, userThemeDir: string | undefined): LoadedT
  * itself — see theme-pack.ts's ThemePackPayloads doc comment — so the same
  * scheme is handed to all three; Herdr's `apply` also takes `slug` itself,
  * since picking a real Herdr built-in needs pack identity the scheme's raw
- * colours cannot supply — see applyToTarget. The pack is recorded as the
- * active one as soon as at least one target actually changed, which is what
- * lets `ch current`/`ch next`/`ch dark`/`ch light` work on a machine where
- * only some targets are installed. `statePath`, like `userThemeDir`, is only
- * ever overridden by tests; `ch` itself always reads and writes the real one.
+ * colours cannot supply — see applyToTarget.
+ *
+ * The pack is recorded as the active one only once every detected target
+ * actually took it (CHM-27): a target that failed leaves that promise
+ * broken, so a partial apply's succeeding targets are left exactly as they
+ * are — never rolled back, since the whole point was that they *did* change
+ * — and the state file is left untouched, keeping whatever pack (if any) was
+ * previously recorded. That is what lets currentPack's own drift check
+ * notice the targets that did change, rather than the pointer silently
+ * claiming a pack that was never fully applied. `statePath`, like
+ * `userThemeDir`, is only ever overridden by tests; `ch` itself always reads
+ * and writes the real one.
  */
 export function applyThemePack(slug: string, userThemeDir?: string, statePath?: string): ApplyPackReport {
   const loaded = findLoadedPack(slug, userThemeDir);
   const scheme = loaded.pack.payloads["windows-terminal"];
 
   const results = TARGETS.map((target) => runOnInstalledTarget(target, "applied", () => applyToTarget(target, scheme, slug)));
+  const isFullyApplied = !didAnyTargetFail(results);
 
-  if (results.some((result) => result.status === "applied")) {
+  if (isFullyApplied && results.some((result) => result.status === "applied")) {
     writeActivePackState(slug, statePath);
   }
 
-  return { slug, results };
+  return { slug, results, isFullyApplied };
 }
 
 /** Restores every detected target from the backup its own adapter's most recent `apply` wrote — the counterpart to applyThemePack. */
@@ -303,9 +330,54 @@ export function undoAppliedPack(): readonly PackActionResult[] {
   return TARGETS.map((target) => runOnInstalledTarget(target, "restored", () => undoTarget(target)));
 }
 
+/**
+ * Whether `target`'s own live config already matches `payloads` — the exact
+ * fields each adapter's own apply writes, so a mismatch means this target
+ * has drifted from the pack it is being compared against (CHM-27). Only
+ * ever called on a target already confirmed detected; see detectPackDrift.
+ */
+function targetMatchesPack(target: Target, payloads: ThemePackPayloads): boolean {
+  if (target === "windows-terminal") {
+    return windowsTerminalMatchesScheme(createWindowsTerminalAdapter().read(), payloads["windows-terminal"]);
+  }
+  if (target === "oh-my-posh") {
+    return ohMyPoshMatchesRoleHexes(createOhMyPoshAdapter().read(), payloads["oh-my-posh"]);
+  }
+  return herdrMatchesRoleHexes(createHerdrAdapter().read(), payloads.herdr);
+}
+
+/**
+ * Every detected target whose live config disagrees with `slug`'s own pack —
+ * what `ch current` and `ch doctor` both surface as drift (CHM-27). A target
+ * that is not installed is never drift, same as everywhere else in this
+ * file: absent is not failed, and there is nothing live to compare. A target
+ * whose config cannot even be read — POSH_THEME unset after Oh My Posh was
+ * detected, say — counts as drifted rather than being silently skipped,
+ * since "cannot confirm it matches" is itself the fact worth surfacing.
+ * `userThemeDir` is only ever overridden by tests.
+ */
+export function detectPackDrift(slug: string, userThemeDir?: string): readonly Target[] {
+  const loaded = findLoadedPack(slug, userThemeDir);
+  return TARGETS.filter((target) => {
+    if (!detectSafely(() => adapterForTarget(target).detect())) return false;
+    try {
+      return !targetMatchesPack(target, loaded.pack.payloads);
+    } catch {
+      return true;
+    }
+  });
+}
+
 export interface CurrentPackReport {
   readonly slug: string;
   readonly name: string | undefined;
+  /**
+   * Every detected target whose live config no longer matches this pack —
+   * see detectPackDrift. Empty when the recorded pack is no longer loadable
+   * at all, since there is nothing left to compare against — `name` being
+   * undefined already carries that case.
+   */
+  readonly driftedTargets: readonly Target[];
 }
 
 /**
@@ -321,7 +393,11 @@ export function currentPack(userThemeDir?: string, statePath?: string): CurrentP
 
   const { packs } = loadAllThemePacks(userThemeDir);
   const loaded = packs.find((candidate) => candidate.pack.manifest.slug === state.slug);
-  return { slug: state.slug, name: loaded?.pack.manifest.name };
+  return {
+    slug: state.slug,
+    name: loaded?.pack.manifest.name,
+    driftedTargets: loaded ? detectPackDrift(state.slug, userThemeDir) : [],
+  };
 }
 
 /**
