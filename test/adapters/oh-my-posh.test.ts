@@ -165,6 +165,16 @@ function usesOnlyLineEnding(text: string, eol: string): boolean {
   return eol === CRLF ? !/(?<!\r)\n/.test(text) : !text.includes("\r");
 }
 
+/** Every distinct key any "p:" reference in `configText` names, scanned across the whole file rather than just its segments — CHM-43's own "no key left that no segment references" check needs the same reach as undefinedPaletteReferences above, just answering the opposite question: defined but never read, not read but never defined. */
+function everyReferencedPaletteKey(configText: string): ReadonlySet<string> {
+  const referencedKeys = new Set<string>();
+  for (const match of configText.matchAll(/p:([A-Za-z0-9_-]+)/g)) {
+    const referencedKey = match[1];
+    if (referencedKey !== undefined) referencedKeys.add(referencedKey);
+  }
+  return referencedKeys;
+}
+
 /** Every "p:role" reference `value` carries — zero for anything that is not a string, or a plain string with no such reference. */
 function paletteReferencesIn(value: unknown): string[] {
   if (typeof value !== "string") return [];
@@ -1007,6 +1017,133 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
     // for every light theme, so if this never triggered, the achievability
     // check itself stopped running, not that the case stopped existing.
     expect(sawAnUnachievableSegment).toBe(true);
+  });
+});
+
+describe("repeated applies converge instead of compounding (CHM-43)", () => {
+  let stateDir: string;
+  let configPath: string;
+  let profilePath: string;
+  let pointerPath: string;
+  let originalChipsText: string;
+  let originalPaletteKeys: string[];
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm43-"));
+    configPath = path.join(stateDir, "chips.omp.json");
+    profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
+    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+    originalChipsText = readFileSync(CHIPS_FIXTURE_PATH, "utf8");
+    originalPaletteKeys = Object.keys((parseWritten(originalChipsText) as { palette: Record<string, string> }).palette);
+    writeFileSync(configPath, originalChipsText, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("leaves the palette key count identical after a second full pass through all 26 bundled themes — applied repeatedly, not once", () => {
+    // The bug this ticket exists to fix only shows up on repeated applies —
+    // the reporter's own measurement went from 47 keys to 418 after "a
+    // handful of applies", never converging. Verified against the
+    // reporter's real 47-key config (chips.omp.json, CHM-16's own fixture),
+    // cycled through every bundled theme twice: a fixture applied once, the
+    // way every other test in this file exercises it, is exactly what hid
+    // this bug in the first place.
+    const curatedPacks = loadCuratedThemePacks();
+    expect(curatedPacks.length).toBe(26);
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+
+    for (const pack of curatedPacks) {
+      adapter.apply(pack.payloads["windows-terminal"]);
+    }
+    const keyCountAfterFirstPass = Object.keys(
+      (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette,
+    ).length;
+
+    for (const pack of curatedPacks) {
+      adapter.apply(pack.payloads["windows-terminal"]);
+    }
+    const keyCountAfterSecondPass = Object.keys(
+      (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette,
+    ).length;
+
+    expect(keyCountAfterSecondPass).toBe(keyCountAfterFirstPass);
+  });
+
+  it("never mints a key name that carries -legible more than once, across two full passes", () => {
+    const curatedPacks = loadCuratedThemePacks();
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+
+    for (const pack of [...curatedPacks, ...curatedPacks]) {
+      adapter.apply(pack.payloads["windows-terminal"]);
+    }
+
+    const finalPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+    for (const key of Object.keys(finalPalette)) {
+      expect(countOccurrences(key, "legible")).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("leaves no generated key that no segment references, across two full passes", () => {
+    const curatedPacks = loadCuratedThemePacks();
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+
+    for (const pack of [...curatedPacks, ...curatedPacks]) {
+      adapter.apply(pack.payloads["windows-terminal"]);
+    }
+
+    const resultText = readFileSync(configPath, "utf8");
+    const finalPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
+    const referencedKeys = everyReferencedPaletteKey(resultText);
+    const generatedKeys = Object.keys(finalPalette).filter((key) => key.includes("legible"));
+    // A test that cannot fail is not a test: this scheme/fixture pair is
+    // known (see the CHM-40 tests above) to need at least one repair, so an
+    // empty generatedKeys here would mean the repair itself stopped running.
+    expect(generatedKeys.length).toBeGreaterThan(0);
+    for (const key of generatedKeys) {
+      expect(referencedKeys.has(key)).toBe(true);
+    }
+  });
+
+  it("keeps every one of chips's own original 47 keys defined after two full passes, never dropping one (CHM-31)", () => {
+    const curatedPacks = loadCuratedThemePacks();
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    expect(originalPaletteKeys).toHaveLength(47);
+
+    for (const pack of [...curatedPacks, ...curatedPacks]) {
+      adapter.apply(pack.payloads["windows-terminal"]);
+    }
+
+    const finalPalette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+    for (const key of originalPaletteKeys) {
+      expect(finalPalette[key]).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it("clears TEXT_MIN_RATIO between every segment's own resolved foreground and background after two full passes (CHM-40)", () => {
+    const curatedPacks = loadCuratedThemePacks();
+    const adapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+
+    for (const pack of [...curatedPacks, ...curatedPacks]) {
+      adapter.apply(pack.payloads["windows-terminal"]);
+    }
+
+    const resultText = readFileSync(configPath, "utf8");
+    const resultPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
+    const checks = segmentContrastChecks(resultText, resultPalette);
+    expect(checks.length).toBeGreaterThan(0);
+
+    for (const { foregroundKeys, backgroundHexes } of checks) {
+      const isAchievable = isSingleForegroundAchievable(backgroundHexes);
+      for (const foregroundKey of foregroundKeys) {
+        const foregroundHex = resultPalette[foregroundKey]!;
+        for (const backgroundHex of backgroundHexes) {
+          const contrast = contrastRatio(foregroundHex, backgroundHex);
+          expect(contrast).toBeGreaterThanOrEqual(isAchievable ? TEXT_MIN_RATIO : MUTED_MIN_RATIO);
+        }
+      }
+    }
   });
 });
 
