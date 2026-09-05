@@ -27,6 +27,7 @@ import {
   type Appearance,
   type DoctorNerdFontCheck,
   type DoctorReport,
+  type DoctorTargetCheck,
   type Layout,
   type LayoutBlockName,
   type LoadedThemePack,
@@ -60,9 +61,16 @@ function runList(): number {
   return 0;
 }
 
-/** One `ch doctor` row for a themeable target: plain text, no Nerd Font glyph, so it reads before a font is set up. */
-function formatTargetLine(target: string, isInstalled: boolean): string {
-  return `${target}: ${isInstalled ? "installed" : "not found"}`;
+/**
+ * One `ch doctor` row for a themeable target: plain text, no Nerd Font glyph,
+ * so it reads before a font is set up. A target this platform cannot ever
+ * have — Windows Terminal outside Windows — reads "not available on this
+ * platform" rather than "not found": the latter would tell a Linux user a
+ * Windows-only app is a problem to fix. See CHM-25.
+ */
+function formatTargetLine(check: DoctorTargetCheck): string {
+  if (!check.isApplicable) return `${check.target}: not available on this platform`;
+  return `${check.target}: ${check.isInstalled ? "installed" : "not found"}`;
 }
 
 /**
@@ -122,7 +130,7 @@ function runDoctor(): number {
   const report = runDoctorChecks();
 
   for (const check of report.targets) {
-    process.stdout.write(`${formatTargetLine(check.target, check.isInstalled)}\n`);
+    process.stdout.write(`${formatTargetLine(check)}\n`);
     if (check.installCommand) {
       process.stdout.write(`  would run: ${check.installCommand}\n`);
     }

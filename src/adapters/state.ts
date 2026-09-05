@@ -1,13 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-
-/**
- * Chameleon's own state directory, under the user's local app data — mirrors
- * STATE_DIR_NAME in adapters/oh-my-posh.ts (the Oh My Posh pointer file) and
- * adapters/user-theme-packs.ts (the drop-in pack directory).
- */
-const STATE_DIR_NAME = "chameleon";
+import { stateDir } from "./platform.js";
 
 /** File name of the pointer `ch <slug>` writes and `ch current`, `ch next` and `ch dark`/`ch light` all read. */
 const ACTIVE_PACK_FILE_NAME = "active-pack.json";
@@ -19,13 +13,9 @@ const ActivePackStateSchema = z.object({
 
 export type ActivePackState = z.infer<typeof ActivePackStateSchema>;
 
-/** Where `ch` records which pack it last applied: `%LOCALAPPDATA%\chameleon\active-pack.json`. */
+/** Where `ch` records which pack it last applied — see platform.ts's stateDir. */
 export function defaultActivePackStatePath(): string {
-  const localAppData = process.env["LOCALAPPDATA"];
-  if (!localAppData) {
-    throw new Error("LOCALAPPDATA is not set — cannot locate Chameleon's state directory");
-  }
-  return path.join(localAppData, STATE_DIR_NAME, ACTIVE_PACK_FILE_NAME);
+  return path.join(stateDir(), ACTIVE_PACK_FILE_NAME);
 }
 
 /**
