@@ -6,6 +6,7 @@ import { ROLES, type Role } from "../constants.js";
 import { mix } from "../palette/color.js";
 import { toPalette, type Appearance } from "../palette/palette.js";
 import { resolveRoleHexes } from "../palette/repair.js";
+import { resolveSelectionAndBody } from "../palette/selection.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
 
@@ -236,21 +237,24 @@ function surfaceScale(groundHex: string, bodyHex: string): Record<string, string
 
 /**
  * Herdr's structural background tokens beyond `sidebar_bg` (ground) and
- * `text` (body) — the ones this ticket exists to fix (CHM-28): without
- * them, a pack with no Herdr built-in left every panel and row painted in
- * the fallback theme's own colours, with only the accent actually changing.
+ * `text` (body) — the ones CHM-28 exists to fix: without them, a pack with
+ * no Herdr built-in left every panel and row painted in the fallback
+ * theme's own colours, with only the accent actually changing.
  *
- * `selection_bg` is not derived at all: the scheme already carries its own
- * authored selection colour, so that is written through unchanged rather
- * than invented from ground and body.
+ * `selection_bg` is `resolveSelectionAndBody`'s own output, not the
+ * scheme's raw selectionBackground passed through — see CHM-30:
+ * GitHub Light's authored selection colour is literally its own body
+ * colour, invisible as a highlight and unreadable underneath it at once,
+ * and passing that straight through would ship the same bug into Herdr
+ * that CHM-30 exists to fix.
  */
-function structuralTokenValues(scheme: Scheme, groundHex: string, bodyHex: string): Record<string, string> {
+function structuralTokenValues(groundHex: string, bodyHex: string, selectionHex: string): Record<string, string> {
   return {
     panel_bg: groundHex,
     // An active row reads as a slightly raised surface — the same tone as
     // surface0, not a colour of its own.
     active_row_bg: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
-    selection_bg: scheme.selectionBackground,
+    selection_bg: selectionHex,
     ...surfaceScale(groundHex, bodyHex),
   };
 }
@@ -551,17 +555,18 @@ function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenV
 
 /**
  * Every [theme.custom] token value Chameleon writes: the six roles under
- * Herdr's own token names (see ROLE_TO_HERDR_TOKEN), plus the structural and
+ * Herdr's own token names (see ROLE_TO_HERDR_TOKEN), the resolved selection
+ * highlight (see structuralTokenValues), plus the structural and
  * extra-accent tokens derived straight from `scheme` and `colorTable`'s
  * ground/body — see structuralTokenValues and extraAccentTokenValues. Every
  * key is asserted against HERDR_ACCEPTED_CUSTOM_TOKENS before it reaches the
  * config, so a future addition that invents a token fails immediately
  * instead of shipping a key Herdr silently ignores (CHM-21).
  */
-function customTokenValues(scheme: Scheme, colorTable: Readonly<Record<Role, string>>): Record<string, string> {
+function customTokenValues(scheme: Scheme, colorTable: Readonly<Record<Role, string>>, selectionHex: string): Record<string, string> {
   const tokenValues = {
     ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
-    ...structuralTokenValues(scheme, colorTable.ground, colorTable.body),
+    ...structuralTokenValues(colorTable.ground, colorTable.body, selectionHex),
     ...extraAccentTokenValues(scheme),
   };
   assertOnlyAcceptedHerdrTokens(tokenValues);
@@ -569,8 +574,14 @@ function customTokenValues(scheme: Scheme, colorTable: Readonly<Record<Role, str
 }
 
 /** Upserts every [theme.custom] token Chameleon owns — see customTokenValues. */
-function upsertCustomBlock(text: string, eol: string, scheme: Scheme, colorTable: Readonly<Record<Role, string>>): string {
-  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable));
+function upsertCustomBlock(
+  text: string,
+  eol: string,
+  scheme: Scheme,
+  colorTable: Readonly<Record<Role, string>>,
+  selectionHex: string,
+): string {
+  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable, selectionHex));
 }
 
 /**
@@ -587,6 +598,12 @@ function upsertUiAccent(text: string, eol: string, accentHex: string): string {
  * customTokenValues) under Herdr's own token names, and upserts [ui]'s own
  * `accent` to match — accent is the only colour key under [ui]; see CHM-23.
  * Every other [ui] setting, its comments included, is left untouched.
+ *
+ * The selection highlight — and, on the rare pack where ground and body
+ * leave no room for a visible one, body itself — is resolved once here via
+ * resolveSelectionAndBody (CHM-30), the exact pipeline buildThemePack runs
+ * at build time, so a pack's live apply can never disagree with its own
+ * shipped payload.
  */
 function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
   const resolvedConfigPath = requireConfigPath(configPath);
@@ -598,11 +615,13 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
 
   const originalText = readFileSync(resolvedConfigPath, "utf8");
   const eol = detectLineEnding(originalText);
-  const colorTable = resolveRoleHexes(scheme);
+  const resolvedRoleHexes = resolveRoleHexes(scheme);
+  const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedRoleHexes.ground, resolvedRoleHexes.body);
+  const colorTable = { ...resolvedRoleHexes, body: body.hex };
   const themeName = herdrThemeNameFor(slug, toPalette(scheme).appearance);
 
   const withName = upsertThemeName(originalText, eol, themeName);
-  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable);
+  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable, selection.hex);
   const withUiAccent = upsertUiAccent(withCustom, eol, colorTable.accent);
 
   writeFileSync(resolvedConfigPath, withUiAccent, "utf8");

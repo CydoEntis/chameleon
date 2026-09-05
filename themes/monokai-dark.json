@@ -39,7 +39,7 @@
       "ground": "#272822",
       "body": "#fdfff1",
       "accent": "#66d9ef",
-      "muted": "#72756a",
+      "muted": "#73756b",
       "success": "#a6e22e",
       "error": "#e6db74"
     },
@@ -47,9 +47,10 @@
       "ground": "#272822",
       "body": "#fdfff1",
       "accent": "#66d9ef",
-      "muted": "#72756a",
+      "muted": "#73756b",
       "success": "#a6e22e",
-      "error": "#e6db74"
+      "error": "#e6db74",
+      "selection_bg": "#57584f"
     }
   }
 }

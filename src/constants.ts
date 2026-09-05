@@ -49,6 +49,33 @@ export const TEXT_MIN_RATIO = 4.5;
 export const MUTED_MIN_RATIO = 3.0;
 
 /**
+ * The selection highlight's own ideal contrast against ground — the most
+ * visible a highlight needs to be. Repair reaches for this but never
+ * demands it: body-on-selection (TEXT_MIN_RATIO) is the one floor that is
+ * never traded away, and for 10 of the 26 bundled packs no colour clears
+ * both at once (tokyo-night-light's body clears ground by only 4.52 — see
+ * palette/selection.ts). Selection-vs-ground is maximised up to this value,
+ * never demanded to reach it.
+ */
+export const SELECTION_IDEAL_RATIO = 2.0;
+
+/**
+ * The lowest selection-vs-ground contrast that still counts as a visible
+ * highlight at all. Below this, resolveSelection stops trying to move the
+ * selection colour itself and nudges body further from ground instead —
+ * see palette/selection.ts's resolveSelectionAndBody.
+ */
+export const SELECTION_MIN_VISIBLE_RATIO = 1.25;
+
+/**
+ * Ratio a repair targets past its floor, so integer-RGB rounding on the
+ * repaired hex never lands it back under the floor. Shared by repair.ts
+ * (the six roles) and palette/selection.ts (the selection highlight and its
+ * rare body nudge) — same rounding-safety margin, same reason, named once.
+ */
+export const RATIO_CLEARANCE_MARGIN = 1.05;
+
+/**
  * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
  * clear before it still counts as its role's colour rather than a tinted
  * grey. Set below Fairyfloss's error candidate's own native chroma (0.24,
