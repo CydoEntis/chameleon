@@ -919,11 +919,32 @@ describe("herdr adapter — reload", () => {
     expect(() => createHerdrAdapter("unused/config.toml").reload()).not.toThrow();
   });
 
-  // The regression this ticket exists to fix: spawnSync ran the binary
-  // successfully (no `error`), but Herdr's own CLI reported failure via a
-  // non-zero exit and a JSON payload on stderr. Checking `error` alone
-  // reported this as a successful reload.
-  it("treats a non-zero exit with no spawn error as a failed reload — the server_not_running case", () => {
+  // CHM-22's own regression: spawnSync ran the binary successfully (no
+  // `error`), but Herdr's own CLI reported failure via a non-zero exit and a
+  // JSON payload on stderr. Checking `error` alone reported this as a
+  // successful reload. `server_not_running` is no longer this test's own
+  // example — see the next test — so this uses an unrelated code to keep
+  // exercising the same exit-status-plus-JSON-stderr path.
+  it("treats a non-zero exit with no spawn error as a failed reload", () => {
+    vi.mocked(spawnSync).mockReturnValue(
+      makeSpawnResult({
+        error: undefined,
+        status: 1,
+        stderr: '{"code":"config_rejected","message":"theme.custom.text is not a valid colour"}',
+      }),
+    );
+
+    const adapter = createHerdrAdapter("unused/config.toml");
+    expect(() => adapter.reload()).toThrow(/config_rejected/);
+    expect(() => adapter.reload()).toThrow(/theme\.custom\.text is not a valid colour/);
+  });
+
+  // CHM-45: nothing had ever called reload() before this ticket, so this
+  // case never had anywhere to surface. Now that `apply` always reloads,
+  // "no Herdr running right now" must not turn a config that landed
+  // correctly into a reported failure — the config is already right on disk
+  // and Herdr will read it the next time it starts.
+  it("reports, rather than throws, when Herdr's own CLI finds no server to reload", () => {
     vi.mocked(spawnSync).mockReturnValue(
       makeSpawnResult({
         error: undefined,
@@ -933,8 +954,7 @@ describe("herdr adapter — reload", () => {
     );
 
     const adapter = createHerdrAdapter("unused/config.toml");
-    expect(() => adapter.reload()).toThrow(/server_not_running/);
-    expect(() => adapter.reload()).toThrow(/no herdr server is listening on this socket/);
+    expect(adapter.reload()).toBe("Herdr is not running — nothing to reload");
   });
 
   it("surfaces the spawn error itself when the binary could not be started at all", () => {
