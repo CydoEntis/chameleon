@@ -12,6 +12,7 @@ import {
   findNerdFontGlyphs,
   lintPromptLayout,
   parsePromptLayout,
+  resolvePromptLayoutRoleReferences,
 } from "../../src/palette/prompt-pack.js";
 
 /** A minimal, valid layout: one segment with a foreground role and no background (renders on the terminal's own background, i.e. ground) — the GOOD "no background" shape from CLAUDE.md's authoring rule. */
@@ -176,5 +177,48 @@ describe("findContrastFailures", () => {
 
     expect(findContrastFailures(layout, justUnderFloor, "fixture")).toHaveLength(1);
     expect(findContrastFailures(layout, justOverFloor, "fixture")).toHaveLength(0);
+  });
+});
+
+describe("resolvePromptLayoutRoleReferences", () => {
+  // Real, measured values from Solarized Dark's own resolved role table —
+  // see findContrastFailures' own describe block above for provenance.
+  const SOLARIZED_DARK_ROLE_HEXES: Readonly<Record<Role, string>> = {
+    ground: "#002b36",
+    body: "#93a1a1",
+    accent: "#93a1a1",
+    muted: "#586e75",
+    success: "#b58900",
+    error: "#dc322f",
+  };
+
+  it("resolves a segment's own p:<role> foreground and background to real hex, CHM-47's step from bundled layout to real Oh My Posh config", () => {
+    const layout = parsePromptLayout(JSON.parse(SAFE_CHIP_LAYOUT_TEXT), "chip.omp.json");
+    const resolved = resolvePromptLayoutRoleReferences(layout, SOLARIZED_DARK_ROLE_HEXES);
+
+    const blocks = resolved["blocks"] as Array<{ segments: Array<{ foreground: string; background: string }> }>;
+    expect(blocks[0]?.segments[0]?.foreground).toBe(SOLARIZED_DARK_ROLE_HEXES.ground);
+    expect(blocks[0]?.segments[0]?.background).toBe(SOLARIZED_DARK_ROLE_HEXES.accent);
+  });
+
+  it("leaves every non-role field untouched — a template string, a segment type, a plain number — resolving only p:<role> references", () => {
+    const layout = parsePromptLayout(
+      JSON.parse(JSON.stringify({ blocks: [{ segments: [{ type: "path", template: "{{ .Path }}", foreground: "p:body", max_width: 40 }] }] })),
+      "mixed.omp.json",
+    );
+    const resolved = resolvePromptLayoutRoleReferences(layout, SOLARIZED_DARK_ROLE_HEXES);
+
+    const blocks = resolved["blocks"] as Array<{ segments: Array<Record<string, unknown>> }>;
+    const segment = blocks[0]?.segments[0];
+    expect(segment?.["type"]).toBe("path");
+    expect(segment?.["template"]).toBe("{{ .Path }}");
+    expect(segment?.["max_width"]).toBe(40);
+    expect(segment?.["foreground"]).toBe(SOLARIZED_DARK_ROLE_HEXES.body);
+  });
+
+  it("resolves every bundled layout's own segments without leaving a single p: reference behind, against a real theme pack", () => {
+    const layout = parsePromptLayout(JSON.parse(SAFE_LAYOUT_TEXT), "safe.omp.json");
+    const resolved = resolvePromptLayoutRoleReferences(layout, SOLARIZED_DARK_ROLE_HEXES);
+    expect(JSON.stringify(resolved)).not.toContain("p:");
   });
 });

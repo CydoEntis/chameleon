@@ -5,22 +5,28 @@ import { fileURLToPath } from "node:url";
 import {
   addSegment,
   ANSI_SLOT_NAMES,
+  applyPromptPack,
   applyThemePack,
   buildLayoutSegment,
+  createDefaultOhMyPoshAdapter,
   currentPack,
+  currentPromptPack,
   didAnyTargetFail,
   findFamilySibling,
   isKnownRole,
   isSegmentType,
   layoutBlocksOnSide,
+  listPromptPacks,
   loadAllThemePacks,
   moveSegmentBetweenBlocks,
   nextPackSlug,
+  ohMyPoshMissingMessage,
   previewThemePackToFileTargets,
   prevPackSlug,
   readOhMyPoshLayout,
   removeSegment,
   reorderSegment,
+  restorePromptToMine,
   ROLES,
   runDoctorChecks,
   SEGMENT_TYPES,
@@ -30,6 +36,7 @@ import {
   type AnsiSlotName,
   type Appearance,
   type CurrentPackReport,
+  type CurrentPromptReport,
   type DoctorNerdFontCheck,
   type DoctorReport,
   type DoctorTargetCheck,
@@ -37,6 +44,7 @@ import {
   type LayoutBlockName,
   type LoadedThemePack,
   type PackActionResult,
+  type PromptPackListEntry,
   type Role,
   type Scheme,
   type SegmentType,
@@ -453,6 +461,12 @@ function runFamilySwitch(appearance: Appearance): number {
   }
 }
 
+/** `chm current`'s own prompt-layout line — CHM-47's "chm current reports the active prompt layout alongside the active theme." Printed only once a bundled layout has ever been applied at least once (currentPromptPack returning undefined); a machine that has never touched `chm prompt` has nothing new to report here. */
+function formatPromptLine(promptReport: CurrentPromptReport): string {
+  const label = promptReport.slug === undefined ? "mine" : (promptReport.name ?? promptReport.slug);
+  return `prompt: ${label}`;
+}
+
 /**
  * `chm current [--short]` — prints the active pack's slug, or just its name
  * with `--short`, for embedding in a status bar. The slug always goes to
@@ -469,6 +483,11 @@ function runCurrent(args: readonly string[]): number {
   }
   const showNameOnly = args.includes("--short");
   process.stdout.write(`${showNameOnly ? (current.name ?? current.slug) : current.slug}\n`);
+
+  const promptReport = currentPromptPack();
+  if (promptReport) {
+    process.stdout.write(`${formatPromptLine(promptReport)}\n`);
+  }
 
   // CHM-34: the recorded pack itself is gone — there is nothing left to
   // compare live configs against, so this must say so rather than falling
@@ -988,6 +1007,250 @@ function runApplyByQuery(rawTokens: readonly string[]): number {
   return 1;
 }
 
+// --- chm prompts / chm prompt <name> / chm prompt mine (CHM-47) ------------
+//
+// Mirrors chm themes' own shape — "one thing to learn, not two" — but a
+// prompt layout is Oh My Posh's concern alone, so there is no per-target
+// fan-out and no colour swatch: a layout has no colour of its own until it
+// is resolved against whatever theme is currently active (see index.ts's
+// applyPromptPack). Oh My Posh missing is checked first, and named plainly,
+// rather than listing layouts nothing can apply — see CHM-47's "This is the
+// one moment a person has a concrete reason to install it."
+
+/** One line of `chm prompts --list`'s plain output — the name, its description, and the Nerd Font flag CHM-47 requires a bundled layout never simply hide behind: still listed even when nothing is selected to render its glyphs, just marked. */
+export function formatPromptListLine(entry: PromptPackListEntry): string {
+  if (!entry.requiresNerdFont) return `${entry.name} — ${entry.description}`;
+  const nerdFontFlag = entry.nerdFontWarning ? "  (needs Nerd Font — none selected)" : "  (Nerd Font)";
+  return `${entry.name}${nerdFontFlag} — ${entry.description}`;
+}
+
+function printPromptList(entries: readonly PromptPackListEntry[]): void {
+  for (const entry of entries) {
+    process.stdout.write(`${formatPromptListLine(entry)}\n`);
+  }
+}
+
+/** Whether `filterText` matches `entry` by slug or by name — the prompt picker's own version of matchesPickerFilter, kept separate rather than shared: a prompt row carries no swatches or scheme to preview, so it is not the same entry shape. */
+function matchesPromptFilter(entry: PromptPackListEntry, filterText: string): boolean {
+  if (filterText === "") return true;
+  const needle = filterText.toLowerCase();
+  return entry.slug.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle);
+}
+
+function renderPromptPickerRow(entry: PromptPackListEntry, isHighlighted: boolean): string {
+  const cursor = isHighlighted ? ">" : " ";
+  const nerdFontFlag = entry.requiresNerdFont ? (entry.nerdFontWarning ? "  (needs Nerd Font — none selected)" : "  (Nerd Font)") : "";
+  return `${cursor} ${entry.name}${nerdFontFlag}`;
+}
+
+function renderPromptPickerFrame(entries: readonly PromptPackListEntry[], highlightedIndex: number, filterText: string): string[] {
+  const filterLine = filterText === "" ? PICKER_HINT_LINE : `filter: ${filterText}`;
+  const rowLines =
+    entries.length === 0 ? ["  no matches"] : entries.map((entry, index) => renderPromptPickerRow(entry, index === highlightedIndex));
+  return [filterLine, ...rowLines];
+}
+
+/**
+ * Drives `chm prompts`' own arrow-key picker — CHM-47's "the same component
+ * chm themes uses (CHM-44)": type-to-filter, arrow keys move the highlight,
+ * Enter commits, Esc restores. The live preview here is a debounced real
+ * apply (createSettledFileTargetPreview, CHM-52's own mechanism, reused as-
+ * is) rather than themes' OSC escape codes: a prompt layout has no terminal-
+ * wide colour of its own to paint instantly, only a config file and a
+ * pointer to repoint, so there is nothing faster than that write to preview
+ * with. Resolves to the slug Enter committed, or undefined on Esc/Ctrl-C,
+ * after restoring whatever was active before the picker opened — the
+ * previous bundled slug, or the user's own config when nothing was active.
+ */
+async function runInteractivePromptPicker(
+  entries: readonly PromptPackListEntry[],
+  originalSlug: string | undefined,
+): Promise<string | undefined> {
+  const startIndex = originalSlug === undefined ? 0 : Math.max(0, entries.findIndex((entry) => entry.slug === originalSlug));
+
+  return new Promise<string | undefined>((resolve) => {
+    let filterText = "";
+    let highlightedIndex = startIndex;
+    let visibleEntries = entries;
+    let previousFrameLineCount = 0;
+    let lastPreviewedSlug: string | undefined;
+
+    const settledPreview = createSettledFileTargetPreview((slug) => {
+      try {
+        applyPromptPack(slug);
+      } catch {
+        // Best effort, same contract as the theme picker's own preview — a
+        // real failure is reported once Enter commits, via runPromptApply.
+      }
+    });
+
+    function previewHighlighted(): void {
+      const entry = visibleEntries[highlightedIndex];
+      if (entry === undefined || entry.slug === lastPreviewedSlug) return;
+      lastPreviewedSlug = entry.slug;
+      settledPreview.schedule(entry.slug);
+    }
+
+    function redraw(): void {
+      clearPickerFrame(previousFrameLineCount);
+      const frameLines = renderPromptPickerFrame(visibleEntries, highlightedIndex, filterText);
+      process.stdout.write(frameLines.map((line) => `${line}\n`).join(""));
+      previousFrameLineCount = frameLines.length;
+    }
+
+    function applyFilter(nextFilterText: string): void {
+      filterText = nextFilterText;
+      visibleEntries = entries.filter((entry) => matchesPromptFilter(entry, filterText));
+      highlightedIndex = 0;
+      previewHighlighted();
+      redraw();
+    }
+
+    function moveHighlight(step: 1 | -1): void {
+      if (visibleEntries.length === 0) return;
+      highlightedIndex = (highlightedIndex + step + visibleEntries.length) % visibleEntries.length;
+      previewHighlighted();
+      redraw();
+    }
+
+    function stopListening(): void {
+      process.stdin.off("keypress", onKeypress);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdout.write("\x1b[?25h");
+    }
+
+    function cancel(): void {
+      settledPreview.cancel();
+      try {
+        if (originalSlug === undefined) {
+          restorePromptToMine();
+        } else {
+          applyPromptPack(originalSlug);
+        }
+      } catch {
+        // Best effort — the picker still exits either way; a cancel is not
+        // itself a command whose failure `chm` needs to report. Covers
+        // "nothing was ever applied" too, the same case runInteractivePicker
+        // swallows for undoAppliedPack.
+      }
+      stopListening();
+      resolve(undefined);
+    }
+
+    function commit(): void {
+      const chosenSlug = visibleEntries[highlightedIndex]?.slug;
+      if (chosenSlug === undefined) return;
+      settledPreview.cancel();
+      stopListening();
+      resolve(chosenSlug);
+    }
+
+    function onKeypress(inputChar: string | undefined, key: Key | undefined): void {
+      if (key?.ctrl && key.name === "c") return cancel();
+      if (key?.name === "escape") return cancel();
+      if (key?.name === "return") return commit();
+      if (key?.name === "up") return moveHighlight(-1);
+      if (key?.name === "down") return moveHighlight(1);
+      if (key?.name === "backspace") return applyFilter(filterText.slice(0, -1));
+      if (inputChar && /^[\x20-\x7e]$/.test(inputChar)) return applyFilter(filterText + inputChar);
+    }
+
+    emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("keypress", onKeypress);
+
+    process.stdout.write("\x1b[?25l");
+    previewHighlighted();
+    redraw();
+  });
+}
+
+/** `chm prompt <name>`'s report: applied, plus the Nerd Font warning CHM-47 asks for — never hidden, never blocking. */
+function runPromptApply(slug: string): number {
+  try {
+    const result = applyPromptPack(slug);
+    process.stdout.write(`applied prompt layout "${result.name}"\n`);
+    if (result.detail) process.stdout.write(`  ${result.detail}\n`);
+    if (result.nerdFontWarning) process.stderr.write(`chm: ${result.nerdFontWarning}\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/** `chm prompt mine` — puts the user's own config back, exactly where CLAUDE.md's "eat one user's config and the tool is dead" demands it still is. */
+function runPromptMine(): number {
+  try {
+    restorePromptToMine();
+    process.stdout.write("restored your own prompt config\n");
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/** Resolves what a person typed after `chm prompt` against the bundled list — by slug or by display name, case- and separator-insensitive, the same normalizeThemeQuery themes' own resolution uses. Prompt layouts are few enough (six, at last count) that an ambiguous-prefix report is not worth the machinery resolveThemeQuery carries for it — ties fail with the same "run `chm prompts`" message an unknown name gets. */
+function resolvePromptQuery(entries: readonly PromptPackListEntry[], rawQuery: string): PromptPackListEntry | undefined {
+  const normalizedQuery = normalizeThemeQuery(rawQuery);
+  return entries.find(
+    (entry) => normalizeThemeQuery(entry.slug) === normalizedQuery || normalizeThemeQuery(entry.name) === normalizedQuery,
+  );
+}
+
+/** `chm prompt <name>` / `chm prompt mine` — CHM-47's mirror of `chm <theme>`. */
+function runPrompt(argv: string[]): number {
+  const [nameOrMine] = argv;
+  if (nameOrMine === undefined) {
+    process.stderr.write("chm prompt: missing a layout name — run `chm prompts` to see what's available, or `chm prompt mine` to go back\n");
+    return 1;
+  }
+  if (nameOrMine === "mine") return runPromptMine();
+
+  const matched = resolvePromptQuery(listPromptPacks(), nameOrMine);
+  if (!matched) {
+    process.stderr.write(`chm: no prompt layout named "${nameOrMine}" — run \`chm prompts\` to see what's available\n`);
+    return 1;
+  }
+  return runPromptApply(matched.slug);
+}
+
+/**
+ * `chm prompts` (browse and pick) / `chm prompts --list` — CHM-47's mirror
+ * of `chm themes`/`runThemes`. Oh My Posh missing is checked before
+ * anything else: a prompt layout is Oh My Posh's concern alone, so there is
+ * nothing useful to list or pick when it is not even installed — see
+ * ohMyPoshMissingMessage.
+ */
+async function runPrompts(args: readonly string[]): Promise<number> {
+  if (!createDefaultOhMyPoshAdapter().detect()) {
+    process.stderr.write(`${ohMyPoshMissingMessage()}\n`);
+    return 1;
+  }
+
+  const entries = listPromptPacks();
+
+  if (wantsPlainThemeList(args, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY))) {
+    printPromptList(entries);
+    return 0;
+  }
+
+  if (entries.length === 0) {
+    process.stderr.write("chm: no prompt layouts available\n");
+    return 1;
+  }
+
+  const chosenSlug = await runInteractivePromptPicker(entries, currentPromptPack()?.slug);
+  if (chosenSlug === undefined) {
+    process.stderr.write("chm: no prompt layout chosen\n");
+    return 1;
+  }
+  return runPromptApply(chosenSlug);
+}
+
 export const USAGE = `usage: chm <command> [args]
 
 chm themes             browse and pick a theme interactively, with live preview
@@ -1000,6 +1263,11 @@ chm current            print the active theme
 chm undo               put it back
 chm doctor             what is installed
 chm edit ...           edit the Oh My Posh prompt layout
+
+chm prompts            browse and pick a prompt layout interactively
+chm prompts --list     list every layout instead of picking
+chm prompt <name>      apply a layout, by slug or by name
+chm prompt mine        go back to your own prompt config
 
 run \`chm themes\` to browse what you can apply
 `;
@@ -1025,6 +1293,8 @@ async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === undefined) return runUsage();
   if (command === "themes" || command === "pick") return runThemes(rest);
+  if (command === "prompts") return runPrompts(rest);
+  if (command === "prompt") return runPrompt(rest);
   if (command === "doctor") return runDoctor();
   if (command === "edit") return runEdit(rest);
   if (command === "current") return runCurrent(rest);
