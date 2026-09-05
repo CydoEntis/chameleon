@@ -1,0 +1,37 @@
+{
+  "theme": "light", // picked this the first time I ran /theme
+  "statusLine": {
+    "type": "command",
+    "command": "node ~/.claude/statusline.js"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm run test:*)",
+      "Bash(git status)"
+    ],
+    "additionalDirectories": [
+      "../shared-lib"
+    ]
+  },
+
+  // hooks I rely on for session setup, do not remove
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -File \"C:\\Users\\me\\.claude\\hooks\\session.ps1\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "commit@aevox-playbook": true,
+    "debt@aevox-playbook": true
+  },
+  "effortLevel": "high",
+  "autoUpdatesChannel": "latest"
+}

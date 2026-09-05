@@ -29,3 +29,7 @@ test/adapters/fixtures/herdr-config-ui-accent.toml text eol=lf
 # test/adapters/oh-my-posh.test.ts). Read-only in every test that uses it,
 # but pinned for the same reason as the fixtures above.
 test/adapters/fixtures/chips.omp.json text eol=lf
+
+# Same reasoning again, for the Claude Code adapter's own hostile fixture
+# (see test/adapters/claude-code.test.ts).
+test/adapters/fixtures/claude-code-settings.jsonc text eol=lf

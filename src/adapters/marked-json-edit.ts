@@ -1,4 +1,4 @@
-import { createScanner, findNodeAtLocation, parseTree, type JSONPath, type Node } from "jsonc-parser";
+import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree, type JSONPath, type Node } from "jsonc-parser";
 
 /**
  * Every edit any adapter makes to a JSONC config is wrapped in this pair, so
@@ -286,4 +286,51 @@ export function upsertMarkedBlock(text: string, container: Node, ownedContent: s
   const replacement = `${eol}${INSERTED_BLOCK_INDENT}${markerBegin(key)}${eol}${ownedContent}${separator}${eol}${INSERTED_BLOCK_INDENT}${markerEnd(key)}${eol}`;
 
   return text.slice(0, replaceStart) + replacement + text.slice(replaceEnd);
+}
+
+/**
+ * Indent width given to a root-level property freshly inserted by
+ * setUnmarkedTopLevelProperty, when the file did not already carry that key
+ * — cosmetic only, the same "does not try to match a file's own indent
+ * style" contract INSERTED_BLOCK_INDENT carries for a marked block. Two
+ * spaces, not INSERTED_BLOCK_INDENT's four, because a root-level property
+ * sits one level shallower than a marked block always does.
+ */
+const UNMARKED_INSERT_INDENT_WIDTH = 2;
+
+/**
+ * Sets root-level `key` to `value` in place, with no ch:begin/ch:end wrapper
+ * at all — the shape a config whose own parser rejects any comment needs.
+ * Claude Code's settings.json is exactly that: wrapping the edit in
+ * Chameleon's usual markers made its parser discard the entire file rather
+ * than skip the one comment it did not recognise (see CHM-51). This is for a
+ * target proven not to tolerate a `//` comment anywhere in the document —
+ * `upsertMarkedBlock` remains correct for every target that does.
+ *
+ * jsonc-parser's own `modify` computes the minimal edit for `key` alone:
+ * replacing just the existing value's own span when `key` is already
+ * present — any trailing comment on that same line survives, since only the
+ * value token is touched — or inserting one new property, in the file's own
+ * line ending, when it is not. Every other byte in the document, a user's
+ * own comments elsewhere included, is untouched.
+ *
+ * There is no marker left behind for a rerun to find, so there is nothing to
+ * dedupe: this always simply sets `key` to `value`, which already is the
+ * idempotent, no-growth result a marked block gives for a single scalar
+ * property. A target that needs to know whether its own last write still
+ * matches a pack does that by comparing values directly — see
+ * claudeCodeMatchesAppearance — against whichever pack the active-pack state
+ * file recorded (CHM-27), not by looking for a marker in this file.
+ */
+export function setUnmarkedTopLevelProperty(sourcePath: string, text: string, key: string, value: unknown): string {
+  const root = parseJsonTree(sourcePath, text);
+  if (root.type !== "object") {
+    throw new Error(`${sourcePath}'s root is not a JSON object`);
+  }
+
+  const eol = detectLineEnding(text);
+  const edits = modify(text, [key], value, {
+    formattingOptions: { insertSpaces: true, tabSize: UNMARKED_INSERT_INDENT_WIDTH, eol },
+  });
+  return applyEdits(text, edits);
 }
