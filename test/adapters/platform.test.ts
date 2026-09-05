@@ -6,11 +6,13 @@ import {
   choosePowerShellEdition,
   clinkScriptPath,
   currentPlatform,
+  detectPowerShellEdition,
   detectShell,
   documentsDirFromRegistryQueryOutput,
   herdrConfigPath,
   isWindows,
   ohMyPoshProfilePathFor,
+  resetPlatformProbeCache,
   stateDir,
   type PowerShellEdition,
 } from "../../src/adapters/platform.js";
@@ -34,6 +36,12 @@ const REG_QUERY_NOT_FOUND = makeSpawnResult({ error: new Error("ENOENT"), status
 
 beforeEach(() => {
   vi.mocked(spawnSync).mockReset().mockReturnValue(REG_QUERY_NOT_FOUND);
+  // CHM-54: isPowerShellEditionInstalled and windowsDocumentsDir now memoize
+  // their spawnSync result for the process's lifetime, so a test relying on
+  // a fresh spawnSync sequence (mockReturnValueOnce) needs a fresh probe
+  // cache too — otherwise it silently observes whatever an earlier test in
+  // this file already cached, rather than its own mocked responses.
+  resetPlatformProbeCache();
 });
 
 // CHM-25: before this file existed, every one of these paths was a scattered
@@ -213,5 +221,65 @@ describe("choosePowerShellEdition", () => {
   it("falls back to Windows PowerShell — never pwsh — on a tie between two installed editions", () => {
     expect(choosePowerShellEdition(installed(true, true), profileExists(false, false))).toBe("windowsPowerShell");
     expect(choosePowerShellEdition(installed(true, true), profileExists(true, true))).toBe("windowsPowerShell");
+  });
+});
+
+// CHM-54: detectPowerShellEdition and windowsDocumentsDir (reached here
+// through detectPowerShellEdition's own documentsDir default) each used to
+// spawn a process on every call. Neither answer — which PowerShell editions
+// are installed, and where Documents really is — can change while `ch` is
+// running, so both are now memoized for the process's lifetime.
+
+/** CHM-54's own acceptance number for a memoized (second-or-later) probe. */
+const MEMOIZED_CALL_BUDGET_MS = 5;
+
+describe("platform probe memoization (CHM-54)", () => {
+  it("spawns a process for the registry query and each PowerShell edition only once per process, no matter how many times detection runs", () => {
+    detectPowerShellEdition();
+    const spawnCallsAfterFirstDetection = vi.mocked(spawnSync).mock.calls.length;
+    expect(spawnCallsAfterFirstDetection).toBeGreaterThan(0);
+
+    detectPowerShellEdition();
+    detectPowerShellEdition();
+
+    // Every further call reuses the memoized answers — no additional spawning.
+    expect(vi.mocked(spawnSync).mock.calls.length).toBe(spawnCallsAfterFirstDetection);
+  });
+
+  it("a second detection costs under 5ms once the first has already paid the real spawn cost — the number CHM-54 exists to fix", () => {
+    // spawnSync blocks Node's event loop synchronously, so a mock standing
+    // in for a real PowerShell/registry cold start has to block the same
+    // way to reproduce the actual defect — a plain mockReturnValue returns
+    // instantly and would prove nothing. This keeps the assertion
+    // deterministic across CI hosts, rather than depending on how long a
+    // real "powershell"/"reg" happens to take on whichever machine runs it.
+    const SIMULATED_SPAWN_LATENCY_MS = 20;
+    vi.mocked(spawnSync).mockImplementation(() => {
+      const deadline = Date.now() + SIMULATED_SPAWN_LATENCY_MS;
+      while (Date.now() < deadline) {
+        // Busy-wait: see the comment above for why this can't just await.
+      }
+      return REG_QUERY_NOT_FOUND;
+    });
+
+    const firstCallStart = Date.now();
+    detectPowerShellEdition();
+    const firstCallDurationMs = Date.now() - firstCallStart;
+    expect(firstCallDurationMs).toBeGreaterThanOrEqual(SIMULATED_SPAWN_LATENCY_MS);
+
+    const secondCallStart = Date.now();
+    detectPowerShellEdition();
+    const secondCallDurationMs = Date.now() - secondCallStart;
+    expect(secondCallDurationMs).toBeLessThan(MEMOIZED_CALL_BUDGET_MS);
+  });
+
+  it("resetPlatformProbeCache() forces the next detection to spawn fresh, for a test that changes what a probe would find", () => {
+    detectPowerShellEdition();
+    const spawnCallsBeforeReset = vi.mocked(spawnSync).mock.calls.length;
+
+    resetPlatformProbeCache();
+    detectPowerShellEdition();
+
+    expect(vi.mocked(spawnSync).mock.calls.length).toBeGreaterThan(spawnCallsBeforeReset);
   });
 });

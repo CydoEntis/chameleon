@@ -185,12 +185,43 @@ const POWERSHELL_BINARY_NAMES: Readonly<Record<PowerShellEdition, string>> = {
   windowsPowerShell: "powershell",
 };
 
-/** Whether `edition`'s own binary actually runs on this machine — the one thing that tells the two editions apart when neither's profile exists yet. */
+/**
+ * Which PowerShell editions have already been probed this process, and what
+ * each probe found — see isPowerShellEditionInstalled. A cold PowerShell
+ * start costs on the order of 100ms, and which editions are installed cannot
+ * change while `ch` is running, so a real spawn happens at most once per
+ * edition per process rather than once per adapter construction. See CHM-54.
+ */
+let installedByEdition: Partial<Record<PowerShellEdition, boolean>> = {};
+
+/** The real Documents folder, once resolved this process — see windowsDocumentsDir. `undefined` means "not yet probed", distinct from any resolved path, so it is only ever read through that function. */
+let cachedWindowsDocumentsDir: string | undefined;
+
+/**
+ * Clears every platform probe memoized below, so the next call recomputes
+ * from a real spawn rather than reusing an earlier answer. Real callers
+ * never call this — the whole point of the cache is that these answers are
+ * constants for the process's lifetime. It exists for tests: CHM-35's
+ * platform-override configs, and any test that stubs an env var these probes
+ * read, need their very next probe to see that change rather than whatever
+ * an earlier test in the same file already cached.
+ */
+export function resetPlatformProbeCache(): void {
+  installedByEdition = {};
+  cachedWindowsDocumentsDir = undefined;
+}
+
+/** Whether `edition`'s own binary actually runs on this machine — the one thing that tells the two editions apart when neither's profile exists yet. Spawns only on this process's first call for `edition`; see installedByEdition. */
 function isPowerShellEditionInstalled(edition: PowerShellEdition): boolean {
+  const cached = installedByEdition[edition];
+  if (cached !== undefined) return cached;
+
   const result = spawnSync(POWERSHELL_BINARY_NAMES[edition], ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit"], {
     encoding: "utf8",
   });
-  return !result.error && result.status === 0;
+  const isInstalled = !result.error && result.status === 0;
+  installedByEdition[edition] = isInstalled;
+  return isInstalled;
 }
 
 /**
@@ -244,9 +275,13 @@ export function documentsDirFromRegistryQueryOutput(regQueryStdout: string): str
  * install too locked down to run `reg query` at all.
  */
 function windowsDocumentsDir(): string {
+  if (cachedWindowsDocumentsDir !== undefined) return cachedWindowsDocumentsDir;
+
   const result = spawnSync("reg", ["query", SHELL_FOLDERS_REGISTRY_KEY, "/v", DOCUMENTS_SHELL_FOLDER_VALUE_NAME], { encoding: "utf8" });
   const registryDir = !result.error && result.status === 0 ? documentsDirFromRegistryQueryOutput(result.stdout) : undefined;
-  return registryDir ?? path.join(homedir(), "Documents");
+  const resolvedDir = registryDir ?? path.join(homedir(), "Documents");
+  cachedWindowsDocumentsDir = resolvedDir;
+  return resolvedDir;
 }
 
 /**
