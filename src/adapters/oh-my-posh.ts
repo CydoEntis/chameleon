@@ -15,6 +15,7 @@ import {
   parseJsonTree,
   upsertMarkedBlock,
 } from "./marked-json-edit.js";
+import { detectShell, ohMyPoshProfilePathFor, stateDir, type Shell } from "./platform.js";
 
 /** Suffix for the pre-apply copy of a config or profile file that `undoOhMyPosh` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -25,20 +26,21 @@ const OH_MY_POSH_BINARY_NAME = "oh-my-posh";
 /** winget's package identifier for Oh My Posh, used to build the one-line install command `ch doctor` offers. */
 export const OH_MY_POSH_WINGET_PACKAGE_ID = "JanDeDobbeleer.OhMyPosh";
 
-/** Chameleon's own state directory, under the user's local app data — currently home to only the pointer file below. */
-const STATE_DIR_NAME = "chameleon";
-
-/** File name of the pointer `apply` writes and the profile's `Set-PoshContext` hook reads. */
+/** File name of the pointer `apply` writes and every shell's own live-reload hook reads. */
 const POINTER_FILE_NAME = "oh-my-posh-pointer.json";
 
 /**
- * Every edit this adapter makes to the user's PowerShell profile is wrapped
- * in this pair — the JSON marker pair from marked-json-edit.ts is a `//`
- * comment, which PowerShell does not understand, so the profile gets its
- * own markers in PowerShell's own comment syntax.
+ * Every edit this adapter makes to a shell's profile is wrapped in this pair
+ * — the JSON marker pair from marked-json-edit.ts is a `//` comment, which
+ * none of PowerShell, bash or zsh understand, so a profile gets its own
+ * markers in the `#` comment syntax all three share. Clink's own hook is Lua,
+ * whose comment syntax is `--`, so it gets its own pair — see LUA_MARKER_BEGIN/END.
  */
 const PROFILE_MARKER_BEGIN = "# ch:begin";
 const PROFILE_MARKER_END = "# ch:end";
+
+const LUA_MARKER_BEGIN = "-- ch:begin";
+const LUA_MARKER_END = "-- ch:end";
 
 /**
  * The slice of a .omp.json config this adapter actually depends on.
@@ -90,26 +92,20 @@ function defaultConfigPath(): string | undefined {
 }
 
 /**
- * Where a stock `pwsh` install keeps the current user's profile for every
- * host ($PROFILE, "CurrentUserAllHosts" would be Profile.ps1 without the
- * "Microsoft.PowerShell" prefix — Chameleon only ever targets the
- * per-host profile, since that is what oh-my-posh's own install
- * instructions wire up).
+ * The interactive-startup file `shell`'s own live-reload hook belongs in —
+ * PowerShell's per-host profile ($PROFILE, "CurrentUserAllHosts" would be
+ * Profile.ps1 without the "Microsoft.PowerShell" prefix — Chameleon only
+ * ever targets the per-host profile, since that is what oh-my-posh's own
+ * install instructions wire up), bash's or zsh's own rc file, or — for
+ * cmd.exe, which has no rc file of its own — the Clink script Chameleon
+ * installs its hook as. See platform.ts's ohMyPoshProfilePathFor.
  */
-function defaultProfilePath(): string {
-  const userProfile = process.env["USERPROFILE"];
-  if (!userProfile) {
-    throw new Error("USERPROFILE is not set — cannot locate the PowerShell profile");
-  }
-  return path.join(userProfile, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
+function defaultProfilePath(shell: Shell = "pwsh"): string {
+  return ohMyPoshProfilePathFor(shell);
 }
 
 function defaultPointerPath(): string {
-  const localAppData = process.env["LOCALAPPDATA"];
-  if (!localAppData) {
-    throw new Error("LOCALAPPDATA is not set — cannot locate Chameleon's state directory");
-  }
-  return path.join(localAppData, STATE_DIR_NAME, POINTER_FILE_NAME);
+  return path.join(stateDir(), POINTER_FILE_NAME);
 }
 
 function backupPathFor(targetPath: string): string {
@@ -273,16 +269,19 @@ function buildSetPoshContextBlock(pointerPath: string, eol: string): string {
 }
 
 /**
- * Upserts `ownedContent` between PROFILE_MARKER_BEGIN/END, replacing an
+ * Upserts `ownedContent` between `markerBegin`/`markerEnd`, replacing an
  * earlier Chameleon block in place when one exists, or appending a fresh
  * one at the end of the file when it does not. Appending — rather than
  * inserting at the top — is what makes the chaining in
  * buildSetPoshContextBlock correct: a `Set-PoshContext` the user defined
  * earlier in the file is still the one in scope when this block runs.
+ * `markerBegin`/`markerEnd` are parameters, not the module's own constants,
+ * because Clink's hook is Lua, whose comment syntax (`--`) differs from the
+ * `#` every shell profile in this file shares — see LUA_MARKER_BEGIN/END.
  */
-function upsertProfileBlock(text: string, ownedContent: string, eol: string): string {
-  const beginIndex = text.indexOf(PROFILE_MARKER_BEGIN);
-  const block = `${PROFILE_MARKER_BEGIN}${eol}${ownedContent}${eol}${PROFILE_MARKER_END}${eol}`;
+function upsertProfileBlock(text: string, ownedContent: string, eol: string, markerBegin: string, markerEnd: string): string {
+  const beginIndex = text.indexOf(markerBegin);
+  const block = `${markerBegin}${eol}${ownedContent}${eol}${markerEnd}${eol}`;
 
   if (beginIndex === -1) {
     if (text.length === 0) return block;
@@ -290,11 +289,11 @@ function upsertProfileBlock(text: string, ownedContent: string, eol: string): st
     return `${text}${separator}${block}`;
   }
 
-  const endIndex = text.indexOf(PROFILE_MARKER_END, beginIndex);
+  const endIndex = text.indexOf(markerEnd, beginIndex);
   if (endIndex === -1) {
     throw new Error("the profile has a ch:begin marker with no matching ch:end — refusing to guess where Chameleon's block ends");
   }
-  const afterEnd = endIndex + PROFILE_MARKER_END.length;
+  const afterEnd = endIndex + markerEnd.length;
   const afterEndOwn = text.startsWith(eol, afterEnd) ? afterEnd + eol.length : afterEnd;
   return text.slice(0, beginIndex) + block + text.slice(afterEndOwn);
 }
@@ -318,16 +317,135 @@ function backupBeforeEdit(targetPath: string): void {
 }
 
 /**
- * Extends the profile's `Set-PoshContext` hook with Chameleon's own
- * pointer-check, chaining any hook the user already defined. Idempotent:
- * re-applying replaces Chameleon's own block in place rather than
- * re-chaining it every time.
+ * The function name and chaining variable bash's and zsh's own hooks use —
+ * mirrors PREVIOUS_HOOK_VARIABLE/LAST_APPLIED_VARIABLE above, in each
+ * shell's own naming convention. Shared by both, since the hook body itself
+ * is identical apart from which `oh-my-posh init` subcommand it calls.
  */
-function upsertSetPoshContext(profilePath: string, pointerPath: string): void {
+const POSIX_HOOK_FUNCTION_NAME = "__chameleon_ohmyposh_precmd";
+const POSIX_LAST_APPLIED_VARIABLE = "CHAMELEON_LAST_APPLIED_MS";
+
+/**
+ * The body bash's and zsh's own hook share: read the pointer file's
+ * `updatedAtMs` and `configPath` with `sed` — no JSON tool is guaranteed
+ * installed on a bare bash or zsh, but sed is — and re-run `oh-my-posh init`
+ * for `shell` whenever the timestamp has moved on since this function's own
+ * last run. That re-init is what makes an already-open shell repaint on its
+ * very next prompt, the same trick buildSetPoshContextBlock plays for pwsh.
+ */
+function buildPosixHookFunction(pointerPath: string, shell: "bash" | "zsh"): string[] {
+  const escapedPointerPath = pointerPath.replace(/"/g, '\\"');
+  return [
+    `${POSIX_HOOK_FUNCTION_NAME}() {`,
+    `  [ -f "${escapedPointerPath}" ] || return`,
+    `  local chameleon_updated_at_ms`,
+    `  chameleon_updated_at_ms=$(sed -n 's/.*"updatedAtMs":[[:space:]]*\\([0-9]*\\).*/\\1/p' "${escapedPointerPath}")`,
+    `  [ "$chameleon_updated_at_ms" != "$${POSIX_LAST_APPLIED_VARIABLE}" ] || return`,
+    `  ${POSIX_LAST_APPLIED_VARIABLE}=$chameleon_updated_at_ms`,
+    `  local chameleon_config_path`,
+    `  chameleon_config_path=$(sed -n 's/.*"configPath":[[:space:]]*"\\([^"]*\\)".*/\\1/p' "${escapedPointerPath}")`,
+    `  eval "$(oh-my-posh init ${shell} --config "$chameleon_config_path")"`,
+    "}",
+  ];
+}
+
+/** bash calls PROMPT_COMMAND before every prompt; the hook chains onto whatever the user's own profile already set, guarding against adding itself twice on a second `source`. */
+function buildBashHookBlock(pointerPath: string, eol: string): string {
+  const lines = [
+    ...buildPosixHookFunction(pointerPath, "bash"),
+    `case ";$PROMPT_COMMAND;" in`,
+    `  *";${POSIX_HOOK_FUNCTION_NAME};"*) ;;`,
+    `  *) PROMPT_COMMAND="${POSIX_HOOK_FUNCTION_NAME};$PROMPT_COMMAND" ;;`,
+    "esac",
+  ];
+  return lines.join(eol);
+}
+
+/** zsh's own precmd_functions array is the equivalent of bash's PROMPT_COMMAND; the guard is an index lookup rather than a string search. */
+function buildZshHookBlock(pointerPath: string, eol: string): string {
+  const lines = [
+    ...buildPosixHookFunction(pointerPath, "zsh"),
+    `if (( ! \${precmd_functions[(I)${POSIX_HOOK_FUNCTION_NAME}]} )); then`,
+    `  precmd_functions+=(${POSIX_HOOK_FUNCTION_NAME})`,
+    "fi",
+  ];
+  return lines.join(eol);
+}
+
+/** cmd.exe's own binary name, resolved via PATH — the one dependency this project's Clink support has: without it, cmd.exe has no way at all to run a hook on every prompt. */
+const CLINK_BINARY_NAME = "clink";
+
+function detectClink(): boolean {
+  const result = spawnSync(CLINK_BINARY_NAME, ["--version"], { encoding: "utf8" });
+  return !result.error && result.status === 0;
+}
+
+/**
+ * cmd.exe's own live-reload hook: a Clink prompt filter, called on every
+ * prompt render the same way Oh My Posh's own `init` hooks are for the other
+ * three shells — but since Clink already calls this on every render, there
+ * is no "has it changed" check to make; the pointer file's own config path
+ * is simply read fresh every time and handed to `oh-my-posh print primary`.
+ */
+function buildClinkHookScript(pointerPath: string): string {
+  const escapedPointerPath = pointerPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const lines = [
+    "local chameleon = clink.promptfilter(1)",
+    "function chameleon:filter(prompt)",
+    `    local chameleonPointerFile = io.open("${escapedPointerPath}", "r")`,
+    "    if not chameleonPointerFile then return end",
+    "    local chameleonPointerJson = chameleonPointerFile:read('*a')",
+    "    chameleonPointerFile:close()",
+    '    local chameleonConfigPath = chameleonPointerJson:match(\'"configPath"%s*:%s*"(.-)"\')',
+    "    if not chameleonConfigPath then return end",
+    "    local chameleonHandle = io.popen('oh-my-posh print primary --config \"' .. chameleonConfigPath .. '\" --shell=cmd')",
+    "    if not chameleonHandle then return end",
+    "    local chameleonPrompt = chameleonHandle:read('*a')",
+    "    chameleonHandle:close()",
+    "    return chameleonPrompt",
+    "end",
+  ];
+  return lines.join("\n");
+}
+
+/** Which marker pair owns `shell`'s own hook block — Lua's comment syntax for cmd's Clink script, the `#` every shell profile in this file shares otherwise. */
+const HOOK_MARKERS: Readonly<Record<Shell, { begin: string; end: string }>> = {
+  pwsh: { begin: PROFILE_MARKER_BEGIN, end: PROFILE_MARKER_END },
+  bash: { begin: PROFILE_MARKER_BEGIN, end: PROFILE_MARKER_END },
+  zsh: { begin: PROFILE_MARKER_BEGIN, end: PROFILE_MARKER_END },
+  cmd: { begin: LUA_MARKER_BEGIN, end: LUA_MARKER_END },
+};
+
+/** `shell`'s own live-reload hook content — see buildSetPoshContextBlock, buildBashHookBlock, buildZshHookBlock and buildClinkHookScript. */
+function buildReloadHookBlock(shell: Shell, pointerPath: string, eol: string): string {
+  if (shell === "pwsh") return buildSetPoshContextBlock(pointerPath, eol);
+  if (shell === "bash") return buildBashHookBlock(pointerPath, eol);
+  if (shell === "zsh") return buildZshHookBlock(pointerPath, eol);
+  return buildClinkHookScript(pointerPath);
+}
+
+/**
+ * Extends `shell`'s own interactive-startup file with Chameleon's live-
+ * reload hook, chaining any hook the shell already defines where one exists
+ * (pwsh's Set-PoshContext). Idempotent: re-applying replaces Chameleon's own
+ * block in place rather than duplicating it. cmd.exe has no startup file of
+ * its own — its hook is a Clink Lua script instead, and Clink itself must be
+ * installed for cmd.exe to run any hook at all — see CHM-25's "says so
+ * plainly where it is not": a cmd shell without Clink is refused here, with
+ * a message naming the reason, rather than silently skipped.
+ */
+function upsertReloadHook(shell: Shell, profilePath: string, pointerPath: string): void {
+  if (shell === "cmd" && !detectClink()) {
+    throw new Error(
+      "Clink is not installed — cmd.exe needs Clink for Oh My Posh's live reload (https://chrisant996.github.io/clink/); install it and re-run this command",
+    );
+  }
+
   backupBeforeEdit(profilePath);
   const originalText = readTextOrEmpty(profilePath);
   const eol = detectLineEnding(originalText || "\n");
-  const updatedText = upsertProfileBlock(originalText, buildSetPoshContextBlock(pointerPath, eol), eol);
+  const { begin, end } = HOOK_MARKERS[shell];
+  const updatedText = upsertProfileBlock(originalText, buildReloadHookBlock(shell, pointerPath, eol), eol, begin, end);
   writeFileSync(profilePath, updatedText, "utf8");
 }
 
@@ -340,11 +458,11 @@ function writePointer(pointerPath: string, configPath: string): void {
 
 /**
  * Backs up the config and profile, swaps the config's palette table for
- * `scheme`'s resolved roles, extends the profile's `Set-PoshContext` hook,
- * and points the pointer file at the config so every open shell — this one
+ * `scheme`'s resolved roles, extends `shell`'s own live-reload hook, and
+ * points the pointer file at the config so every open shell — this one
  * included — repaints on its next prompt.
  */
-function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string, pointerPath: string, scheme: Scheme): void {
+function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string, pointerPath: string, shell: Shell, scheme: Scheme): void {
   if (!configPath) {
     throw new Error("POSH_THEME is not set — no active Oh My Posh config to apply to");
   }
@@ -360,14 +478,14 @@ function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string
   assertNoDanglingPaletteReferences(configPath, updatedConfigText, paletteTable);
   writeFileSync(configPath, updatedConfigText, "utf8");
 
-  upsertSetPoshContext(profilePath, pointerPath);
+  upsertReloadHook(shell, profilePath, pointerPath);
   writePointer(pointerPath, configPath);
 }
 
 /**
  * Nothing to trigger from this process: an already-open shell picks up the
- * new palette on its own next prompt render, through the `Set-PoshContext`
- * hook `apply` wires into the profile — see buildSetPoshContextBlock. A CLI
+ * new palette on its own next prompt render, through the live-reload hook
+ * `apply` wires into its own startup file — see buildReloadHookBlock. A CLI
  * invocation cannot reach into another shell's process to force a repaint
  * any more than it could for the one that ran it.
  */
@@ -378,21 +496,37 @@ function reloadOhMyPosh(): void {
 /**
  * Builds the Oh My Posh adapter. `configPath` defaults to whatever
  * POSH_THEME names in the current environment; `profilePath` and
- * `pointerPath` default to their real locations and are only ever
- * overridden by tests, which point them at fixture copies so nothing here
- * touches a real profile or config.
+ * `pointerPath` default to their real pwsh locations; `shell` defaults to
+ * "pwsh", matching those defaults. All four are only ever overridden by
+ * tests, which point them at fixture copies so nothing here touches a real
+ * profile or config — real callers instead use createDefaultOhMyPoshAdapter,
+ * which resolves the shell `ch` is actually running in and the profile that
+ * goes with it.
  */
 export function createOhMyPoshAdapter(
   configPath: string | undefined = defaultConfigPath(),
   profilePath: string = defaultProfilePath(),
   pointerPath: string = defaultPointerPath(),
+  shell: Shell = "pwsh",
 ): OhMyPoshAdapter {
   return {
     detect: () => detectOhMyPosh(),
     read: () => readOhMyPoshConfig(requireConfigPath(configPath)),
-    apply: (scheme) => applyOhMyPoshScheme(configPath, profilePath, pointerPath, scheme),
+    apply: (scheme) => applyOhMyPoshScheme(configPath, profilePath, pointerPath, shell, scheme),
     reload: () => reloadOhMyPosh(),
   };
+}
+
+/**
+ * Builds the Oh My Posh adapter for whichever shell `ch` is actually running
+ * in — the real entry point every caller besides a test uses. Resolving the
+ * shell here, rather than in createOhMyPoshAdapter's own parameter defaults,
+ * is what lets that function's defaults stay the fixed "pwsh" a test relies
+ * on without having to pass a shell of its own. See CHM-25.
+ */
+export function createDefaultOhMyPoshAdapter(): OhMyPoshAdapter {
+  const shell = detectShell();
+  return createOhMyPoshAdapter(defaultConfigPath(), defaultProfilePath(shell), defaultPointerPath(), shell);
 }
 
 function requireConfigPath(configPath: string | undefined): string {

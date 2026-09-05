@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MUTED_MIN_RATIO, TEXT_MIN_RATIO } from "../src/constants.js";
 import { loadAllThemePacks, runDoctorChecks } from "../src/index.js";
 import { contrastRatio } from "../src/palette/color.js";
@@ -111,5 +111,33 @@ describe("runDoctorChecks", () => {
 
     expect(typeof report.nerdFont.isInstalled).toBe("boolean");
     expect(typeof report.nerdFont.isSelected).toBe("boolean");
+  });
+
+  it("marks every target applicable when platform checks are left alone", () => {
+    const report = runDoctorChecks();
+    expect(report.targets.every((check) => check.isApplicable)).toBe(true);
+  });
+});
+
+// CHM-25: Windows Terminal cannot exist off Windows, and `ch doctor` must not
+// tell a Linux user it is missing as though that were a problem to fix.
+describe("runDoctorChecks — off Windows", () => {
+  it("reports windows-terminal as not applicable, never installed, with no install command", async () => {
+    vi.resetModules();
+    vi.doMock("../src/adapters/platform.js", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("../src/adapters/platform.js")>();
+      return { ...actual, isWindows: () => false };
+    });
+    const { runDoctorChecks: runDoctorChecksOffWindows } = await import("../src/index.js");
+
+    const report = runDoctorChecksOffWindows();
+    const windowsTerminalCheck = report.targets.find((check) => check.target === "windows-terminal");
+
+    expect(windowsTerminalCheck?.isApplicable).toBe(false);
+    expect(windowsTerminalCheck?.isInstalled).toBe(false);
+    expect(windowsTerminalCheck?.installCommand).toBeUndefined();
+
+    vi.doUnmock("../src/adapters/platform.js");
+    vi.resetModules();
   });
 });
