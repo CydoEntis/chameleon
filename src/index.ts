@@ -439,6 +439,35 @@ export function applyThemePack(slug: string, userThemeDir?: string, statePath?: 
   return { slug, results, isFullyApplied };
 }
 
+/**
+ * Targets a live terminal preview cannot reach — Herdr, Oh My Posh and
+ * Claude Code all read their colours from a config file, never from the
+ * terminal's own escape-sequence palette, so previewing them needs a real
+ * (if debounced) write. Windows Terminal is deliberately excluded: CHM-52's
+ * whole point is that its own preview is OSC 4/10-12, pushed straight to the
+ * terminal by cli.ts's buildTerminalPreviewSequence, never a settings.json
+ * write until Enter commits (applyThemePack).
+ */
+const FILE_PREVIEWABLE_TARGETS: readonly Target[] = ["oh-my-posh", "herdr", "claude-code"];
+
+/**
+ * Applies `slug` to every detected target a terminal-escape preview cannot
+ * reach (see FILE_PREVIEWABLE_TARGETS) — never windows-terminal, and never
+ * recorded as the active pack (contrast applyThemePack's own
+ * writeActivePackState). CHM-52: the picker calls this, debounced, while the
+ * highlight moves — a preview is not a command the user issued, and must
+ * leave nothing behind for `chm current`/`chm undo` to mistake for one.
+ * Errors are swallowed target by target the same way the picker's previous,
+ * synchronous preview always did — a broken preview write is reported
+ * properly once Enter's own commit (applyThemePack, via runApply) hits it
+ * for real. `userThemeDir` is only ever overridden by tests.
+ */
+export function previewThemePackToFileTargets(slug: string, userThemeDir?: string): readonly PackActionResult[] {
+  const loaded = findLoadedPack(slug, userThemeDir);
+  const scheme = loaded.pack.payloads["windows-terminal"];
+  return FILE_PREVIEWABLE_TARGETS.map((target) => runOnInstalledTarget(target, "applied", () => applyToTarget(target, scheme, slug)));
+}
+
 /** Restores every detected target from the backup its own adapter's most recent `apply` wrote — the counterpart to applyThemePack. */
 export function undoAppliedPack(): readonly PackActionResult[] {
   return TARGETS.map((target) => runOnInstalledTarget(target, "restored", () => undoTarget(target)));
