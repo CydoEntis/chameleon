@@ -43,16 +43,21 @@ export interface ThemePackManifest {
  * verbatim, apart from `selectionBackground` — resolved against ground and
  * body once, the same resolution herdr's `selection_bg` reuses, so the two
  * targets can never disagree about what selection is (see CHM-30's
- * resolveSelectionAndBody). oh-my-posh and herdr's payload is the resolved,
- * repaired role table those adapters key their own blocks off — herdr's own
- * `body` and `muted` are resolved a second time against its selected-row
- * background (see CHM-50's resolveActiveRowAndText), so they can differ from
- * oh-my-posh's copy of the same two roles; every other role always matches.
- * Every adapter's apply() still takes a Scheme and derives what it needs
- * itself — see adapters/*.ts — so this is a precomputed, build-time-checkable
- * copy of exactly what apply() would derive live, not a second source of
- * truth: assignRolesByContrast, repairFailingRoles, resolveSelectionAndBody
- * and resolveActiveRowAndText are all pure, so the two can never disagree.
+ * resolveSelectionAndBody) — and `foreground`, which carries the same call's
+ * resolved `body` (CHM-33: three packs shipped Windows Terminal's own raw,
+ * unrepaired `foreground` sitting behind the *resolved* selection those two
+ * had never been checked against together, unreadable underneath it even
+ * though herdr's own copy of body was already correct). oh-my-posh and
+ * herdr's payload is the resolved, repaired role table those adapters key
+ * their own blocks off — herdr's own `body` and `muted` are resolved a
+ * second time against its selected-row background (see CHM-50's
+ * resolveActiveRowAndText), so they can differ from oh-my-posh's copy of the
+ * same two roles; every other role always matches. Every adapter's apply()
+ * still takes a Scheme and derives what it needs itself — see adapters/*.ts
+ * — so this is a precomputed, build-time-checkable copy of exactly what
+ * apply() would derive live, not a second source of truth:
+ * assignRolesByContrast, repairFailingRoles, resolveSelectionAndBody and
+ * resolveActiveRowAndText are all pure, so the two can never disagree.
  */
 export interface ThemePackPayloads {
   readonly "windows-terminal": Scheme;
@@ -246,7 +251,7 @@ export function buildThemePack(
       ...(attribution !== undefined ? { attribution } : {}),
     },
     payloads: {
-      "windows-terminal": { ...scheme, ...ansiRepair.slots, selectionBackground: selection.hex },
+      "windows-terminal": { ...scheme, ...ansiRepair.slots, foreground: body.hex, selectionBackground: selection.hex },
       "oh-my-posh": roleHexes,
       herdr: { ...herdrRoleHexes, selection_bg: selection.hex },
     },

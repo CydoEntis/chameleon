@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_MIN_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { ANSI_SLOT_NAMES } from "../../src/palette/ansi.js";
-import { chromaOf, contrastRatio } from "../../src/palette/color.js";
+import { chromaOf, contrastRatio, fromHsl } from "../../src/palette/color.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src/palette/theme-pack.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
@@ -154,6 +154,92 @@ describe("buildThemePack", () => {
     const pack = buildThemePack(scheme, "Dracula", ATTRIBUTION);
 
     expect(pack.manifest.slug).toBe("dracula-dark");
+  });
+});
+
+describe("Windows Terminal's own foreground clears body-on-selection (CHM-33)", () => {
+  // CHM-33: three bundled packs shipped Windows Terminal's own raw,
+  // unrepaired `foreground` sitting behind the *resolved* `selectionBackground`
+  // — unreadable underneath it (3.13/3.60/3.48 for body-on-selection, floor
+  // 4.5) even though herdr's own copy of body, already nudged by
+  // resolveSelectionAndBody, was fine all along. buildThemePack now wires
+  // that same resolved body into this payload's `foreground` too, so the two
+  // targets can never disagree about what body is, the same way they already
+  // could not disagree about what selection is (CHM-30).
+  it("clears body-on-selection for every one of the 26 bundled packs, measured the way the terminal itself paints it — foreground on selectionBackground", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBe(26);
+
+    for (const pack of packs) {
+      const { foreground, selectionBackground } = pack.payloads["windows-terminal"];
+      expect(contrastRatio(foreground, selectionBackground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    }
+  });
+
+  // The three packs this ticket names by hand, asserted individually rather
+  // than folded into the loop above, so a regression on any one of them
+  // fails with its own slug and achieved ratio rather than a generic
+  // "some pack failed" message. Achieved ratios are this fix's own output
+  // (see tools/build-theme-packs.ts's describeBodyNudge), not invented.
+  const NAMED_FIXTURES = [
+    { slug: "solarized-light", achievedRatio: 4.73 },
+    { slug: "everforest-light", achievedRatio: 4.74 },
+    { slug: "tokyo-night-light", achievedRatio: 4.70 },
+  ];
+
+  it.each(NAMED_FIXTURES)(
+    "clears body-on-selection for $slug, one of the three CHM-33 names by hand (fixture: shipped 3.13/3.60/3.48 before this fix)",
+    ({ slug, achievedRatio }) => {
+      const packs = loadCuratedThemePacks();
+      const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+      if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+      const { foreground, selectionBackground } = pack.payloads["windows-terminal"];
+      const ratio = contrastRatio(foreground, selectionBackground);
+      expect(ratio).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+      expect(ratio).toBeCloseTo(achievedRatio, 1);
+    },
+  );
+
+  /**
+   * Every selection-vs-ground ratio a hue-free grey can reach while also
+   * clearing `bodyFloorRatio` against `bodyHex`, sampled finely across the
+   * whole luminance range rather than reasoned about analytically — a
+   * brute-force check independent of selection.ts's own search, so this
+   * proves the feasible band's shape instead of assuming the code under
+   * test got it right (code-standards.md, "test behavior, not
+   * implementation"). Restricting to grey is not a narrowing of the search:
+   * contrastRatio is a function of luminance alone, so a tinted colour at
+   * the same luminance reaches the exact same ratio (see
+   * groundTintedAtLuminance's own doc comment).
+   */
+  function bestGroundRatioClearingBodyFloor(groundHex: string, bodyHex: string, bodyFloorRatio: number): number {
+    const SAMPLE_COUNT = 2000;
+    let best = 1;
+    for (let sample = 0; sample <= SAMPLE_COUNT; sample += 1) {
+      const candidateHex = fromHsl({ hue: 0, saturation: 0, lightness: (sample / SAMPLE_COUNT) * 100 });
+      if (contrastRatio(candidateHex, bodyHex) < bodyFloorRatio) continue;
+      best = Math.max(best, contrastRatio(candidateHex, groundHex));
+    }
+    return best;
+  }
+
+  it("computes everforest-light's feasible band against its own unrepaired body and shows it is empty at SELECTION_MIN_VISIBLE_RATIO — the one pack CHM-33 calls genuinely infeasible, not merely buggy", () => {
+    // everforest-light's own raw scheme values (ground, foreground) — see
+    // themes/everforest-light.json's history, before CHM-33's body nudge.
+    const best = bestGroundRatioClearingBodyFloor("#efebd4", "#5c6a72", TEXT_MIN_RATIO);
+
+    expect(best).toBeLessThan(SELECTION_MIN_VISIBLE_RATIO);
+    expect(best).toBeCloseTo(1.2, 1);
+  });
+
+  it("computes solarized-light and tokyo-night-light as feasible against their own unrepaired body — ordinary bugs, not impossibilities, unlike everforest-light above", () => {
+    // Both packs' own raw scheme values (ground, foreground).
+    const solarizedBest = bestGroundRatioClearingBodyFloor("#fdf6e3", "#657b83", TEXT_MIN_RATIO);
+    const tokyoNightBest = bestGroundRatioClearingBodyFloor("#e1e2e7", "#3760bf", TEXT_MIN_RATIO);
+
+    expect(solarizedBest).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
+    expect(tokyoNightBest).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
   });
 });
 
