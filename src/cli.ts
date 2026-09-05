@@ -1249,9 +1249,9 @@ export function renderPromptPickerFrame(entries: readonly PromptPackListEntry[],
  * Enter commits, Esc restores. The live preview here is a debounced real
  * apply (createSettledFileTargetPreview, CHM-52's own mechanism, reused as-
  * is) rather than themes' OSC escape codes: a prompt layout has no terminal-
- * wide colour of its own to paint instantly, only a config file and a
- * pointer to repoint, so there is nothing faster than that write to preview
- * with. Resolves to the slug Enter committed, or undefined on Esc/Ctrl-C,
+ * wide colour of its own to paint instantly, only Chameleon's one owned
+ * config file to rewrite, so there is nothing faster than that write to
+ * preview with. Resolves to the slug Enter committed, or undefined on Esc/Ctrl-C,
  * after restoring whatever was active before the picker opened — the
  * previous bundled slug, or the user's own config when nothing was active.
  * CHM-56: Esc only restores when nothing else changed the active layout

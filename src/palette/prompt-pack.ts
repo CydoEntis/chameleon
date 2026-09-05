@@ -196,9 +196,8 @@ export function findContrastFailures(layout: PromptLayout, roleHexes: Readonly<R
 // actual Oh My Posh config, by resolving every one of those references
 // against a specific theme's own resolved roles. Pure, like everything else
 // in this file: the adapter (adapters/oh-my-posh.ts) is what writes the
-// result to Chameleon's own config file and repoints the pointer at it,
-// never touching the user's own .omp.json — see CLAUDE.md's "Never rewrite
-// a config file wholesale."
+// result into Chameleon's one owned config file, never touching the user's
+// own .omp.json — see CLAUDE.md's "Never rewrite a config file wholesale."
 
 /** `value` with every `p:<role>` string reference replaced by its hex from `roleHexes`, walking arrays and plain objects recursively — every field a resolved config carries, not only a segment's own foreground/background, so a block-level or top-level property referencing a role (should a future layout ever need one) resolves exactly the same way. Anything that is not a role reference — a number, a boolean, an ordinary string, `null` — is returned untouched. */
 function resolvedValueFor(value: unknown, roleHexes: Readonly<Record<Role, string>>): unknown {
