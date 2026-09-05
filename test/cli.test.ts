@@ -7,11 +7,14 @@ import {
   buildTerminalResetSequence,
   createSettledFileTargetPreview,
   formatDriftLine,
+  formatLockHeldMessage,
+  formatPreviewInProgressLine,
   formatPromptListLine,
   formatThemeLine,
   hasDrift,
   normalizeThemeQuery,
   resolveThemeQuery,
+  shouldRestoreOriginalSelectionOnExit,
   USAGE,
   wantsPlainThemeList,
 } from "../src/cli.js";
@@ -203,6 +206,58 @@ describe("resolveThemeQuery", () => {
     expect(result.status).toBe("unknown");
     if (result.status !== "unknown") throw new Error("unreachable");
     expect(result.closest?.pack.manifest.slug).toBe("catppuccin-dark");
+  });
+});
+
+// CHM-56: two `chm` processes have no idea the other exists, so a picker
+// open for its whole browsing session and a one-shot write both take the
+// same lock before writing anything — a second one that cannot take it must
+// say so, naming exactly who holds it, rather than silently racing it.
+describe("formatLockHeldMessage", () => {
+  it("names the command and the pid holding the lock", () => {
+    const message = formatLockHeldMessage({ pid: 4242, command: "chm themes", acquiredAtMs: Date.now() });
+    expect(message).toContain("chm themes");
+    expect(message).toContain("4242");
+  });
+
+  it("still says a process is writing when the holder itself could not be read", () => {
+    const message = formatLockHeldMessage(undefined);
+    expect(message).toMatch(/writing/);
+  });
+});
+
+// CHM-56: a target's live config can legitimately disagree with the recorded
+// pack for as long as a debounced preview write is still in flight — `chm
+// current` must say that plainly rather than reporting it as drift.
+describe("formatPreviewInProgressLine", () => {
+  it("names the command holding the lock, not the recorded pack's drift", () => {
+    const line = formatPreviewInProgressLine({ pid: 4242, command: "chm themes", acquiredAtMs: Date.now() });
+    expect(line).toContain("chm themes");
+    expect(line).not.toMatch(/drift: none|no longer matches/);
+  });
+});
+
+// CHM-56's own core fix: the picker's Esc/Ctrl-C must not silently revert a
+// real apply made by another process while it was open — see
+// index.pack-commands.test.ts's "dracula survives" for the full sequence
+// through the real library orchestration; these exercise the decision
+// itself, in isolation, for every combination of "was something active
+// before/is something active now."
+describe("shouldRestoreOriginalSelectionOnExit", () => {
+  it("restores when the active selection is still exactly what it was when the picker opened", () => {
+    expect(shouldRestoreOriginalSelectionOnExit("solarized-dark", "solarized-dark")).toBe(true);
+  });
+
+  it("does not restore when a real apply changed the active selection while the picker was open", () => {
+    expect(shouldRestoreOriginalSelectionOnExit("solarized-dark", "dracula-dark")).toBe(false);
+  });
+
+  it("restores (to nothing active) when nothing was active before and nothing is active now", () => {
+    expect(shouldRestoreOriginalSelectionOnExit(undefined, undefined)).toBe(true);
+  });
+
+  it("does not restore when nothing was active before, but a real apply made something active since", () => {
+    expect(shouldRestoreOriginalSelectionOnExit(undefined, "dracula-dark")).toBe(false);
   });
 });
 
