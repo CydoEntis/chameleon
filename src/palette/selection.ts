@@ -232,6 +232,24 @@ function resolveSelectionAgainstBody(
 }
 
 /**
+ * Throws if `selectionHex` cannot actually be read under `bodyHex` — the one
+ * floor resolveSelectionAndBody's whole contract rests on (CHM-30, hardened
+ * by CHM-33). Every return path above is expected to already clear this by
+ * construction, so tripping it means the resolver's own search has a bug,
+ * not that some pack's colours are merely unusual — see CHM-33: three
+ * bundled packs shipped for weeks missing exactly this floor, with nothing
+ * checking for it at the one function whose entire job is to guarantee it.
+ */
+function assertClearsBodyFloor(selectionHex: string, bodyHex: string): void {
+  const ratio = contrastRatio(bodyHex, selectionHex);
+  if (ratio < TEXT_MIN_RATIO) {
+    throw new Error(
+      `resolveSelectionAndBody produced a selection measuring ${ratio.toFixed(2)} for body-on-selection, below its floor of ${TEXT_MIN_RATIO} — this is a bug in the resolver, not the pack it was given`,
+    );
+  }
+}
+
+/**
  * Resolves the selection highlight from the scheme's own authored
  * `selectionBackground`, and — only on the rare pack where ground and body
  * leave no colour able to reach even SELECTION_MIN_VISIBLE_RATIO while
@@ -246,7 +264,9 @@ function resolveSelectionAgainstBody(
  * 4.52, for one). Selection-vs-ground is maximised up to
  * SELECTION_IDEAL_RATIO subject to that floor, and RATIO_CLEARANCE_MARGIN
  * is folded into both floors throughout so 8-bit rounding on the final hex
- * never lands either back under them.
+ * never lands either back under them. assertClearsBodyFloor guards every
+ * return below, so this function itself cannot hand back a value that
+ * misses its own one guarantee.
  */
 export function resolveSelectionAndBody(candidateSelectionHex: string, groundHex: string, bodyHex: string): SelectionResolution {
   const groundLuminance = relativeLuminance(groundHex);
@@ -257,6 +277,7 @@ export function resolveSelectionAndBody(candidateSelectionHex: string, groundHex
   const achievableRatio = bestGroundRatioAmong(oneSidedPiecesClearingBodyFloor(groundLuminance, bodyLuminance, minAcceptableBodyRatio), groundLuminance);
   if (achievableRatio >= minAcceptableVisibleRatio) {
     const selection = resolveSelectionAgainstBody(candidateSelectionHex, groundHex, bodyHex, minAcceptableBodyRatio, achievableRatio);
+    assertClearsBodyFloor(selection.hex, bodyHex);
     return { selection, body: { hex: bodyHex, wasNudged: false } };
   }
 
@@ -267,5 +288,6 @@ export function resolveSelectionAndBody(candidateSelectionHex: string, groundHex
     groundLuminance,
   );
   const selection = resolveSelectionAgainstBody(candidateSelectionHex, groundHex, nudgedBodyHex, minAcceptableBodyRatio, nudgedAchievableRatio);
+  assertClearsBodyFloor(selection.hex, nudgedBodyHex);
   return { selection, body: { hex: nudgedBodyHex, wasNudged: true } };
 }
