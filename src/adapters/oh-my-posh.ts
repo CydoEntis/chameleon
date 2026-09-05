@@ -79,7 +79,7 @@ export interface OhMyPoshAdapter {
   read(): OhMyPoshConfig;
   /** Returns a one-sentence notice when applying created the shell's profile from scratch — see CHM-39's "say which path it would create and why" — or undefined when it already existed. */
   apply(scheme: Scheme): string | undefined;
-  reload(): void;
+  reload(): string | undefined;
 }
 
 /**
@@ -834,10 +834,13 @@ function applyOhMyPoshScheme(
  * new palette on its own next prompt render, through the live-reload hook
  * `apply` wires into its own startup file — see buildReloadHookBlock. A CLI
  * invocation cannot reach into another shell's process to force a repaint
- * any more than it could for the one that ran it.
+ * any more than it could for the one that ran it. Returns undefined, never
+ * a detail: unlike Herdr (CHM-45), there is no "nothing running to tell"
+ * case here worth surfacing.
  */
-function reloadOhMyPosh(): void {
+function reloadOhMyPosh(): string | undefined {
   // Intentional no-op — see the doc comment above.
+  return undefined;
 }
 
 /**

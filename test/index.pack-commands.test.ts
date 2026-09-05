@@ -30,9 +30,9 @@ import {
 // index.ts's own orchestration calls createDefaultOhMyPoshAdapter, not
 // createOhMyPoshAdapter directly — see CHM-25 — so both must resolve to the
 // same mock here.
-const windowsTerminalAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
-const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
-const herdrAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
+const windowsTerminalAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
+const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
+const herdrAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
 const undoWindowsTerminalMock = vi.fn();
 const undoOhMyPoshMock = vi.fn();
 const undoHerdrMock = vi.fn();
@@ -71,12 +71,15 @@ beforeEach(() => {
   windowsTerminalAdapter.detect.mockReset().mockReturnValue(true);
   windowsTerminalAdapter.apply.mockReset();
   windowsTerminalAdapter.read.mockReset();
+  windowsTerminalAdapter.reload.mockReset();
   ohMyPoshAdapter.detect.mockReset().mockReturnValue(true);
   ohMyPoshAdapter.apply.mockReset();
   ohMyPoshAdapter.read.mockReset();
+  ohMyPoshAdapter.reload.mockReset();
   herdrAdapter.detect.mockReset().mockReturnValue(true);
   herdrAdapter.apply.mockReset();
   herdrAdapter.read.mockReset();
+  herdrAdapter.reload.mockReset();
   undoWindowsTerminalMock.mockReset();
   undoOhMyPoshMock.mockReset();
   undoHerdrMock.mockReset();
@@ -103,6 +106,22 @@ describe("applyThemePack", () => {
     expect(herdrAdapter.apply).toHaveBeenCalledTimes(1);
     expect(report.isFullyApplied).toBe(true);
     expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
+  });
+
+  // CHM-45: reload() was declared, implemented and wired into every adapter,
+  // and called by nothing — the config landed on disk and the running
+  // program was never told to re-read it. This is the test that would have
+  // caught that: it watches for the call itself, not just the config write.
+  it("reloads every applied target after its write lands", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+
+    expect(windowsTerminalAdapter.reload).toHaveBeenCalledTimes(1);
+    expect(ohMyPoshAdapter.reload).toHaveBeenCalledTimes(1);
+    expect(herdrAdapter.reload).toHaveBeenCalledTimes(1);
+    // Not just "called" — called after that same target's own write, never before it.
+    expect(windowsTerminalAdapter.apply.mock.invocationCallOrder[0]!).toBeLessThan(windowsTerminalAdapter.reload.mock.invocationCallOrder[0]!);
+    expect(ohMyPoshAdapter.apply.mock.invocationCallOrder[0]!).toBeLessThan(ohMyPoshAdapter.reload.mock.invocationCallOrder[0]!);
+    expect(herdrAdapter.apply.mock.invocationCallOrder[0]!).toBeLessThan(herdrAdapter.reload.mock.invocationCallOrder[0]!);
   });
 
   it("skips a target that is not installed, never treating that as a failure — a machine with only Windows Terminal still succeeds", () => {
@@ -166,6 +185,45 @@ describe("applyThemePack", () => {
     ]);
     expect(report.isFullyApplied).toBe(false);
     expect(readActivePackState(statePath)).toBeUndefined();
+  });
+
+  // CHM-45: a write that landed but was never reloaded is not actually
+  // "applied" from the user's point of view — the target is still showing
+  // the old config. A reload failure must downgrade the same way a failed
+  // write already does (CHM-27): named per target, and partial overall.
+  it("downgrades a target to failed, naming it, when its reload fails after a successful write", () => {
+    herdrAdapter.reload.mockImplementation(() => {
+      throw new Error("Herdr did not reload: herdr reported \"status\" failed: duplicate key `text`");
+    });
+
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath);
+
+    expect(report.results).toEqual([
+      { target: "windows-terminal", status: "applied" },
+      { target: "oh-my-posh", status: "applied" },
+      { target: "herdr", status: "failed", detail: "Herdr did not reload: herdr reported \"status\" failed: duplicate key `text`" },
+    ]);
+    // The write itself still happened — a reload failure never rolls it back.
+    expect(herdrAdapter.apply).toHaveBeenCalledTimes(1);
+    expect(report.isFullyApplied).toBe(false);
+    expect(readActivePackState(statePath)).toBeUndefined();
+  });
+
+  // CHM-45: Herdr not running is not a failure — there is nothing to
+  // reload, and the config `apply` just wrote is already correct on disk.
+  // This must stay "applied", just with a note, never downgrade to partial.
+  it("reports Herdr not running as a note on a successful apply, not a failure", () => {
+    herdrAdapter.reload.mockReturnValue("Herdr is not running — nothing to reload");
+
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath);
+
+    expect(report.results).toEqual([
+      { target: "windows-terminal", status: "applied" },
+      { target: "oh-my-posh", status: "applied" },
+      { target: "herdr", status: "applied", detail: "Herdr is not running — nothing to reload" },
+    ]);
+    expect(report.isFullyApplied).toBe(true);
+    expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
   });
 
   it("leaves a previously recorded pack in place when a later apply only partially succeeds", () => {
@@ -233,6 +291,47 @@ describe("undoAppliedPack", () => {
       { target: "windows-terminal", status: "restored" },
       { target: "oh-my-posh", status: "failed", detail: "no backup found — nothing to undo" },
       { target: "herdr", status: "restored" },
+    ]);
+  });
+
+  // CHM-45: restoring a backup that is never reloaded leaves the identical
+  // gap `ch <theme>` had — the config on disk goes back to what it was, but
+  // the running program keeps showing the pack `ch undo` was meant to undo.
+  it("reloads every restored target after its backup is restored", () => {
+    undoAppliedPack();
+
+    expect(windowsTerminalAdapter.reload).toHaveBeenCalledTimes(1);
+    expect(ohMyPoshAdapter.reload).toHaveBeenCalledTimes(1);
+    expect(herdrAdapter.reload).toHaveBeenCalledTimes(1);
+    // Not just "called" — called after that same target's own restore, never before it.
+    expect(undoWindowsTerminalMock.mock.invocationCallOrder[0]!).toBeLessThan(windowsTerminalAdapter.reload.mock.invocationCallOrder[0]!);
+    expect(undoOhMyPoshMock.mock.invocationCallOrder[0]!).toBeLessThan(ohMyPoshAdapter.reload.mock.invocationCallOrder[0]!);
+    expect(undoHerdrMock.mock.invocationCallOrder[0]!).toBeLessThan(herdrAdapter.reload.mock.invocationCallOrder[0]!);
+  });
+
+  it("downgrades a target to failed, naming it, when its reload fails after a successful restore", () => {
+    herdrAdapter.reload.mockImplementation(() => {
+      throw new Error("Herdr did not reload: herdr reported \"server_error\"");
+    });
+
+    const results = undoAppliedPack();
+
+    expect(results).toEqual([
+      { target: "windows-terminal", status: "restored" },
+      { target: "oh-my-posh", status: "restored" },
+      { target: "herdr", status: "failed", detail: "Herdr did not reload: herdr reported \"server_error\"" },
+    ]);
+  });
+
+  it("reports Herdr not running as a note on a successful restore, not a failure", () => {
+    herdrAdapter.reload.mockReturnValue("Herdr is not running — nothing to reload");
+
+    const results = undoAppliedPack();
+
+    expect(results).toEqual([
+      { target: "windows-terminal", status: "restored" },
+      { target: "oh-my-posh", status: "restored" },
+      { target: "herdr", status: "restored", detail: "Herdr is not running — nothing to reload" },
     ]);
   });
 });
