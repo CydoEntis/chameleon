@@ -1,0 +1,38 @@
+[
+  {
+    "slug": "half-life",
+    "name": "Half-Life",
+    "description": "Single-line prompt with no glyphs at all — the fallback for a terminal with no Nerd Font installed.",
+    "requiresNerdFont": false
+  },
+  {
+    "slug": "lambda",
+    "name": "Lambda",
+    "description": "Minimal single-line prompt: a coloured glyph, the path and the git branch.",
+    "requiresNerdFont": true
+  },
+  {
+    "slug": "spaceship",
+    "name": "Spaceship",
+    "description": "Two-line prompt with path and git on the left, exit status and time on the right.",
+    "requiresNerdFont": true
+  },
+  {
+    "slug": "avit",
+    "name": "Avit",
+    "description": "Two-line prompt: user, path and git on the first line, a prompt glyph on the second.",
+    "requiresNerdFont": true
+  },
+  {
+    "slug": "di4am0nd",
+    "name": "Di4am0nd",
+    "description": "Busy three-block prompt with a diamond-cut segment for every piece of context.",
+    "requiresNerdFont": true
+  },
+  {
+    "slug": "bubblesline",
+    "name": "Bubblesline",
+    "description": "Powerline prompt with ten segments across two lines — the most glyph-heavy bundled layout.",
+    "requiresNerdFont": true
+  }
+]
