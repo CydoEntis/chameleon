@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
@@ -81,14 +82,117 @@ export interface OhMyPoshAdapter {
 }
 
 /**
- * Oh My Posh's own `init pwsh` sets this in the environment of every shell
+ * Oh My Posh's own `init` sets POSH_CONFIG in the environment of every shell
  * it initialises, pointed at whichever config that shell is running. `ch`
  * inherits it from its parent shell, the same way it would inherit any
  * other environment variable — there is no separate "active config" file to
- * read, the way Windows Terminal has settings.json.
+ * read, the way Windows Terminal has settings.json. POSH_THEME was the name
+ * current Oh My Posh (31.x) replaced with POSH_CONFIG; it is kept as a
+ * fallback for an older install, never relied on alone — see CHM-36, where
+ * every real apply failed because current Oh My Posh never sets it.
  */
 function defaultConfigPath(): string | undefined {
-  return process.env["POSH_THEME"];
+  return process.env["POSH_CONFIG"] || process.env["POSH_THEME"];
+}
+
+/**
+ * Oh My Posh's own name for `shell` in its `init` subcommand — what a
+ * profile's init line actually reads. "powershell" is accepted alongside
+ * "pwsh" since some profiles still carry it from an older `oh-my-posh init
+ * powershell`. cmd.exe has no `init` subcommand of its own — its hook is a
+ * Clink script instead, see buildClinkHookScript — so there is nothing to
+ * look for there.
+ */
+function initShellNamesFor(shell: Shell): readonly string[] {
+  if (shell === "pwsh") return ["pwsh", "powershell"];
+  if (shell === "bash") return ["bash"];
+  if (shell === "zsh") return ["zsh"];
+  return [];
+}
+
+/**
+ * Matches an `... init <shell> ... --config <path>` invocation anywhere on
+ * a single line of a shell profile, regardless of what names the binary
+ * before "init" — a bare "oh-my-posh", a variable a profile assigned
+ * earlier (`$ohMyPoshExe`, an absolute path), or nothing recognisable at
+ * all. "init <shell> ... --config" is the one substring every documented
+ * invocation shares. Requiring the literal text "oh-my-posh init" missed
+ * exactly this: a reporter's own profile routed the binary through a
+ * variable first — see CHM-36. `shellNames` is always one of
+ * initShellNamesFor's own fixed, alphabetic return values, never user
+ * input, so building the alternation without escaping is safe.
+ *
+ * An unquoted path — the common bash/zsh shape, `--config $HOME/x.json`
+ * inside an `eval "$(... )"` with no quotes of its own — stops short of
+ * `)`, `"`, `'` and `|`, the characters that routinely sit right up against
+ * the path with no space: the closing `)"` of the `eval` itself, or a
+ * trailing `| Invoke-Expression`. A quoted path (either quote style) simply
+ * stops at its own matching quote and is free to contain any of those.
+ */
+function initConfigArgumentPattern(shellNames: readonly string[]): RegExp {
+  const shellAlternation = shellNames.join("|");
+  return new RegExp(`\\binit\\s+(?:${shellAlternation})\\b[^\\r\\n]*?--config\\s+(?:"([^"]+)"|'([^']+)'|([^\\s"')|]+))`, "i");
+}
+
+/**
+ * Expands the environment-variable and home-directory references a shell
+ * profile's own `--config` argument is written with — PowerShell's
+ * `$env:VAR`, and bash/zsh's `$VAR`, `${VAR}` and a leading `~` — into the
+ * literal path Chameleon needs to open the file. A reference to a variable
+ * that is not actually set is left unresolved rather than guessed, so the
+ * existsSync check that follows correctly reports it as missing.
+ */
+function expandPathReferences(rawPath: string, shell: Shell): string {
+  if (shell === "pwsh") {
+    return rawPath.replace(/\$env:(\w+)/gi, (reference, name: string) => process.env[name] ?? reference);
+  }
+  const withVariablesExpanded = rawPath.replace(
+    /\$\{(\w+)\}|\$(\w+)/g,
+    (reference, braced: string | undefined, bare: string | undefined) => {
+      const name = braced ?? bare;
+      return (name ? process.env[name] : undefined) ?? reference;
+    },
+  );
+  return withVariablesExpanded.startsWith("~") ? path.join(homedir(), withVariablesExpanded.slice(1)) : withVariablesExpanded;
+}
+
+/**
+ * Falls back to the config path a shell profile's own `oh-my-posh init`
+ * line names, for a shell Oh My Posh has never actually initialised in this
+ * session — no POSH_CONFIG or POSH_THEME to read yet, but the path is
+ * written verbatim in the profile that would set them (see CHM-36's "How").
+ * Returns undefined, never throws, when the profile does not exist or names
+ * no `--config` argument for this shell — the caller, which knows
+ * everything else it already tried, is what reports that absence.
+ */
+function configPathFromProfile(profilePath: string, shell: Shell): string | undefined {
+  const shellNames = initShellNamesFor(shell);
+  if (shellNames.length === 0 || !existsSync(profilePath)) return undefined;
+
+  const match = readFileSync(profilePath, "utf8").match(initConfigArgumentPattern(shellNames));
+  const rawPath = match?.[1] ?? match?.[2] ?? match?.[3];
+  return rawPath ? expandPathReferences(rawPath, shell) : undefined;
+}
+
+/**
+ * The config path an adapter actually applies to and reads: whatever the
+ * environment already names, falling back to `profilePath`'s own init line
+ * only when neither POSH_CONFIG nor POSH_THEME is set. This is a plain
+ * function call inside createOhMyPoshAdapter's own body, not another
+ * parameter default — a parameter default cannot see `profilePath`, the
+ * parameter declared after it, and every caller (test or real) needs the
+ * fallback to run against the exact profile it passed in, not the host's
+ * real one. See CHM-36.
+ */
+function resolveConfigPath(configPath: string | undefined, profilePath: string, shell: Shell): string | undefined {
+  // `||`, not `??` — an unset POSH_CONFIG/POSH_THEME can arrive here as an
+  // empty string (defaultConfigPath's own `||` chain bottoms out at "" when
+  // both env vars are literally set-but-empty, the shape a test's
+  // vi.stubEnv(name, "") produces), and that must fall through to the
+  // profile just the same as undefined would — every other emptiness check
+  // in this file already treats "" and undefined alike (see `!configPath`
+  // in applyOhMyPoshScheme and requireConfigPath).
+  return configPath || configPathFromProfile(profilePath, shell);
 }
 
 /**
@@ -113,12 +217,12 @@ function backupPathFor(targetPath: string): string {
 }
 
 /**
- * Oh My Posh is detected by its own installed binary, never by POSH_THEME.
- * POSH_THEME is set per-shell by `oh-my-posh init`, so a shell that has
- * never run init — a fresh git-bash, cmd, or a pwsh before its profile loads
- * — would otherwise report Oh My Posh as missing even when it is on PATH and
- * fully configured elsewhere. See CHM-15, which supersedes CHM-7 for
- * exactly this false negative.
+ * Oh My Posh is detected by its own installed binary, never by POSH_CONFIG
+ * or POSH_THEME. Both are set per-shell by `oh-my-posh init`, so a shell
+ * that has never run init — a fresh git-bash, cmd, or a pwsh before its
+ * profile loads — would otherwise report Oh My Posh as missing even when it
+ * is on PATH and fully configured elsewhere. See CHM-15, which supersedes
+ * CHM-7 for exactly this false negative.
  */
 function detectOhMyPosh(): boolean {
   const result = spawnSync(OH_MY_POSH_BINARY_NAME, ["--version"], { encoding: "utf8" });
@@ -457,6 +561,20 @@ function writePointer(pointerPath: string, configPath: string): void {
 }
 
 /**
+ * What Chameleon actually tried before giving up on finding an active
+ * config, named plainly rather than pointing at one variable current Oh My
+ * Posh never sets — see CHM-36, where "POSH_THEME is not set" survived
+ * every real apply failing because that was never the whole story.
+ */
+function noConfigDiscoveredMessage(profilePath: string, shell: Shell): string {
+  const initShellName = initShellNamesFor(shell)[0];
+  const initHint = initShellName
+    ? ` run \`oh-my-posh init ${initShellName} --config <path>\` (see ${profilePath}) so Oh My Posh sets one of those,`
+    : ` run \`oh-my-posh init\` for this shell so Oh My Posh sets one of those,`;
+  return `no active Oh My Posh config found — checked $POSH_CONFIG, $POSH_THEME, and ${profilePath} for an "oh-my-posh init" line naming --config;${initHint} or pass a config path directly`;
+}
+
+/**
  * Backs up the config and profile, swaps the config's palette table for
  * `scheme`'s resolved roles, extends `shell`'s own live-reload hook, and
  * points the pointer file at the config so every open shell — this one
@@ -464,7 +582,7 @@ function writePointer(pointerPath: string, configPath: string): void {
  */
 function applyOhMyPoshScheme(configPath: string | undefined, profilePath: string, pointerPath: string, shell: Shell, scheme: Scheme): void {
   if (!configPath) {
-    throw new Error("POSH_THEME is not set — no active Oh My Posh config to apply to");
+    throw new Error(noConfigDiscoveredMessage(profilePath, shell));
   }
   if (!existsSync(configPath)) {
     throw new Error(`no Oh My Posh config found at ${configPath}`);
@@ -495,13 +613,23 @@ function reloadOhMyPosh(): void {
 
 /**
  * Builds the Oh My Posh adapter. `configPath` defaults to whatever
- * POSH_THEME names in the current environment; `profilePath` and
- * `pointerPath` default to their real pwsh locations; `shell` defaults to
- * "pwsh", matching those defaults. All four are only ever overridden by
+ * POSH_CONFIG or POSH_THEME names in the current environment; `profilePath`
+ * and `pointerPath` default to their real pwsh locations; `shell` defaults
+ * to "pwsh", matching those defaults. All four are only ever overridden by
  * tests, which point them at fixture copies so nothing here touches a real
  * profile or config — real callers instead use createDefaultOhMyPoshAdapter,
  * which resolves the shell `ch` is actually running in and the profile that
  * goes with it.
+ *
+ * When `configPath` is not given (or the environment named none), this
+ * falls back to parsing `profilePath` itself for an `oh-my-posh init`
+ * line — the case CHM-36 exists for: a normal shell that Oh My Posh has
+ * never actually initialised this session, so POSH_CONFIG and POSH_THEME
+ * are not set yet even though the shell's own profile names a config. That
+ * resolution happens here, in the function body, rather than in
+ * `configPath`'s own default expression, because a parameter default cannot
+ * see `profilePath` — the parameter declared after it — and every caller
+ * needs the fallback to run against the exact profile it passed in.
  */
 export function createOhMyPoshAdapter(
   configPath: string | undefined = defaultConfigPath(),
@@ -509,12 +637,18 @@ export function createOhMyPoshAdapter(
   pointerPath: string = defaultPointerPath(),
   shell: Shell = "pwsh",
 ): OhMyPoshAdapter {
+  const resolvedConfigPath = resolveConfigPath(configPath, profilePath, shell);
   return {
     detect: () => detectOhMyPosh(),
-    read: () => readOhMyPoshConfig(requireConfigPath(configPath)),
-    apply: (scheme) => applyOhMyPoshScheme(configPath, profilePath, pointerPath, shell, scheme),
+    read: () => readOhMyPoshConfig(resolvedConfigPath ?? throwNoConfigDiscovered(profilePath, shell)),
+    apply: (scheme) => applyOhMyPoshScheme(resolvedConfigPath, profilePath, pointerPath, shell, scheme),
     reload: () => reloadOhMyPosh(),
   };
+}
+
+/** Throws noConfigDiscoveredMessage — a function, not an inline `if`, so it can sit in the `??` chain read() uses to fall back only when resolvedConfigPath is genuinely absent. */
+function throwNoConfigDiscovered(profilePath: string, shell: Shell): never {
+  throw new Error(noConfigDiscoveredMessage(profilePath, shell));
 }
 
 /**
@@ -531,7 +665,7 @@ export function createDefaultOhMyPoshAdapter(): OhMyPoshAdapter {
 
 function requireConfigPath(configPath: string | undefined): string {
   if (!configPath) {
-    throw new Error("POSH_THEME is not set — no active Oh My Posh config to read");
+    throw new Error("no active Oh My Posh config to read — checked $POSH_CONFIG and $POSH_THEME; run `oh-my-posh init` for your shell so one is set, or pass a config path directly");
   }
   return configPath;
 }

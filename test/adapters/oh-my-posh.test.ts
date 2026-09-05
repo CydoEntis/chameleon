@@ -1,6 +1,6 @@
 import type { SpawnSyncReturns } from "node:child_process";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -816,10 +816,19 @@ describe("oh my posh adapter — edge cases", () => {
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-edge-"));
+    // Never trust whatever the machine actually running these tests happens
+    // to have exported — a dev box with Oh My Posh live in the same shell
+    // running `npm test` would otherwise make this suite pass or fail
+    // depending on what shell it happened to be run from. See CHM-36: the
+    // bug this file exists to catch survived exactly because every earlier
+    // version of this test exported the variable it was meant to discover.
+    vi.stubEnv("POSH_CONFIG", "");
+    vi.stubEnv("POSH_THEME", "");
   });
 
   afterEach(() => {
     rmSync(stateDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   it("names the file and the problem when a config it must edit is shaped wrong", () => {
@@ -830,9 +839,19 @@ describe("oh my posh adapter — edge cases", () => {
     );
   });
 
-  it("refuses to apply when POSH_THEME names no config", () => {
-    const adapter = createOhMyPoshAdapter(undefined, path.join(stateDir, "profile.ps1"), path.join(stateDir, "pointer.json"));
+  it("names everything it tried — not just POSH_THEME — when no config can be discovered anywhere, env or profile (CHM-36)", () => {
+    // A real fixture profile with no oh-my-posh init line at all, not an
+    // absent file and not the host's own real profile — CHM-36's own
+    // complaint about the previous version of this test was that it "also
+    // depends on the host machine having no usable Oh My Posh profile,
+    // which makes it environment-dependent." This one does not.
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(profilePath, "Set-Alias ll Get-ChildItem\n", "utf8");
+    const adapter = createOhMyPoshAdapter(undefined, profilePath, path.join(stateDir, "pointer.json"));
+
+    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_CONFIG/);
     expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_THEME/);
+    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(profilePath);
   });
 
   it("refuses to apply when there is no config at the given path", () => {
@@ -948,5 +967,129 @@ describe("shell-specific live-reload hooks (CHM-25)", () => {
     expect(resultText).toContain("clink.promptfilter");
     expect(resultText).toContain("oh-my-posh print primary");
     expect(resultText).toContain("-- ch:begin");
+  });
+});
+
+// CHM-36: current Oh My Posh (31.x) sets POSH_CONFIG, not POSH_THEME, and a
+// normal shell that simply has not run `oh-my-posh init` yet this session —
+// the state every freshly opened, genuinely configured shell starts in —
+// has neither set at all. This is the fallback that makes `ch <theme>`
+// still work then: parsing the profile's own init line for the --config
+// argument it already carries, the same path Oh My Posh itself would read.
+describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is set (CHM-36)", () => {
+  let stateDir: string;
+  let pointerPath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-fallback-"));
+    pointerPath = path.join(stateDir, "pointer.json");
+    vi.stubEnv("POSH_CONFIG", "");
+    vi.stubEnv("POSH_THEME", "");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
+
+  /** Writes the ordinary config fixture at `configPath`, creating its parent directory first — the file a --config argument found in a profile is meant to resolve to. */
+  function writeTargetConfig(configPath: string): void {
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
+  }
+
+  function appliedAccent(configPath: string): string | undefined {
+    return (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette["accent"];
+  }
+
+  it("resolves a pwsh init line that routes the binary through a variable, expanding $env: in the --config path", () => {
+    // The reporter's own profile: the binary is never named "oh-my-posh"
+    // literally, and the --config path carries a $env: reference — the two
+    // things the first attempt at this fix missed.
+    const fakeUserProfile = path.join(stateDir, "home");
+    const targetConfigPath = path.join(fakeUserProfile, ".config", "oh-my-posh", "chips-solarized-light.omp.json");
+    writeTargetConfig(targetConfigPath);
+    vi.stubEnv("USERPROFILE", fakeUserProfile);
+
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(
+      profilePath,
+      [
+        String.raw`$ohMyPoshExe = "$env:LOCALAPPDATA\Programs\oh-my-posh\bin\oh-my-posh.exe"`,
+        String.raw`& $ohMyPoshExe init pwsh --config "$env:USERPROFILE\.config\oh-my-posh\chips-solarized-light.omp.json" | Invoke-Expression`,
+      ].join("\n"),
+      "utf8",
+    );
+
+    createOhMyPoshAdapter(undefined, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it("resolves a plain 'oh-my-posh init pwsh --config' line naming the binary literally", () => {
+    const targetConfigPath = path.join(stateDir, "theme.omp.json");
+    writeTargetConfig(targetConfigPath);
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${targetConfigPath}' | Invoke-Expression\n`, "utf8");
+
+    createOhMyPoshAdapter(undefined, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it("resolves a bash init line, expanding $HOME in an unquoted --config path", () => {
+    const fakeHome = path.join(stateDir, "home");
+    const targetConfigPath = path.join(fakeHome, ".poshthemes", "theme.omp.json");
+    writeTargetConfig(targetConfigPath);
+    vi.stubEnv("HOME", fakeHome);
+
+    const profilePath = path.join(stateDir, ".bashrc");
+    // Genuinely unquoted, and butted right up against the eval's own
+    // closing `)"` with no space — the shape that broke a naive `\S+`
+    // capture during review.
+    writeFileSync(profilePath, 'eval "$(oh-my-posh init bash --config $HOME/.poshthemes/theme.omp.json)"\n', "utf8");
+
+    createOhMyPoshAdapter(undefined, profilePath, pointerPath, "bash").apply(ZEROX96F_SCHEME);
+
+    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it("resolves a zsh init line, expanding a leading ~ in an unquoted --config path", () => {
+    const fakeHome = path.join(stateDir, "home");
+    const targetConfigPath = path.join(fakeHome, ".cache", "oh-my-posh", "theme.omp.json");
+    writeTargetConfig(targetConfigPath);
+    // Node's own os.homedir() consults $HOME on POSIX and %USERPROFILE% on
+    // Windows — stubbing both is what makes this deterministic on either.
+    vi.stubEnv("HOME", fakeHome);
+    vi.stubEnv("USERPROFILE", fakeHome);
+
+    const profilePath = path.join(stateDir, ".zshrc");
+    writeFileSync(profilePath, 'eval "$(oh-my-posh init zsh --config ~/.cache/oh-my-posh/theme.omp.json)"\n', "utf8");
+
+    createOhMyPoshAdapter(undefined, profilePath, pointerPath, "zsh").apply(ZEROX96F_SCHEME);
+
+    expect(appliedAccent(targetConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it("never falls back to the profile once POSH_CONFIG (or POSH_THEME) is actually set — the environment wins", () => {
+    const envConfigPath = path.join(stateDir, "env-theme.omp.json");
+    writeTargetConfig(envConfigPath);
+    const profileConfigPath = path.join(stateDir, "profile-theme.omp.json");
+    writeTargetConfig(profileConfigPath);
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${profileConfigPath}' | Invoke-Expression\n`, "utf8");
+
+    createOhMyPoshAdapter(envConfigPath, profilePath, pointerPath).apply(ZEROX96F_SCHEME);
+
+    expect(readFileSync(profileConfigPath, "utf8")).toBe(LF_CONFIG_FIXTURE);
+    expect(appliedAccent(envConfigPath)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it("finds nothing in a profile whose only init line is for a different shell", () => {
+    const profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${path.join(stateDir, "theme.omp.json")}' | Invoke-Expression\n`, "utf8");
+
+    const adapter = createOhMyPoshAdapter(undefined, profilePath, pointerPath, "bash");
+    expect(() => adapter.apply(ZEROX96F_SCHEME)).toThrow(/POSH_CONFIG/);
   });
 });

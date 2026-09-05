@@ -384,9 +384,10 @@ function targetMatchesPack(target: Target, payloads: ThemePackPayloads): boolean
  * what `ch current` and `ch doctor` both surface as drift (CHM-27). A target
  * that is not installed is never drift, same as everywhere else in this
  * file: absent is not failed, and there is nothing live to compare. A target
- * whose config cannot even be read — POSH_THEME unset after Oh My Posh was
- * detected, say — counts as drifted rather than being silently skipped,
- * since "cannot confirm it matches" is itself the fact worth surfacing.
+ * whose config cannot even be read — POSH_CONFIG and POSH_THEME both unset
+ * after Oh My Posh was detected, say — counts as drifted rather than being
+ * silently skipped, since "cannot confirm it matches" is itself the fact
+ * worth surfacing.
  * `userThemeDir` is only ever overridden by tests.
  */
 export function detectPackDrift(slug: string, userThemeDir?: string): readonly Target[] {
