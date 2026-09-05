@@ -1,7 +1,8 @@
 # Chameleon
 
 One command retints your whole terminal — Windows Terminal colours, your
-Oh My Posh prompt, and Herdr's UI — from a single palette. Nothing restarts.
+Oh My Posh prompt, Herdr's UI, and Claude Code's own theme — from a single
+palette. Nothing restarts, except Claude Code itself.
 
 ```sh
 npm i -g @cydoentis/chameleon
@@ -22,9 +23,12 @@ chm edit ...             # edit the Oh My Posh prompt layout
 
 ## Why
 
-Changing how a terminal looks today means editing three unrelated config files
-in three formats, and knowing which ones need a restart. All three tools reload
-live. Nobody needs to restart anything — that's the whole opportunity.
+Changing how a terminal looks today means editing several unrelated config
+files in several formats, and knowing which ones need a restart. Windows
+Terminal, Oh My Posh and Herdr all reload live; Claude Code does not watch its
+own settings.json, so `chm doctor` and every apply say plainly when it needs
+one. Nobody has to go hunting for that answer themselves — that's the whole
+opportunity.
 
 ## Status
 

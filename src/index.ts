@@ -4,6 +4,7 @@
  * tested without spawning a process.
  */
 
+import { claudeCodeMatchesAppearance, createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
 import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters/herdr.js";
 import {
@@ -23,7 +24,7 @@ import {
   windowsTerminalMatchesScheme,
   WINDOWS_TERMINAL_WINGET_PACKAGE_ID,
 } from "./adapters/windows-terminal.js";
-import type { Appearance } from "./palette/palette.js";
+import { toPalette, type Appearance } from "./palette/palette.js";
 import type { Scheme } from "./palette/scheme.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug, type LoadedThemePack } from "./palette/theme-pack-library.js";
 import type { ThemePackPayloads } from "./palette/theme-pack.js";
@@ -31,7 +32,7 @@ import type { ThemePackPayloads } from "./palette/theme-pack.js";
 export const VERSION = "0.0.0";
 
 /** Every target Chameleon can theme. An adapter exists per entry. */
-export const TARGETS = ["windows-terminal", "oh-my-posh", "herdr"] as const;
+export const TARGETS = ["windows-terminal", "oh-my-posh", "herdr", "claude-code"] as const;
 
 export type Target = (typeof TARGETS)[number];
 
@@ -88,6 +89,9 @@ export {
 export type { HerdrAdapter, HerdrConfig } from "./adapters/herdr.js";
 export { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
 
+export type { ClaudeCodeAdapter, ClaudeCodeSettings } from "./adapters/claude-code.js";
+export { createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
+
 export type { UserThemePackLoadResult } from "./adapters/user-theme-packs.js";
 export { defaultUserThemePackDir, loadUserThemePacks } from "./adapters/user-theme-packs.js";
 
@@ -138,6 +142,8 @@ export interface DoctorReport {
   readonly nerdFont: DoctorNerdFontCheck;
   /** Undefined when nothing has ever been applied — there is nothing recorded to compare live configs against. See CurrentPackReport.driftedTargets. */
   readonly drift: CurrentPackReport | undefined;
+  /** Claude Code's own live "theme" value — undefined when it is not installed, or its settings.json cannot be read. See CHM-49's "reports which theme is set." */
+  readonly claudeCodeTheme: string | undefined;
 }
 
 /**
@@ -191,6 +197,21 @@ function currentlySelectedFontFace(): string | undefined {
   }
 }
 
+/**
+ * Claude Code's own live "theme" value, or undefined when it is not
+ * installed or its settings.json cannot be read — the same "report the fact,
+ * never throw" contract as currentlySelectedFontFace. See CHM-49's "chm
+ * doctor gains a Claude Code row, and reports which theme is set."
+ */
+function currentClaudeCodeTheme(): string | undefined {
+  try {
+    const claudeCodeAdapter = createClaudeCodeAdapter();
+    return claudeCodeAdapter.detect() ? claudeCodeAdapter.read().theme : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function checkNerdFont(): DoctorNerdFontCheck {
   const isInstalled = detectSafely(detectNerdFontInstalled);
   const selectedFace = currentlySelectedFontFace();
@@ -227,9 +248,11 @@ export function runDoctorChecks(userThemeDir?: string, statePath?: string): Doct
       ),
       checkTarget("oh-my-posh", true, detectSafely(() => createDefaultOhMyPoshAdapter().detect()), OH_MY_POSH_WINGET_PACKAGE_ID),
       checkTarget("herdr", true, detectSafely(() => createHerdrAdapter().detect()), undefined),
+      checkTarget("claude-code", true, detectSafely(() => createClaudeCodeAdapter().detect()), undefined),
     ],
     nerdFont: checkNerdFont(),
     drift: currentPack(userThemeDir, statePath),
+    claudeCodeTheme: currentClaudeCodeTheme(),
   };
 }
 
@@ -258,6 +281,7 @@ interface DetectableTargetAdapter {
 function adapterForTarget(target: Target): DetectableTargetAdapter {
   if (target === "windows-terminal") return createWindowsTerminalAdapter();
   if (target === "oh-my-posh") return createDefaultOhMyPoshAdapter();
+  if (target === "claude-code") return createClaudeCodeAdapter();
   return createHerdrAdapter();
 }
 
@@ -279,9 +303,14 @@ function adapterForTarget(target: Target): DetectableTargetAdapter {
  *
  * Both `apply` and `reload` can return a detail worth telling the user
  * without failing anything — Oh My Posh's own profile-creation notice
- * (CHM-39) and Herdr's own "nothing running to reload" notice (CHM-45) —
- * and neither ever fires alongside the other, so returning whichever one
- * is defined never silently drops a message.
+ * (CHM-39), Herdr's own "nothing running to reload" notice (CHM-45), and
+ * Claude Code's own "restart Claude Code to see it" notice (CHM-49, since it
+ * has no live reload of its own to trigger) — and neither ever fires
+ * alongside the other, so returning whichever one is defined never silently
+ * drops a message. Claude Code's own `apply` takes the pack's appearance
+ * rather than the raw scheme — it renders from the terminal's own ANSI
+ * slots, already written by this same apply for windows-terminal, so there
+ * is no colour of its own to derive.
  */
 function applyToTarget(target: Target, scheme: Scheme, slug: string): string | undefined {
   if (target === "oh-my-posh") {
@@ -295,17 +324,22 @@ function applyToTarget(target: Target, scheme: Scheme, slug: string): string | u
     adapter.apply(scheme);
     return adapter.reload();
   }
+  if (target === "claude-code") {
+    const adapter = createClaudeCodeAdapter();
+    adapter.apply(toPalette(scheme).appearance);
+    return adapter.reload();
+  }
   const adapter = createHerdrAdapter();
   adapter.apply(scheme, slug);
   return adapter.reload();
 }
 
 /**
- * `target`'s own `undo*` function — undoWindowsTerminal, undoOhMyPosh or
- * undoHerdr — restoring it from the backup its adapter's most recent
- * `apply` wrote, then reloading it the same way applyToTarget does: a
- * restored config that nothing ever re-reads leaves the exact CHM-45 gap
- * `ch undo` would otherwise share with `ch <theme>`.
+ * `target`'s own `undo*` function — undoWindowsTerminal, undoOhMyPosh,
+ * undoHerdr or undoClaudeCode — restoring it from the backup its adapter's
+ * most recent `apply` wrote, then reloading it the same way applyToTarget
+ * does: a restored config that nothing ever re-reads leaves the exact CHM-45
+ * gap `ch undo` would otherwise share with `ch <theme>`.
  */
 function undoTarget(target: Target): string | undefined {
   if (target === "windows-terminal") {
@@ -315,6 +349,10 @@ function undoTarget(target: Target): string | undefined {
   if (target === "oh-my-posh") {
     undoOhMyPosh();
     return createDefaultOhMyPoshAdapter().reload();
+  }
+  if (target === "claude-code") {
+    undoClaudeCode();
+    return createClaudeCodeAdapter().reload();
   }
   undoHerdr();
   return createHerdrAdapter().reload();
@@ -411,13 +449,19 @@ export function undoAppliedPack(): readonly PackActionResult[] {
  * fields each adapter's own apply writes, so a mismatch means this target
  * has drifted from the pack it is being compared against (CHM-27). Only
  * ever called on a target already confirmed detected; see detectPackDrift.
+ * `appearance` is the manifest's own, not a per-target payload — Claude Code
+ * has no colour of its own to compare, only which of the six shipped themes
+ * (see adapters/claude-code.ts) the pack's appearance maps to.
  */
-function targetMatchesPack(target: Target, payloads: ThemePackPayloads): boolean {
+function targetMatchesPack(target: Target, payloads: ThemePackPayloads, appearance: Appearance): boolean {
   if (target === "windows-terminal") {
     return windowsTerminalMatchesScheme(createWindowsTerminalAdapter().read(), payloads["windows-terminal"]);
   }
   if (target === "oh-my-posh") {
     return ohMyPoshMatchesRoleHexes(createDefaultOhMyPoshAdapter().read(), payloads["oh-my-posh"]);
+  }
+  if (target === "claude-code") {
+    return claudeCodeMatchesAppearance(createClaudeCodeAdapter().read(), appearance);
   }
   return herdrMatchesRoleHexes(createHerdrAdapter().read(), payloads.herdr);
 }
@@ -438,7 +482,7 @@ export function detectPackDrift(slug: string, userThemeDir?: string): readonly T
   return TARGETS.filter((target) => {
     if (!detectSafely(() => adapterForTarget(target).detect())) return false;
     try {
-      return !targetMatchesPack(target, loaded.pack.payloads);
+      return !targetMatchesPack(target, loaded.pack.payloads, loaded.pack.manifest.appearance);
     } catch {
       return true;
     }
