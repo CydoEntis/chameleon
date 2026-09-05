@@ -5,14 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readActivePackState, writeActivePackState } from "../src/adapters/state.js";
 import {
   applyThemePack,
+  beginThemePreview,
   currentPack,
   detectPackDrift,
   findFamilySibling,
+  isPreviewInFlight,
   loadAllThemePacks,
   nextPackSlug,
   packSlugAtRow,
   previewThemePackToFileTargets,
   prevPackSlug,
+  resyncInterruptedPreview,
   undoAppliedPack,
 } from "../src/index.js";
 
@@ -71,11 +74,13 @@ vi.mock("../src/adapters/claude-code.js", () => ({
 
 let userThemeDir: string;
 let statePath: string;
+let previewStatePath: string;
 
 beforeEach(() => {
   const scratchDir = mkdtempSync(path.join(tmpdir(), "chameleon-pack-commands-"));
   userThemeDir = path.join(scratchDir, "themes"); // never created — bundled packs only, same as test/index.test.ts's empty-directory cases
   statePath = path.join(scratchDir, "active-pack.json");
+  previewStatePath = path.join(scratchDir, "preview-in-flight.json"); // CHM-55 — never the real machine path, same reasoning as statePath
 
   windowsTerminalAdapter.detect.mockReset().mockReturnValue(true);
   windowsTerminalAdapter.apply.mockReset();
@@ -109,7 +114,7 @@ afterEach(() => {
 
 describe("applyThemePack", () => {
   it("applies to every detected target and records the pack as active", () => {
-    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(report.results).toEqual([
       { target: "windows-terminal", status: "applied" },
@@ -130,7 +135,7 @@ describe("applyThemePack", () => {
   // program was never told to re-read it. This is the test that would have
   // caught that: it watches for the call itself, not just the config write.
   it("reloads every applied target after its write lands", () => {
-    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(windowsTerminalAdapter.reload).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.reload).toHaveBeenCalledTimes(1);
@@ -147,7 +152,7 @@ describe("applyThemePack", () => {
     ohMyPoshAdapter.detect.mockReturnValue(false);
     herdrAdapter.detect.mockReturnValue(false);
 
-    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(report.results).toEqual([
       { target: "windows-terminal", status: "applied" },
@@ -171,7 +176,7 @@ describe("applyThemePack", () => {
       throw new Error("no Herdr config found at C:\\fake\\config.toml");
     });
 
-    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(report.results).toEqual([
       { target: "windows-terminal", status: "applied" },
@@ -197,7 +202,7 @@ describe("applyThemePack", () => {
       throw new Error("POSH_THEME is not set — no active Oh My Posh config to apply to");
     });
 
-    const report = applyThemePack("tokyo-night-light", userThemeDir, statePath);
+    const report = applyThemePack("tokyo-night-light", userThemeDir, statePath, previewStatePath);
 
     expect(report.results).toEqual([
       { target: "windows-terminal", status: "applied" },
@@ -218,7 +223,7 @@ describe("applyThemePack", () => {
       throw new Error("Herdr did not reload: herdr reported \"status\" failed: duplicate key `text`");
     });
 
-    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(report.results).toEqual([
       { target: "windows-terminal", status: "applied" },
@@ -238,7 +243,7 @@ describe("applyThemePack", () => {
   it("reports Herdr not running as a note on a successful apply, not a failure", () => {
     herdrAdapter.reload.mockReturnValue("Herdr is not running — nothing to reload");
 
-    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(report.results).toEqual([
       { target: "windows-terminal", status: "applied" },
@@ -251,12 +256,12 @@ describe("applyThemePack", () => {
   });
 
   it("leaves a previously recorded pack in place when a later apply only partially succeeds", () => {
-    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
     herdrAdapter.apply.mockImplementation(() => {
       throw new Error("no Herdr config found at C:\\fake\\config.toml");
     });
 
-    applyThemePack("catppuccin-light", userThemeDir, statePath);
+    applyThemePack("catppuccin-light", userThemeDir, statePath, previewStatePath);
 
     // The pointer still names the last pack that actually took fully —
     // never the partially-applied one, and never wiped outright.
@@ -269,14 +274,14 @@ describe("applyThemePack", () => {
     herdrAdapter.detect.mockReturnValue(false);
     claudeCodeAdapter.detect.mockReturnValue(false);
 
-    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(readActivePackState(statePath)).toBeUndefined();
   });
 
   it("applying the same pack twice calls each installed target's apply twice with the identical scheme — the idempotency every adapter's own marker-scoped write already guarantees", () => {
-    applyThemePack("catppuccin-dark", userThemeDir, statePath);
-    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     expect(windowsTerminalAdapter.apply).toHaveBeenCalledTimes(2);
     const [firstCallScheme] = windowsTerminalAdapter.apply.mock.calls[0]!;
@@ -285,27 +290,33 @@ describe("applyThemePack", () => {
   });
 
   it("throws a message naming `chm themes` for a slug that does not exist", () => {
-    expect(() => applyThemePack("not-a-real-pack", userThemeDir, statePath)).toThrow(/no pack named "not-a-real-pack".*chm themes/);
+    expect(() => applyThemePack("not-a-real-pack", userThemeDir, statePath, previewStatePath)).toThrow(/no pack named "not-a-real-pack".*chm themes/);
   });
 });
 
-// CHM-52: the picker's own live preview now applies to Herdr, Oh My Posh and
+// CHM-52 had the picker's own live preview apply to Herdr, Oh My Posh and
 // Claude Code — the three targets a terminal escape-sequence preview cannot
 // reach — without ever touching Windows Terminal (previewed with escape
-// codes instead, see cli.ts's buildTerminalPreviewSequence) and without
-// recording anything as the active pack. A preview is not a command the
-// user issued, and must leave nothing for `chm current`/`chm undo` to
-// mistake for one.
+// codes instead, see cli.ts's buildTerminalPreviewSequence). CHM-55: that
+// left a multiplexer split between two themes — every pane but the one
+// running `chm` kept the old one, since escape codes repaint only the pane
+// that emits them. Windows Terminal's own settings.json is watched by
+// Windows Terminal itself and repaints every pane of it, so this now writes
+// there too, debounced the same as the other three — still never recording
+// anything as the active pack, since a preview is not a command the user
+// issued and must leave nothing for `chm current`/`chm undo` to mistake for
+// one.
 describe("previewThemePackToFileTargets", () => {
-  it("applies to oh-my-posh, herdr and claude-code, in that target order, but never windows-terminal", () => {
+  it("applies to every target, windows-terminal included, in TARGETS order", () => {
     const results = previewThemePackToFileTargets("catppuccin-dark", userThemeDir);
 
     expect(results).toEqual([
+      { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "applied" },
       { target: "claude-code", status: "applied" },
     ]);
-    expect(windowsTerminalAdapter.apply).not.toHaveBeenCalled();
+    expect(windowsTerminalAdapter.apply).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.apply).toHaveBeenCalledTimes(1);
     expect(herdrAdapter.apply).toHaveBeenCalledTimes(1);
     expect(claudeCodeAdapter.apply).toHaveBeenCalledTimes(1);
@@ -318,7 +329,7 @@ describe("previewThemePackToFileTargets", () => {
   });
 
   it("leaves a previously recorded active pack exactly as it was, even after previewing a different one", () => {
-    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
     previewThemePackToFileTargets("catppuccin-light", userThemeDir);
 
@@ -331,6 +342,7 @@ describe("previewThemePackToFileTargets", () => {
     const results = previewThemePackToFileTargets("catppuccin-dark", userThemeDir);
 
     expect(results).toEqual([
+      { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "skipped", detail: "not installed" },
       { target: "claude-code", status: "applied" },
@@ -346,6 +358,7 @@ describe("previewThemePackToFileTargets", () => {
     const results = previewThemePackToFileTargets("catppuccin-dark", userThemeDir);
 
     expect(results).toEqual([
+      { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "failed", detail: "no Herdr config found at C:\\fake\\config.toml" },
       { target: "claude-code", status: "applied" },
@@ -361,7 +374,7 @@ describe("undoAppliedPack", () => {
   it("restores every detected target and skips one that is not installed", () => {
     herdrAdapter.detect.mockReturnValue(false);
 
-    const results = undoAppliedPack();
+    const results = undoAppliedPack(previewStatePath);
 
     expect(results).toEqual([
       { target: "windows-terminal", status: "restored" },
@@ -380,7 +393,7 @@ describe("undoAppliedPack", () => {
       throw new Error("no backup found — nothing to undo");
     });
 
-    const results = undoAppliedPack();
+    const results = undoAppliedPack(previewStatePath);
 
     expect(results).toEqual([
       { target: "windows-terminal", status: "restored" },
@@ -394,7 +407,7 @@ describe("undoAppliedPack", () => {
   // gap `ch <theme>` had — the config on disk goes back to what it was, but
   // the running program keeps showing the pack `ch undo` was meant to undo.
   it("reloads every restored target after its backup is restored", () => {
-    undoAppliedPack();
+    undoAppliedPack(previewStatePath);
 
     expect(windowsTerminalAdapter.reload).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.reload).toHaveBeenCalledTimes(1);
@@ -412,7 +425,7 @@ describe("undoAppliedPack", () => {
       throw new Error("Herdr did not reload: herdr reported \"server_error\"");
     });
 
-    const results = undoAppliedPack();
+    const results = undoAppliedPack(previewStatePath);
 
     expect(results).toEqual([
       { target: "windows-terminal", status: "restored" },
@@ -425,7 +438,7 @@ describe("undoAppliedPack", () => {
   it("reports Herdr not running as a note on a successful restore, not a failure", () => {
     herdrAdapter.reload.mockReturnValue("Herdr is not running — nothing to reload");
 
-    const results = undoAppliedPack();
+    const results = undoAppliedPack(previewStatePath);
 
     expect(results).toEqual([
       { target: "windows-terminal", status: "restored" },
@@ -438,19 +451,29 @@ describe("undoAppliedPack", () => {
 
 describe("currentPack", () => {
   it("returns undefined when nothing has ever been applied", () => {
-    expect(currentPack(userThemeDir, statePath)).toBeUndefined();
+    expect(currentPack(userThemeDir, statePath, previewStatePath)).toBeUndefined();
   });
 
-  it("reports the applied pack's slug and name immediately after an apply, with no drift", () => {
-    applyThemePack("catppuccin-dark", userThemeDir, statePath);
+  it("reports the applied pack's slug and name immediately after an apply, with no drift and no preview in flight", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
 
-    expect(currentPack(userThemeDir, statePath)).toEqual({ slug: "catppuccin-dark", name: "Catppuccin Mocha", driftedTargets: [] });
+    expect(currentPack(userThemeDir, statePath, previewStatePath)).toEqual({
+      slug: "catppuccin-dark",
+      name: "Catppuccin Mocha",
+      driftedTargets: [],
+      previewInFlight: false,
+    });
   });
 
   it("still reports the slug when the recorded pack is no longer in the library, with no name and no drift to compare", () => {
     writeActivePackState("a-pack-that-got-deleted", statePath);
 
-    expect(currentPack(userThemeDir, statePath)).toEqual({ slug: "a-pack-that-got-deleted", name: undefined, driftedTargets: [] });
+    expect(currentPack(userThemeDir, statePath, previewStatePath)).toEqual({
+      slug: "a-pack-that-got-deleted",
+      name: undefined,
+      driftedTargets: [],
+      previewInFlight: false,
+    });
   });
 
   // CHM-27: this is the reproduction — a partial apply leaves the
@@ -461,11 +484,134 @@ describe("currentPack", () => {
     writeActivePackState("catppuccin-dark", statePath);
     ohMyPoshMatchesRoleHexesMock.mockReturnValue(false);
 
-    expect(currentPack(userThemeDir, statePath)).toEqual({
+    expect(currentPack(userThemeDir, statePath, previewStatePath)).toEqual({
       slug: "catppuccin-dark",
       name: "Catppuccin Mocha",
       driftedTargets: ["oh-my-posh"],
+      previewInFlight: false,
     });
+  });
+
+  // CHM-55: the reporter's own bug — a drift warning that was really just
+  // the picker running in another pane. A target disagreeing with the
+  // recorded pack because a preview marker is on record is the same
+  // driftedTargets list, but a different fact, and callers (cli.ts's
+  // formatDriftLine/runCurrent) must be able to tell the two apart.
+  it("reports previewInFlight when CHM-55's marker is on record, alongside whatever drift that preview caused", () => {
+    writeActivePackState("catppuccin-dark", statePath);
+    ohMyPoshMatchesRoleHexesMock.mockReturnValue(false);
+    beginThemePreview("catppuccin-dark", previewStatePath);
+
+    expect(currentPack(userThemeDir, statePath, previewStatePath)).toEqual({
+      slug: "catppuccin-dark",
+      name: "Catppuccin Mocha",
+      driftedTargets: ["oh-my-posh"],
+      previewInFlight: true,
+    });
+  });
+});
+
+// CHM-55: recorded when the picker opens, and must survive to the next `chm`
+// invocation if the process never gets to clean up after itself — a closed
+// terminal, `kill -9`, a crash. isPreviewInFlight is the read side; the write
+// side, beginThemePreview, is exercised throughout this describe block and
+// the resyncInterruptedPreview one below.
+describe("isPreviewInFlight", () => {
+  it("is false when no preview has ever started", () => {
+    expect(isPreviewInFlight(previewStatePath)).toBe(false);
+  });
+
+  it("is true once beginThemePreview has recorded one", () => {
+    beginThemePreview("catppuccin-dark", previewStatePath);
+
+    expect(isPreviewInFlight(previewStatePath)).toBe(true);
+  });
+
+  it("is false again after a real apply clears the marker", () => {
+    beginThemePreview("catppuccin-dark", previewStatePath);
+
+    applyThemePack("catppuccin-light", userThemeDir, statePath, previewStatePath);
+
+    expect(isPreviewInFlight(previewStatePath)).toBe(false);
+  });
+
+  it("is false again after a real undo clears the marker", () => {
+    beginThemePreview("catppuccin-dark", previewStatePath);
+
+    undoAppliedPack(previewStatePath);
+
+    expect(isPreviewInFlight(previewStatePath)).toBe(false);
+  });
+
+  it("clears even when the apply it accompanies fails partway through — a real command is authoritative regardless of outcome", () => {
+    beginThemePreview("catppuccin-dark", previewStatePath);
+    herdrAdapter.apply.mockImplementation(() => {
+      throw new Error("no Herdr config found at C:\\fake\\config.toml");
+    });
+
+    applyThemePack("catppuccin-light", userThemeDir, statePath, previewStatePath);
+
+    expect(isPreviewInFlight(previewStatePath)).toBe(false);
+  });
+});
+
+// CHM-55's own "the next chm invocation notices and offers to resync" —
+// `chm undo` (cli.ts's runUndo) is what calls this. Simulates the "killed
+// terminal" case the ticket calls out specifically: beginThemePreview runs
+// (as the picker's own open does), but neither cancel() nor commit() ever
+// gets to run its own applyThemePack/undoAppliedPack — the marker is left
+// exactly as a crash would leave it.
+describe("resyncInterruptedPreview", () => {
+  it("reports not-in-flight, and touches nothing, when no preview is recorded", () => {
+    const outcome = resyncInterruptedPreview(userThemeDir, statePath, previewStatePath);
+
+    expect(outcome).toEqual({ status: "not-in-flight" });
+    expect(windowsTerminalAdapter.apply).not.toHaveBeenCalled();
+  });
+
+  // The kill case: a confirmed theme was active, the picker opened (recording
+  // it as `originalSlug`) and previewed a different one to every target —
+  // including windows-terminal, CHM-55's own fix — then the process died
+  // without running cancel(). The next `chm undo` must put every target back
+  // on the confirmed theme, not on whatever the preview last wrote.
+  it("reapplies the last confirmed pack to every target, and clears the marker, when one was active before the preview", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
+    windowsTerminalAdapter.apply.mockClear();
+    beginThemePreview("catppuccin-dark", previewStatePath);
+    previewThemePackToFileTargets("gruvbox-dark", userThemeDir); // the "killed mid-preview" write, never cleaned up
+
+    const outcome = resyncInterruptedPreview(userThemeDir, statePath, previewStatePath);
+
+    expect(outcome.status).toBe("resynced-to-pack");
+    if (outcome.status === "resynced-to-pack") {
+      expect(outcome.report.slug).toBe("catppuccin-dark");
+      expect(outcome.report.isFullyApplied).toBe(true);
+    }
+    // windows-terminal actually gets reapplied to the confirmed pack's own
+    // scheme — not left on the preview's own gruvbox-dark, which is exactly
+    // what CHM-55's bug looked like from another pane.
+    const [lastAppliedScheme] = windowsTerminalAdapter.apply.mock.calls.at(-1)!;
+    expect(lastAppliedScheme.name).toBe("Catppuccin Mocha");
+    expect(isPreviewInFlight(previewStatePath)).toBe(false);
+  });
+
+  it("falls back to a plain undo, and clears the marker, when nothing had ever been confirmed", () => {
+    beginThemePreview(undefined, previewStatePath);
+    previewThemePackToFileTargets("gruvbox-dark", userThemeDir);
+
+    const outcome = resyncInterruptedPreview(userThemeDir, statePath, previewStatePath);
+
+    expect(outcome.status).toBe("resynced-to-undo");
+    if (outcome.status === "resynced-to-undo") {
+      expect(outcome.results).toEqual([
+        { target: "windows-terminal", status: "restored" },
+        { target: "oh-my-posh", status: "restored" },
+        { target: "herdr", status: "restored" },
+        { target: "claude-code", status: "restored" },
+      ]);
+    }
+    expect(undoWindowsTerminalMock).toHaveBeenCalledTimes(1);
+    expect(isPreviewInFlight(previewStatePath)).toBe(false);
   });
 });
 

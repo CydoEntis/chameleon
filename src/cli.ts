@@ -7,6 +7,7 @@ import {
   ANSI_SLOT_NAMES,
   applyPromptPack,
   applyThemePack,
+  beginThemePreview,
   buildLayoutSegment,
   createDefaultOhMyPoshAdapter,
   currentPack,
@@ -27,6 +28,7 @@ import {
   removeSegment,
   reorderSegment,
   restorePromptToMine,
+  resyncInterruptedPreview,
   ROLES,
   runDoctorChecks,
   SEGMENT_TYPES,
@@ -127,18 +129,35 @@ function isPackUnloadable(report: CurrentPackReport): boolean {
 }
 
 /**
+ * `chm current`/`chm doctor`'s shared wording for CHM-55's own distinction: a
+ * target disagreeing with the recorded pack because a preview is (or was)
+ * showing it is not the same fact as something else changing a config behind
+ * Chameleon's back — see CurrentPackReport's own `previewInFlight` doc
+ * comment. The reporter's own bug was exactly this: a drift warning that was
+ * really just the picker running. Names `chm undo` as the fix either way — it
+ * resyncs from ground truth when a preview marker is on record, see
+ * resyncInterruptedPreview.
+ */
+function formatPreviewInFlightNotice(driftedTargets: readonly Target[]): string {
+  return `a theme preview is in progress, or one did not exit cleanly — ${formatDriftedTargets(driftedTargets)} still ${matchesVerbFor(driftedTargets)} the previewed theme, not drift; run \`chm undo\` to resync`;
+}
+
+/**
  * `chm doctor`'s drift row: undefined when nothing has ever been applied —
  * there is nothing recorded to compare live configs against — "cannot
  * check" when the recorded pack no longer loads at all (CHM-34), "none"
  * when every detected target still matches the recorded pack, and otherwise
  * the targets that no longer do. See CHM-27: a partial apply that left
  * targets disagreeing must be visible here, not just at the moment it
- * happened.
+ * happened. CHM-55: a disagreement caused by a preview still (or recently)
+ * in flight is reported as that, never as drift — see
+ * formatPreviewInFlightNotice.
  */
 export function formatDriftLine(drift: DoctorReport["drift"]): string {
   if (!drift) return "drift: no pack has been applied yet — nothing to compare";
   if (isPackUnloadable(drift)) return `cannot check drift: pack "${drift.slug}" is no longer available`;
   if (drift.driftedTargets.length === 0) return `drift: none — every detected target matches "${drift.slug}"`;
+  if (drift.previewInFlight) return `drift: ${formatPreviewInFlightNotice(drift.driftedTargets)}`;
   return `drift: ${formatDriftedTargets(drift.driftedTargets)} no longer ${matchesVerbFor(drift.driftedTargets)} "${drift.slug}"`;
 }
 
@@ -406,9 +425,33 @@ function runApply(slug: string): number {
   }
 }
 
-/** `chm undo` — restores every detected target from the backup its own adapter's most recent apply wrote. */
+/**
+ * `chm undo` — restores every detected target from the backup its own
+ * adapter's most recent apply wrote. CHM-55: when a preview is recorded as
+ * in flight — a picker still running in another pane, or one that was killed
+ * outright — a plain backup restore is not trustworthy (a preview session can
+ * back up over itself several times before it ends, see
+ * resyncInterruptedPreview's own doc comment), so this resyncs from ground
+ * truth instead: the pack `chm` last recorded as active, reapplied fresh, or
+ * a plain restore when nothing had ever been applied. Either way, this is
+ * the fix `chm current`/`chm doctor` name when they report a preview in
+ * flight (formatPreviewInFlightNotice) — the "offer to resync" this ticket
+ * asks for.
+ */
 function runUndo(): number {
   try {
+    const resync = resyncInterruptedPreview();
+    if (resync.status === "resynced-to-pack") {
+      process.stdout.write(`chm undo: a theme preview was in progress — resynced every target back to "${resync.report.slug}"\n`);
+      printPackActionResults(resync.report.results);
+      return resync.report.isFullyApplied ? 0 : 1;
+    }
+    if (resync.status === "resynced-to-undo") {
+      process.stdout.write("chm undo: a theme preview was in progress — restoring your original configuration\n");
+      printPackActionResults(resync.results);
+      return didAnyTargetFail(resync.results) ? 1 : 0;
+    }
+
     const results = undoAppliedPack();
     printPackActionResults(results);
     return didAnyTargetFail(results) ? 1 : 0;
@@ -499,6 +542,10 @@ function runCurrent(args: readonly string[]): number {
   }
 
   if (current.driftedTargets.length > 0) {
+    if (current.previewInFlight) {
+      process.stderr.write(`chm current: ${formatPreviewInFlightNotice(current.driftedTargets)}\n`);
+      return 1;
+    }
     process.stderr.write(
       `chm current: drifted — ${formatDriftedTargets(current.driftedTargets)} no longer ${matchesVerbFor(current.driftedTargets)} "${current.slug}"\n`,
     );
@@ -514,7 +561,15 @@ interface PickerEntry {
   readonly origin: string;
   readonly groundHex: string;
   readonly accentHex: string;
-  /** The full scheme this entry's live preview paints with escape codes (CHM-52) — never written to a config file until Enter commits. */
+  /**
+   * The full scheme this entry's live preview paints with escape codes
+   * (CHM-52), instantly, in the pane the picker itself is running in. CHM-55:
+   * a debounced write of this same scheme also lands on Windows Terminal's
+   * own settings.json (previewThemePackToFileTargets) once the highlight
+   * settles, so every other pane of that terminal repaints too — escape
+   * codes reach only the one pane, but the file every pane's host reads from
+   * reaches all of them.
+   */
   readonly scheme: Scheme;
 }
 
@@ -613,14 +668,18 @@ export function buildTerminalResetSequence(): string {
 }
 
 /**
- * Idle delay, in ms, before a settled highlight triggers a real file write
- * for the targets a live terminal preview cannot reach — Herdr, Oh My Posh
- * and Claude Code all read their colours from a config file, never from the
- * terminal's own escape-sequence palette (see previewThemePackToFileTargets).
- * Long enough that holding an arrow key through the whole list costs one
- * file apply at the end, not one per row (CHM-52's "holding the key for 10
- * rows: 3.2s of frozen UI"); short enough that pausing on a row still writes
- * it within roughly the blink of an eye.
+ * Idle delay, in ms, before a settled highlight triggers a real file write to
+ * every target's own config (previewThemePackToFileTargets) — Herdr, Oh My
+ * Posh and Claude Code all read their colours from a config file, never from
+ * the terminal's own escape-sequence palette, and Windows Terminal's own
+ * settings.json is what CHM-55 added: the escape-sequence palette repaints
+ * only the pane the picker is running in, and this debounced write is what
+ * reaches every other pane of the same multiplexer, since Windows Terminal
+ * watches that file and repaints from it. Long enough that holding an arrow
+ * key through the whole list costs one file apply at the end, not one per
+ * row (CHM-52's "holding the key for 10 rows: 3.2s of frozen UI"); short
+ * enough that pausing on a row still writes it within roughly the blink of
+ * an eye.
  */
 const FILE_PREVIEW_DEBOUNCE_MS = 150;
 
@@ -714,11 +773,15 @@ function clearPickerFrame(lineCount: number): void {
  * see CHM-24's "applying as the cursor moves is the feature that makes this
  * tool worth using." CHM-52: that preview is now the terminal's own escape
  * codes (buildTerminalPreviewSequence), instant and file-free, plus a
- * debounced write for the three targets escape codes cannot reach
- * (previewThemePackToFileTargets) — never a synchronous four-target apply
- * per keystroke, and never anything Enter's own commit or Esc's own restore
- * has to race. Resolves to the slug Enter committed, or to `undefined` on
- * Esc/Ctrl-C, after restoring `originalSlug` (or undoing every target's
+ * debounced write to every target's own config, Windows Terminal included
+ * (previewThemePackToFileTargets, CHM-55) — never a synchronous four-target
+ * apply per keystroke, and never anything Enter's own commit or Esc's own
+ * restore has to race. The escape codes repaint only this pane, instantly;
+ * the debounced file write is what reaches every other pane of the same
+ * multiplexer once the highlight settles (CHM-55) — see beginThemePreview's
+ * own doc comment for what happens if this process never gets a chance to
+ * finish that job. Resolves to the slug Enter committed, or to `undefined`
+ * on Esc/Ctrl-C, after restoring `originalSlug` (or undoing every target's
  * change, when nothing was active before the picker opened) and restoring
  * the terminal's own colours the same way — see restoreTerminalPreview.
  */
@@ -726,6 +789,13 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
   const allEntries = packs.map(toPickerEntry);
   const startIndex = originalSlug === undefined ? 0 : Math.max(0, allEntries.findIndex((entry) => entry.slug === originalSlug));
   const originalEntry = originalSlug === undefined ? undefined : allEntries.find((entry) => entry.slug === originalSlug);
+
+  // CHM-55: recorded before the first frame ever renders, so a picker killed
+  // outright — a closed terminal, `kill -9`, a crash — before it can run its
+  // own cancel() still leaves something on record. Cleared by whichever real
+  // command ends this session: cancel's own applyThemePack/undoAppliedPack,
+  // or commit's caller applying the chosen slug (runThemes's own runApply).
+  beginThemePreview(originalSlug);
 
   return new Promise<string | undefined>((resolve) => {
     let filterText = "";
@@ -793,6 +863,9 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
       settledFileTargetPreview.cancel();
       restoreTerminalPreview();
       try {
+        // Both branches also clear CHM-55's own preview-in-flight marker
+        // (applyThemePack/undoAppliedPack do that themselves) — a clean Esc
+        // or Ctrl-C is exactly the "real command" that ends this session.
         if (originalSlug === undefined) {
           undoAppliedPack();
         } else {
@@ -815,9 +888,9 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
       const chosenSlug = visibleEntries[highlightedIndex]?.slug;
       if (chosenSlug === undefined) return;
       // The caller's own runApply(chosenSlug) is what actually commits — a
-      // full four-target apply, including windows-terminal, which no
-      // preview here ever wrote to disk (CHM-52's "Enter still applies to
-      // every target, including the ones a preview could not reach").
+      // full four-target apply that also clears CHM-55's own preview-in-
+      // flight marker (applyThemePack does that itself), the same "real
+      // command ends the session" contract cancel()'s own restore has.
       settledFileTargetPreview.cancel();
       stopListening();
       resolve(chosenSlug);
