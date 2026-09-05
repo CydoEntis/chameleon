@@ -259,8 +259,13 @@ function repairCandidate(
  * already clears its floor but landed on a colour an earlier role already
  * claimed — a role that reads identically to another is still broken, even
  * if both individually pass.
+ *
+ * Exported for palette/ansi.ts, which reuses this exact floor-and-collision
+ * check for the 16 ANSI slots — passing an empty takenHexes, since nothing
+ * there plays the part of two of Chameleon's own roles reading as
+ * identical (see repairAnsiSlots).
  */
-function repairTowardFloor(
+export function repairTowardFloor(
   candidate: RoleColor,
   groundHex: string,
   minRatio: number,

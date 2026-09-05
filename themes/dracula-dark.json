@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "Dracula",
-      "black": "#21222c",
+      "black": "#5a5b65",
       "red": "#ff5555",
       "green": "#50fa7b",
       "yellow": "#f1fa8c",

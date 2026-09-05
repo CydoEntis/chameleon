@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "Gruvbox Dark",
-      "black": "#282828",
+      "black": "#585858",
       "red": "#cc241d",
       "green": "#98971a",
       "yellow": "#d79921",
