@@ -4,6 +4,7 @@ import {
   contrastRatio,
   fromHsl,
   fromHueChromaMatch,
+  mix,
   relativeLuminance,
   toHsl,
 } from "../../src/palette/color.js";
@@ -128,5 +129,30 @@ describe("fromHueChromaMatch", () => {
     for (const matchValue of [0, 0.1, 0.25, 1 - chroma]) {
       expect(chromaOf(fromHueChromaMatch({ hue, chroma, matchValue }))).toBeCloseTo(chroma, 2);
     }
+  });
+});
+
+describe("mix", () => {
+  // #1e1e2e and #cdd6f4 are Catppuccin Mocha's real background and
+  // foreground — see vendor/iterm2-color-schemes/windows-terminal/Catppuccin Mocha.json.
+  const MOCHA_BACKGROUND = "#1e1e2e";
+  const MOCHA_FOREGROUND = "#cdd6f4";
+
+  it("returns hexA unchanged at fraction 0", () => {
+    expect(mix(MOCHA_BACKGROUND, MOCHA_FOREGROUND, 0)).toBe(MOCHA_BACKGROUND);
+  });
+
+  it("returns hexB unchanged at fraction 1", () => {
+    expect(mix(MOCHA_BACKGROUND, MOCHA_FOREGROUND, 1)).toBe(MOCHA_FOREGROUND);
+  });
+
+  it("averages each channel at fraction 0.5", () => {
+    // (0x1e + 0xcd) / 2 = 117.5 → 118 = 0x76; (0x1e + 0xd6) / 2 = 122 = 0x7a;
+    // (0x2e + 0xf4) / 2 = 145 = 0x91.
+    expect(mix(MOCHA_BACKGROUND, MOCHA_FOREGROUND, 0.5)).toBe("#767a91");
+  });
+
+  it("does not depend on argument order for a given fraction of travel", () => {
+    expect(mix(MOCHA_BACKGROUND, MOCHA_FOREGROUND, 0.25)).toBe(mix(MOCHA_FOREGROUND, MOCHA_BACKGROUND, 0.75));
   });
 });
