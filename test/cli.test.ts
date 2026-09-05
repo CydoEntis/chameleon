@@ -24,15 +24,23 @@ import {
 // formatDriftLine/hasDrift must branch on `name === undefined`, not just on
 // `driftedTargets.length`, or the two cases are indistinguishable.
 function unloadablePackDrift(slug: string): CurrentPackReport {
-  return { slug, name: undefined, driftedTargets: [] };
+  return { slug, name: undefined, driftedTargets: [], previewInFlight: false };
 }
 
 function matchingPackDrift(slug: string): CurrentPackReport {
-  return { slug, name: "Some Pack", driftedTargets: [] };
+  return { slug, name: "Some Pack", driftedTargets: [], previewInFlight: false };
 }
 
 function driftedPackDrift(slug: string): CurrentPackReport {
-  return { slug, name: "Some Pack", driftedTargets: ["oh-my-posh"] };
+  return { slug, name: "Some Pack", driftedTargets: ["oh-my-posh"], previewInFlight: false };
+}
+
+// CHM-55: the reporter's own bug was a drift warning that was really just
+// the picker running in another pane. `driftedTargets` looks identical to a
+// genuine CHM-27 partial-apply drift — only `previewInFlight` tells them
+// apart — so formatDriftLine must never collapse the two into one wording.
+function previewInFlightDrift(slug: string): CurrentPackReport {
+  return { slug, name: "Some Pack", driftedTargets: ["oh-my-posh"], previewInFlight: true };
 }
 
 describe("formatDriftLine", () => {
@@ -56,6 +64,24 @@ describe("formatDriftLine", () => {
 
   it("names the targets that no longer match the recorded pack", () => {
     expect(formatDriftLine(driftedPackDrift("catppuccin-dark"))).toBe('drift: oh-my-posh no longer matches "catppuccin-dark"');
+  });
+
+  // CHM-55: same driftedTargets as the case above, but previewInFlight
+  // changes the wording entirely — never "no longer matches", and never the
+  // word "drift" standing alone, since this is not drift.
+  it("reports a preview in flight instead of drift, naming the fix, when the marker is on record", () => {
+    const line = formatDriftLine(previewInFlightDrift("catppuccin-dark"));
+
+    expect(line).toContain("a theme preview is in progress");
+    expect(line).toContain("oh-my-posh");
+    expect(line).toContain("chm undo");
+    expect(line).not.toMatch(/no longer matches/);
+  });
+
+  it("still reports a clean match, not a preview notice, when nothing has actually drifted even with the marker on record", () => {
+    expect(formatDriftLine({ slug: "catppuccin-dark", name: "Some Pack", driftedTargets: [], previewInFlight: true })).toBe(
+      'drift: none — every detected target matches "catppuccin-dark"',
+    );
   });
 });
 
