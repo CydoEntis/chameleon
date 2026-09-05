@@ -5,7 +5,7 @@ import path from "node:path";
 import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
 import { isKnownRole, ROLES, type Role } from "../constants.js";
-import { resolveRoleHexes } from "../palette/repair.js";
+import { repairForegroundAgainstBackgrounds, resolveRoleHexes } from "../palette/repair.js";
 import { recoloredHexFor } from "../palette/role-mapping.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
@@ -327,15 +327,25 @@ function recoloredPaletteTable(existingPalette: Record<string, string> | undefin
   return { ...recoloredExisting, ...additions };
 }
 
+/** Builds the `p:<role>` reference pattern shared by every scan for a palette reference — either across a whole config's own text (palettesReferencedIn) or inside one segment field's own value (paletteReferencesIn). */
+function paletteReferencePattern(): RegExp {
+  return new RegExp(`${PALETTE_REF_PREFIX}([A-Za-z0-9_-]+)`, "g");
+}
+
 /** Every distinct role name a `p:role` reference names, anywhere in `configText` — segments, transient_prompt, secondary_prompt, and any template string a theme author wrote one into. A plain text scan, not a JSON walk, because a reference can sit inside a Go template string (see chips.omp.json's background_templates) that a JSON parser sees only as opaque text. */
 function palettesReferencedIn(configText: string): ReadonlySet<string> {
-  const referencePattern = new RegExp(`${PALETTE_REF_PREFIX}([A-Za-z0-9_-]+)`, "g");
   const referencedRoles = new Set<string>();
-  for (const match of configText.matchAll(referencePattern)) {
+  for (const match of configText.matchAll(paletteReferencePattern())) {
     const referencedRole = match[1];
     if (referencedRole !== undefined) referencedRoles.add(referencedRole);
   }
   return referencedRoles;
+}
+
+/** Every `p:role` reference `fieldValue` itself carries — zero for anything that is not a string, one for a plain "foreground"/"background" field, and possibly several for a `*_templates` string, which can name a different role per conditional branch (see chips.omp.json's foreground_templates). */
+function paletteReferencesIn(fieldValue: unknown): string[] {
+  if (typeof fieldValue !== "string") return [];
+  return [...fieldValue.matchAll(paletteReferencePattern())].flatMap((match) => (match[1] !== undefined ? [match[1]] : []));
 }
 
 /**
@@ -349,6 +359,161 @@ function assertNoDanglingPaletteReferences(configPath: string, configText: strin
   if (undefinedReferences.length > 0) {
     throw new Error(`${configPath} would reference undefined palette key(s): ${undefinedReferences.join(", ")}`);
   }
+}
+
+/**
+ * Suffix CHM-40 gives a foreign palette key's own repaired copy, when a
+ * segment's own background makes that key's recoloured value illegible
+ * there. The shared key itself is never touched — every other segment still
+ * reading fine off it keeps doing exactly that — only the one segment that
+ * failed gets repointed at a copy carrying the fix. See CHM-40's "adjust the
+ * foreground role for that segment rather than the shared palette entry."
+ */
+const SEGMENT_FOREGROUND_REPAIR_SUFFIX = "legible";
+
+/** One raw segment object, exactly as a config's own "blocks" array writes it — every property beyond the four this repair reads (`foreground`, `foreground_templates`, `background`, `background_templates`) is carried through unknown and untouched. */
+type RawSegment = Readonly<Record<string, unknown>>;
+
+/** Every hex `segment`'s own `background`/`background_templates` fields could resolve to through `paletteTable` — see paletteReferencesIn. A reference `paletteTable` does not define is skipped here; assertNoDanglingPaletteReferences is what reports that, once, by name. */
+function segmentBackgroundHexes(segment: RawSegment, paletteTable: Readonly<Record<string, string>>): string[] {
+  const backgroundTemplates = Array.isArray(segment["background_templates"]) ? segment["background_templates"] : [];
+  const backgroundKeys = [...paletteReferencesIn(segment["background"]), ...backgroundTemplates.flatMap(paletteReferencesIn)];
+  return backgroundKeys.flatMap((key) => (paletteTable[key] !== undefined ? [paletteTable[key]] : []));
+}
+
+/** Every distinct palette key `segment`'s own `foreground`/`foreground_templates` fields could render — see paletteReferencesIn. */
+function segmentForegroundKeys(segment: RawSegment): string[] {
+  const foregroundTemplates = Array.isArray(segment["foreground_templates"]) ? segment["foreground_templates"] : [];
+  return [...new Set([...paletteReferencesIn(segment["foreground"]), ...foregroundTemplates.flatMap(paletteReferencesIn)])];
+}
+
+/** `fieldValue` with every `p:foregroundKey` reference swapped for `p:overrideKey` — the plain-string case for a `foreground` field, or one entry of a `foreground_templates` array. Anything else (a non-string value, or a template naming a different role entirely) survives untouched. */
+function withRoleReferenceReplaced(fieldValue: unknown, foregroundKey: string, overrideKey: string): unknown {
+  if (typeof fieldValue !== "string") return fieldValue;
+  const ownReferencePattern = new RegExp(`${PALETTE_REF_PREFIX}${foregroundKey}(?![A-Za-z0-9_-])`, "g");
+  return fieldValue.replace(ownReferencePattern, `${PALETTE_REF_PREFIX}${overrideKey}`);
+}
+
+/** `segment` with every reference to `foregroundKey`, in its own `foreground` and `foreground_templates` fields only, repointed at `overrideKey`. `background`/`background_templates` are never touched — a segment keeps rendering exactly the candidate colours it always did, just with legible text over them. */
+function segmentWithForegroundRepointed(segment: RawSegment, foregroundKey: string, overrideKey: string): RawSegment {
+  const foregroundTemplates = segment["foreground_templates"];
+  return {
+    ...segment,
+    ...(segment["foreground"] !== undefined
+      ? { foreground: withRoleReferenceReplaced(segment["foreground"], foregroundKey, overrideKey) }
+      : {}),
+    ...(Array.isArray(foregroundTemplates)
+      ? { foreground_templates: foregroundTemplates.map((template) => withRoleReferenceReplaced(template, foregroundKey, overrideKey)) }
+      : {}),
+  };
+}
+
+/** A palette key for `foregroundKey`'s own repaired copy that collides with neither `paletteTable` nor an override this same apply already minted — see SEGMENT_FOREGROUND_REPAIR_SUFFIX. */
+function uniqueOverrideKey(foregroundKey: string, paletteTable: Readonly<Record<string, string>>, overridesSoFar: Readonly<Record<string, string>>): string {
+  const isTaken = (candidateKey: string) => candidateKey in paletteTable || candidateKey in overridesSoFar;
+  const baseKey = `${foregroundKey}-${SEGMENT_FOREGROUND_REPAIR_SUFFIX}`;
+  if (!isTaken(baseKey)) return baseKey;
+
+  let disambiguator = 2;
+  while (isTaken(`${baseKey}-${disambiguator}`)) disambiguator += 1;
+  return `${baseKey}-${disambiguator}`;
+}
+
+/**
+ * What repairing every segment's own foreground against its own
+ * background(s) produced: the config's own "blocks", with any offending
+ * segment repointed at a repaired copy of its foreground key, and the new
+ * palette entries those copies need. The entries are additions, never
+ * replacements of the shared key they were copied from — see
+ * SEGMENT_FOREGROUND_REPAIR_SUFFIX.
+ */
+interface SegmentForegroundRepairResult {
+  readonly blocks: readonly unknown[];
+  readonly additionalPaletteEntries: Readonly<Record<string, string>>;
+  readonly wasAnySegmentRepaired: boolean;
+}
+
+/**
+ * Walks every segment of every block, resolves its own foreground and
+ * background(s) through `paletteTable`, and requires TEXT_MIN_RATIO between
+ * them (see repairForegroundAgainstBackgrounds). CHM-37 kept every one of a
+ * scheme's own roles distinct from every other, but never checked the one
+ * pairing that actually renders together — a segment's own foreground
+ * against its own background — so a light role could still land on a light
+ * background. See CHM-40.
+ *
+ * A segment's foreground stays a single, shared colour — a segment with
+ * several background candidates (battery's own eight charge levels, say)
+ * gets one repaired override, not a different one per candidate, because
+ * Oh My Posh evaluates a segment's `foreground`/`foreground_templates`
+ * completely independently of its `background`/`background_templates`:
+ * nothing ties a foreground template to the background condition that
+ * happens to be true at the same render, so there is no safe way to hand
+ * two different candidates two different colours without risking the wrong
+ * one landing on the wrong background. repairForegroundAgainstBackgrounds
+ * already searches for the one colour that reads against every candidate at
+ * once, and ships its best effort even on the rare set of candidates no
+ * single colour can satisfy simultaneously — closer to legible than the
+ * original, even where it cannot clear the floor against all of them at
+ * once.
+ *
+ * A segment with no resolvable background (no `background`/
+ * `background_templates` field, or neither names a key `paletteTable`
+ * defines) is left alone — there is nothing to check its foreground
+ * against. A block or a segment this walk does not recognise (missing a
+ * `segments` array, or not an object at all) is passed through completely
+ * untouched, never dropped — this reads the config's own raw, unvalidated
+ * JSON rather than Chameleon's narrower `ch edit` layout model, precisely so
+ * a block type that model does not parse (e.g. "rprompt") still survives an
+ * apply.
+ *
+ * Two segments that need the exact same fix — the same foreground key
+ * failing against the exact same set of backgrounds, chips's own six
+ * project-language segments all sharing "generic error" among their
+ * candidates — are repointed at one shared override, not six near-identical
+ * ones, so a repair does not bloat the palette table with copies nobody
+ * asked to tell apart.
+ */
+function repairSegmentForegrounds(rawBlocks: readonly unknown[], paletteTable: Readonly<Record<string, string>>): SegmentForegroundRepairResult {
+  const additionalPaletteEntries: Record<string, string> = {};
+  const overrideKeysBySignature = new Map<string, string>();
+  let wasAnySegmentRepaired = false;
+
+  const repairSegment = (segment: RawSegment): RawSegment => {
+    const backgroundHexes = segmentBackgroundHexes(segment, paletteTable);
+    if (backgroundHexes.length === 0) return segment;
+
+    return segmentForegroundKeys(segment).reduce((currentSegment, foregroundKey) => {
+      const foregroundHex = paletteTable[foregroundKey];
+      if (foregroundHex === undefined) return currentSegment;
+      const repairedHex = repairForegroundAgainstBackgrounds(foregroundHex, backgroundHexes);
+      if (repairedHex === undefined) return currentSegment;
+
+      const signature = `${foregroundKey}|${backgroundHexes.join(",")}`;
+      let overrideKey = overrideKeysBySignature.get(signature);
+      if (overrideKey === undefined) {
+        overrideKey = uniqueOverrideKey(foregroundKey, paletteTable, additionalPaletteEntries);
+        overrideKeysBySignature.set(signature, overrideKey);
+        additionalPaletteEntries[overrideKey] = repairedHex;
+      }
+      wasAnySegmentRepaired = true;
+      return segmentWithForegroundRepointed(currentSegment, foregroundKey, overrideKey);
+    }, segment);
+  };
+
+  const blocks = rawBlocks.map((rawBlock) => {
+    if (typeof rawBlock !== "object" || rawBlock === null) return rawBlock;
+    const block = rawBlock as RawSegment;
+    if (!Array.isArray(block["segments"])) return block;
+    return {
+      ...block,
+      segments: block["segments"].map((rawSegment: unknown) =>
+        typeof rawSegment === "object" && rawSegment !== null ? repairSegment(rawSegment as RawSegment) : rawSegment,
+      ),
+    };
+  });
+
+  return { blocks, additionalPaletteEntries, wasAnySegmentRepaired };
 }
 
 /**
@@ -616,9 +781,11 @@ function noConfigDiscoveredMessage(profilePath: string, shell: Shell): string {
 
 /**
  * Backs up the config and profile, swaps the config's palette table for
- * `scheme`'s resolved roles, extends `shell`'s own live-reload hook, and
- * points the pointer file at the config so every open shell — this one
- * included — repaints on its next prompt. Returns upsertReloadHook's own
+ * `scheme`'s resolved roles, repairs any segment whose own foreground fails
+ * TEXT_MIN_RATIO against its own background (see repairSegmentForegrounds
+ * and CHM-40), extends `shell`'s own live-reload hook, and points the
+ * pointer file at the config so every open shell — this one included —
+ * repaints on its next prompt. Returns upsertReloadHook's own
  * profile-creation notice, or undefined when the profile already existed —
  * see CHM-39.
  */
@@ -638,10 +805,23 @@ function applyOhMyPoshScheme(
 
   copyFileSync(configPath, backupPathFor(configPath));
   const originalText = readFileSync(configPath, "utf8");
-  const existingPalette = readOhMyPoshConfig(configPath).palette;
-  const paletteTable = recoloredPaletteTable(existingPalette, resolveRoleHexes(scheme));
-  const updatedConfigText = upsertPaletteTable(configPath, originalText, paletteTable);
-  assertNoDanglingPaletteReferences(configPath, updatedConfigText, paletteTable);
+  const existingConfig = readOhMyPoshConfig(configPath);
+  const paletteTable = recoloredPaletteTable(existingConfig.palette, resolveRoleHexes(scheme));
+
+  // Segment repair reads the recoloured table above, never the config's own
+  // original palette — a segment must be checked against the colours it is
+  // about to render, not the ones it used to.
+  const segmentRepair = repairSegmentForegrounds(existingConfig.blocks ?? [], paletteTable);
+  const finalPaletteTable = { ...paletteTable, ...segmentRepair.additionalPaletteEntries };
+
+  let updatedConfigText = upsertPaletteTable(configPath, originalText, finalPaletteTable);
+  // "blocks" is left completely untouched — not even re-upserted — when no
+  // segment needed a fix, so the overwhelming common case still round-trips
+  // byte-identical outside the palette block, same as before this ticket.
+  if (segmentRepair.wasAnySegmentRepaired) {
+    updatedConfigText = upsertBlocksArray(configPath, updatedConfigText, [...segmentRepair.blocks]);
+  }
+  assertNoDanglingPaletteReferences(configPath, updatedConfigText, finalPaletteTable);
   writeFileSync(configPath, updatedConfigText, "utf8");
 
   const profileNotice = upsertReloadHook(shell, profilePath, pointerPath);
