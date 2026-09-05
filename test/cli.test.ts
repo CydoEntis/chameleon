@@ -13,6 +13,7 @@ import {
   formatThemeLine,
   hasDrift,
   normalizeThemeQuery,
+  renderPromptPickerFrame,
   resolveThemeQuery,
   shouldRestoreOriginalSelectionOnExit,
   USAGE,
@@ -174,6 +175,28 @@ describe("formatPromptListLine", () => {
     const line = formatPromptListLine(entry({ requiresNerdFont: true, nerdFontWarning: true }));
     expect(line).toContain("Lambda");
     expect(line).toContain("needs Nerd Font");
+  });
+});
+
+// CHM-57's own "Related" fix: Oh My Posh only paints at prompt-render time,
+// so moving the picker's highlight cannot repaint the prompt the way `chm
+// themes`' own live preview repaints the terminal. The reporter picked a
+// layout and could not tell whether anything had happened — this is what
+// the picker must say instead, so it never implies a preview that cannot
+// exist here.
+describe("renderPromptPickerFrame", () => {
+  function entry(overrides: Partial<PromptPackListEntry> = {}): PromptPackListEntry {
+    return { slug: "lambda", name: "Lambda", description: "Minimal single-line prompt.", requiresNerdFont: false, nerdFontWarning: false, ...overrides };
+  }
+
+  it("states that a layout takes effect on the next prompt, never implying a live preview", () => {
+    const [hintLine] = renderPromptPickerFrame([entry()], 0, "");
+    expect(hintLine).toContain("takes effect on your next prompt");
+  });
+
+  it("shows the filter, not the hint, once the user starts typing", () => {
+    const [filterLine] = renderPromptPickerFrame([entry()], 0, "lam");
+    expect(filterLine).toBe("filter: lam");
   });
 });
 

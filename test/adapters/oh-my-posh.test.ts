@@ -19,13 +19,17 @@ import {
   removeSegment,
   reorderSegment,
   undoOhMyPosh,
+  withActiveLayoutRespected,
   writeOhMyPoshLayout,
   type Layout,
   type LayoutSegment,
 } from "../../src/adapters/oh-my-posh.js";
 import { isWindows, resetPlatformProbeCache } from "../../src/adapters/platform.js";
+import { writePromptState } from "../../src/adapters/prompt-state.js";
 import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
+import { loadBundledPromptPacks } from "../../src/palette/prompt-pack-library.js";
+import { resolvePromptLayoutRoleReferences } from "../../src/palette/prompt-pack.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
@@ -1020,6 +1024,107 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
     // for every light theme, so if this never triggered, the achievability
     // check itself stopped running, not that the case stopped existing.
     expect(sawAnUnachievableSegment).toBe(true);
+  });
+});
+
+// CHM-57's own reproduction: `ch prompt half-life` switches a bundled layout
+// in, pointing the pointer at Chameleon's own bundled-prompt config; a plain
+// createOhMyPoshAdapter().apply() (what every theme apply used to call
+// unconditionally) has no idea that happened and writes `configPath` — the
+// user's own file — right back over the pointer, silently reverting the
+// layout while prompt-state.json still claims it is active. withActiveLayoutRespected
+// is the fix: it wraps an ordinary adapter's own `apply` and, whenever
+// prompt-state.json names an active layout, recolours that layout instead of
+// touching `configPath` at all.
+describe("withActiveLayoutRespected — a theme apply must not clobber an active bundled layout (CHM-57)", () => {
+  let stateDir: string;
+  let configPath: string;
+  let profilePath: string;
+  let pointerPath: string;
+  let promptStatePath: string;
+  let bundledConfigPath: string;
+
+  function readPointerConfigPath(): string {
+    return (JSON.parse(readFileSync(pointerPath, "utf8")) as { configPath: string }).configPath;
+  }
+
+  function buildAdapter() {
+    const baseAdapter = createOhMyPoshAdapter(configPath, profilePath, pointerPath);
+    return withActiveLayoutRespected(baseAdapter, profilePath, pointerPath, "pwsh", promptStatePath, bundledConfigPath);
+  }
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm57-"));
+    configPath = path.join(stateDir, "my-prompt.omp.json");
+    profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
+    pointerPath = path.join(stateDir, "oh-my-posh-pointer.json");
+    promptStatePath = path.join(stateDir, "prompt-state.json");
+    bundledConfigPath = path.join(stateDir, "bundled-prompt.omp.json");
+    writeFileSync(configPath, JSON.stringify({ palette: { accent: "#ffffff" }, blocks: [] }, null, 2), "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("reproduces the ticket's own sequence: apply a layout, then a theme — the pointer still names the bundled layout, never the user's own config", () => {
+    // Simulates `ch prompt half-life` having already run: prompt-state.json
+    // records it active, and the pointer names the bundled file it wrote.
+    writePromptState({ originalConfigPath: configPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
+    writeFileSync(bundledConfigPath, "{}", "utf8");
+    writeFileSync(pointerPath, JSON.stringify({ configPath: bundledConfigPath, updatedAtMs: 1 }), "utf8");
+
+    buildAdapter().apply(ZEROX96F_SCHEME); // `ch nord-dark`, in the ticket's own words
+
+    expect(readPointerConfigPath()).toBe(bundledConfigPath);
+    // The user's own config, at whatever the pointer named before the
+    // layout was ever switched in, is never opened by this apply either.
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ palette: { accent: "#ffffff" }, blocks: [] });
+  });
+
+  it("recolours the active layout's own p:<role> references to the new theme, not just repoints the pointer", () => {
+    writePromptState({ originalConfigPath: configPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
+
+    buildAdapter().apply(ZEROX96F_SCHEME);
+
+    const written: unknown = JSON.parse(readFileSync(bundledConfigPath, "utf8"));
+    const halfLife = loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === "half-life")!;
+    const expected = resolvePromptLayoutRoleReferences(halfLife.layout, resolveRoleHexes(ZEROX96F_SCHEME));
+    expect(written).toEqual(expected);
+    expect(JSON.stringify(written)).not.toContain("p:");
+  });
+
+  it("recolours the active layout for every one of the 26 bundled themes, leaving it active and the pointer correct every time", () => {
+    writePromptState({ originalConfigPath: configPath, activeSlug: "spaceship", updatedAtMs: 1 }, promptStatePath);
+    const adapter = buildAdapter();
+    const curatedPacks = loadCuratedThemePacks();
+    expect(curatedPacks.length).toBe(26);
+
+    for (const pack of curatedPacks) {
+      adapter.apply(pack.payloads["windows-terminal"]);
+
+      expect(readPointerConfigPath()).toBe(bundledConfigPath);
+      const written = JSON.stringify(JSON.parse(readFileSync(bundledConfigPath, "utf8")));
+      expect(written).not.toContain("p:");
+    }
+  });
+
+  it("falls back to the ordinary config-swap path once no layout is active — 'mine' is untouched by this fix", () => {
+    // No prompt-state.json at all — the common case, nothing has ever
+    // switched a bundled layout in.
+    buildAdapter().apply(ZEROX96F_SCHEME);
+
+    expect(readPointerConfigPath()).toBe(configPath);
+    expect(existsSync(bundledConfigPath)).toBe(false);
+  });
+
+  it("falls back to the ordinary config-swap path once `ch prompt mine` cleared the active slug", () => {
+    writePromptState({ originalConfigPath: configPath, activeSlug: undefined, updatedAtMs: 1 }, promptStatePath);
+
+    buildAdapter().apply(ZEROX96F_SCHEME);
+
+    expect(readPointerConfigPath()).toBe(configPath);
+    expect(existsSync(bundledConfigPath)).toBe(false);
   });
 });
 
