@@ -4,6 +4,7 @@ import { emitKeypressEvents, type Key } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
   addSegment,
+  ANSI_SLOT_NAMES,
   applyThemePack,
   buildLayoutSegment,
   currentPack,
@@ -15,6 +16,7 @@ import {
   loadAllThemePacks,
   moveSegmentBetweenBlocks,
   nextPackSlug,
+  previewThemePackToFileTargets,
   prevPackSlug,
   readOhMyPoshLayout,
   removeSegment,
@@ -25,6 +27,7 @@ import {
   undoAppliedPack,
   VERSION,
   writeOhMyPoshLayout,
+  type AnsiSlotName,
   type Appearance,
   type CurrentPackReport,
   type DoctorNerdFontCheck,
@@ -35,6 +38,7 @@ import {
   type LoadedThemePack,
   type PackActionResult,
   type Role,
+  type Scheme,
   type SegmentType,
   type Target,
 } from "./index.js";
@@ -484,13 +488,15 @@ function runCurrent(args: readonly string[]): number {
   return 0;
 }
 
-/** One picker row: enough to render a line with two colour swatches, filter it by slug or name, and apply it. */
+/** One picker row: enough to render a line with two colour swatches, filter it by slug or name, apply it, and preview it live. */
 interface PickerEntry {
   readonly slug: string;
   readonly name: string;
   readonly origin: string;
   readonly groundHex: string;
   readonly accentHex: string;
+  /** The full scheme this entry's live preview paints with escape codes (CHM-52) — never written to a config file until Enter commits. */
+  readonly scheme: Scheme;
 }
 
 function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
@@ -501,7 +507,134 @@ function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
     origin: loaded.origin,
     groundHex: roleHexes.ground,
     accentHex: roleHexes.accent,
+    scheme: loaded.pack.payloads["windows-terminal"],
   };
+}
+
+// --- Live terminal preview (CHM-52) -----------------------------------------
+//
+// previewHighlighted() used to call applyThemePack on every arrow key — a
+// full four-target apply, each target backed up and written to disk, ~324ms
+// measured in-process. The picker's own preview only ever needs the
+// *terminal* to repaint; nothing here is written to a file, and nothing here
+// is undo-able, because nothing here is a config edit.
+
+/** OSC 4's own palette index for each of the 16 ANSI slots, in the numbering every terminal shares — see ANSI_SLOT_NAMES. */
+const OSC_PALETTE_INDEX_BY_SLOT: Readonly<Record<AnsiSlotName, number>> = {
+  black: 0,
+  red: 1,
+  green: 2,
+  yellow: 3,
+  blue: 4,
+  purple: 5,
+  cyan: 6,
+  white: 7,
+  brightBlack: 8,
+  brightRed: 9,
+  brightGreen: 10,
+  brightYellow: 11,
+  brightBlue: 12,
+  brightPurple: 13,
+  brightCyan: 14,
+  brightWhite: 15,
+};
+
+/** OSC codes for the terminal's own foreground, background and cursor colour — outside the 16 numbered ANSI slots (OSC 4) an application paints text with directly. */
+const OSC_FOREGROUND_CODE = 10;
+const OSC_BACKGROUND_CODE = 11;
+const OSC_CURSOR_CODE = 12;
+
+/** BEL — the OSC string terminator every terminal Chameleon targets accepts. The alternative, ST (`\x1b\\`), works too, but BEL is shorter and just as universal. */
+const OSC_TERMINATOR = "\x07";
+
+function oscSetPaletteColor(paletteIndex: number, hex: string): string {
+  return `\x1b]4;${paletteIndex};${hex}${OSC_TERMINATOR}`;
+}
+
+function oscSetSpecialColor(oscCode: number, hex: string): string {
+  return `\x1b]${oscCode};${hex}${OSC_TERMINATOR}`;
+}
+
+function oscResetPaletteColor(paletteIndex: number): string {
+  return `\x1b]104;${paletteIndex}${OSC_TERMINATOR}`;
+}
+
+function oscResetSpecialColor(oscCode: number): string {
+  return `\x1b]${oscCode}${OSC_TERMINATOR}`;
+}
+
+/**
+ * Repaints the terminal's own colours instantly: OSC 4 sets the 16 ANSI
+ * slots an application paints text with, OSC 10/11/12 set the foreground,
+ * background and cursor outside any one of those slots. No config file is
+ * touched and nothing here is written that `chm undo` would ever need to
+ * know about — see CLAUDE.md's "Preview the terminal with escape sequences,
+ * not file writes."
+ */
+export function buildTerminalPreviewSequence(scheme: Scheme): string {
+  const paletteSequences = ANSI_SLOT_NAMES.map((slotName) => oscSetPaletteColor(OSC_PALETTE_INDEX_BY_SLOT[slotName], scheme[slotName]));
+  return [
+    ...paletteSequences,
+    oscSetSpecialColor(OSC_FOREGROUND_CODE, scheme.foreground),
+    oscSetSpecialColor(OSC_BACKGROUND_CODE, scheme.background),
+    oscSetSpecialColor(OSC_CURSOR_CODE, scheme.cursorColor),
+  ].join("");
+}
+
+/**
+ * The reverse of buildTerminalPreviewSequence, for Esc when no pack was
+ * active before the picker opened: resets every ANSI slot and the
+ * foreground/background/cursor to the terminal's own configured colours
+ * (OSC 104 and 110/111/112) rather than previewing a scheme that was never
+ * actually applied. See runInteractivePicker's restoreTerminalPreview.
+ */
+export function buildTerminalResetSequence(): string {
+  const paletteResets = ANSI_SLOT_NAMES.map((slotName) => oscResetPaletteColor(OSC_PALETTE_INDEX_BY_SLOT[slotName]));
+  return [...paletteResets, oscResetSpecialColor(110), oscResetSpecialColor(111), oscResetSpecialColor(112)].join("");
+}
+
+/**
+ * Idle delay, in ms, before a settled highlight triggers a real file write
+ * for the targets a live terminal preview cannot reach — Herdr, Oh My Posh
+ * and Claude Code all read their colours from a config file, never from the
+ * terminal's own escape-sequence palette (see previewThemePackToFileTargets).
+ * Long enough that holding an arrow key through the whole list costs one
+ * file apply at the end, not one per row (CHM-52's "holding the key for 10
+ * rows: 3.2s of frozen UI"); short enough that pausing on a row still writes
+ * it within roughly the blink of an eye.
+ */
+const FILE_PREVIEW_DEBOUNCE_MS = 150;
+
+/**
+ * Schedules `applyToFileTargets` to run once movement settles, superseding
+ * rather than queuing: calling `schedule` again before the pending one has
+ * fired cancels it outright, so holding an arrow key through the whole list
+ * costs one file apply, never one per row (CHM-52). `cancel` is what Enter
+ * and Esc both call before they take over the final write themselves — a
+ * settle firing after the picker has already closed would race whatever
+ * commit or restore just ran.
+ */
+export function createSettledFileTargetPreview(
+  applyToFileTargets: (slug: string) => void,
+  debounceMs: number = FILE_PREVIEW_DEBOUNCE_MS,
+): { schedule(slug: string): void; cancel(): void } {
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function cancel(): void {
+    if (pendingTimer === undefined) return;
+    clearTimeout(pendingTimer);
+    pendingTimer = undefined;
+  }
+
+  function schedule(slug: string): void {
+    cancel();
+    pendingTimer = setTimeout(() => {
+      pendingTimer = undefined;
+      applyToFileTargets(slug);
+    }, debounceMs);
+  }
+
+  return { schedule, cancel };
 }
 
 const HEX_COLOR_PATTERN = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
@@ -558,15 +691,22 @@ function clearPickerFrame(lineCount: number): void {
 /**
  * Drives the arrow-key picker: renders the filtered list with colour
  * swatches, moves the highlight on the arrow keys, narrows the list as the
- * user types, and applies the highlighted pack immediately on every move —
+ * user types, and previews the highlighted pack immediately on every move —
  * see CHM-24's "applying as the cursor moves is the feature that makes this
- * tool worth using." Resolves to the slug Enter committed, or to `undefined`
- * on Esc/Ctrl-C, after restoring `originalSlug` (or undoing every target's
- * change, when nothing was active before the picker opened).
+ * tool worth using." CHM-52: that preview is now the terminal's own escape
+ * codes (buildTerminalPreviewSequence), instant and file-free, plus a
+ * debounced write for the three targets escape codes cannot reach
+ * (previewThemePackToFileTargets) — never a synchronous four-target apply
+ * per keystroke, and never anything Enter's own commit or Esc's own restore
+ * has to race. Resolves to the slug Enter committed, or to `undefined` on
+ * Esc/Ctrl-C, after restoring `originalSlug` (or undoing every target's
+ * change, when nothing was active before the picker opened) and restoring
+ * the terminal's own colours the same way — see restoreTerminalPreview.
  */
 async function runInteractivePicker(packs: readonly LoadedThemePack[], originalSlug: string | undefined): Promise<string | undefined> {
   const allEntries = packs.map(toPickerEntry);
   const startIndex = originalSlug === undefined ? 0 : Math.max(0, allEntries.findIndex((entry) => entry.slug === originalSlug));
+  const originalEntry = originalSlug === undefined ? undefined : allEntries.find((entry) => entry.slug === originalSlug);
 
   return new Promise<string | undefined>((resolve) => {
     let filterText = "";
@@ -575,17 +715,22 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
     let previousFrameLineCount = 0;
     let lastPreviewedSlug: string | undefined;
 
+    const settledFileTargetPreview = createSettledFileTargetPreview((slug) => {
+      try {
+        previewThemePackToFileTargets(slug);
+      } catch {
+        // Same best-effort contract previewHighlighted always had — a
+        // broken preview write is reported properly once Enter commits —
+        // runApply reports it then.
+      }
+    });
+
     function previewHighlighted(): void {
       const entry = visibleEntries[highlightedIndex];
       if (entry === undefined || entry.slug === lastPreviewedSlug) return;
       lastPreviewedSlug = entry.slug;
-      try {
-        applyThemePack(entry.slug);
-      } catch {
-        // A broken preview apply is reported properly once Enter commits —
-        // runApply reports it then. Ignoring it here only means this one
-        // frame's preview did not take, not that anything is actually wrong.
-      }
+      process.stdout.write(buildTerminalPreviewSequence(entry.scheme));
+      settledFileTargetPreview.schedule(entry.slug);
     }
 
     function redraw(): void {
@@ -617,7 +762,17 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
       process.stdout.write("\x1b[?25h");
     }
 
+    /** The reverse of a live preview (CHM-52): re-paints the exact scheme that was active before the picker opened, or resets to the terminal's own configured colours when nothing was. */
+    function restoreTerminalPreview(): void {
+      process.stdout.write(originalEntry ? buildTerminalPreviewSequence(originalEntry.scheme) : buildTerminalResetSequence());
+    }
+
     function cancel(): void {
+      // A pending debounced write must never land after Esc has already
+      // decided what every target's real state should be — see
+      // createSettledFileTargetPreview's own "supersede, not queue".
+      settledFileTargetPreview.cancel();
+      restoreTerminalPreview();
       try {
         if (originalSlug === undefined) {
           undoAppliedPack();
@@ -640,6 +795,11 @@ async function runInteractivePicker(packs: readonly LoadedThemePack[], originalS
       // applied from before the filter narrowed to nothing.
       const chosenSlug = visibleEntries[highlightedIndex]?.slug;
       if (chosenSlug === undefined) return;
+      // The caller's own runApply(chosenSlug) is what actually commits — a
+      // full four-target apply, including windows-terminal, which no
+      // preview here ever wrote to disk (CHM-52's "Enter still applies to
+      // every target, including the ones a preview could not reach").
+      settledFileTargetPreview.cancel();
       stopListening();
       resolve(chosenSlug);
     }
