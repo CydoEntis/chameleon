@@ -6,6 +6,8 @@ import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
 import { isKnownRole, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
 import { repairForegroundAgainstBackgrounds, resolveRoleHexes } from "../palette/repair.js";
+import { loadBundledPromptPacks } from "../palette/prompt-pack-library.js";
+import { resolvePromptLayoutRoleReferences } from "../palette/prompt-pack.js";
 import { recoloredHexFor } from "../palette/role-mapping.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
@@ -17,6 +19,7 @@ import {
   upsertMarkedBlock,
 } from "./marked-json-edit.js";
 import { detectShell, ohMyPoshProfilePathFor, stateDir, type Shell } from "./platform.js";
+import { defaultPromptStatePath, readPromptState } from "./prompt-state.js";
 
 /** Suffix for the pre-apply copy of a config or profile file that `undoOhMyPosh` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -90,6 +93,22 @@ function readPointerFile(pointerPath: string): z.infer<typeof PointerSchema> | u
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether the pointer file currently names Chameleon's own bundled-prompt
+ * config — the one fact `ch current`'s prompt line must agree with (CHM-57),
+ * never prompt-state.json alone: prompt-state.json can still say a layout is
+ * active after something else clobbered the pointer back to the user's own
+ * config (exactly this ticket's own reproduction), and only the pointer is
+ * what a freshly started shell would actually load.
+ * `pointerPath`/`bundledConfigPath` are only ever overridden by tests.
+ */
+export function pointerNamesBundledPromptConfig(
+  pointerPath: string = defaultPointerPath(),
+  bundledConfigPath: string = defaultBundledPromptConfigPath(),
+): boolean {
+  return readPointerFile(pointerPath)?.configPath === bundledConfigPath;
 }
 
 export interface OhMyPoshAdapter {
@@ -1193,6 +1212,12 @@ function reloadOhMyPosh(): string | undefined {
  * `configPath`'s own default expression, because a parameter default cannot
  * see `profilePath` — the parameter declared after it — and every caller
  * needs the fallback to run against the exact profile it passed in.
+ *
+ * This never checks whether a bundled prompt layout is currently active —
+ * see withActiveLayoutRespected, below, for that. Keeping it out of here is
+ * what lets every existing test built on this function's own four
+ * parameters keep working unchanged: this function's own `apply` always
+ * writes `configPath`, exactly as it always has.
  */
 export function createOhMyPoshAdapter(
   configPath: string | undefined = defaultConfigPath(),
@@ -1215,15 +1240,68 @@ function throwNoConfigDiscovered(profilePath: string, shell: Shell): never {
 }
 
 /**
+ * Wraps `adapter`'s own `apply` so a bundled prompt layout, once active,
+ * owns the pointer through every later theme apply — CHM-57. Before this,
+ * every theme apply overwrote whatever config `adapter` itself resolved at
+ * construction unconditionally, even while prompt-state.json recorded a
+ * bundled layout as active, which silently reverted a chosen layout the
+ * moment any theme was applied afterwards, while `ch current` kept
+ * reporting the layout as active from prompt-state.json alone.
+ *
+ * A bundled layout is authored purely in `p:<role>` references (CHM-46), so
+ * recolouring it for a new theme is just re-resolving those references
+ * again, through the same applyPromptLayout `ch prompt <name>` itself uses —
+ * unlike `adapter`'s own repairSegmentForegrounds pass for a stranger's
+ * arbitrary palette, no segment-foreground repair is needed here: every
+ * bundled layout already clears TEXT_MIN_RATIO against every theme, checked
+ * at build time (see prompt-pack.ts's findContrastFailures). A recorded slug
+ * that no longer names a loadable layout (e.g. an install that dropped one
+ * since it was applied) falls through to `adapter`'s own ordinary `apply`
+ * instead — there is nothing left to recolour, and the user's own config is
+ * exactly what the pointer would otherwise still be naming.
+ *
+ * `promptStatePath`/`bundledConfigPath` are only ever overridden by tests,
+ * which build `adapter` from createOhMyPoshAdapter's own fixture paths and
+ * wrap it here with their own temp state file — real callers only ever
+ * reach this through createDefaultOhMyPoshAdapter.
+ */
+export function withActiveLayoutRespected(
+  adapter: OhMyPoshAdapter,
+  profilePath: string,
+  pointerPath: string,
+  shell: Shell,
+  promptStatePath: string = defaultPromptStatePath(),
+  bundledConfigPath: string = defaultBundledPromptConfigPath(),
+): OhMyPoshAdapter {
+  return {
+    ...adapter,
+    apply: (scheme) => {
+      const activeSlug = readPromptState(promptStatePath)?.activeSlug;
+      const activeLayout =
+        activeSlug !== undefined ? loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === activeSlug) : undefined;
+      if (!activeLayout) return adapter.apply(scheme);
+
+      const resolvedConfig = resolvePromptLayoutRoleReferences(activeLayout.layout, resolveRoleHexes(scheme));
+      return applyPromptLayout(resolvedConfig, bundledConfigPath, profilePath, pointerPath, shell);
+    },
+  };
+}
+
+/**
  * Builds the Oh My Posh adapter for whichever shell `ch` is actually running
  * in — the real entry point every caller besides a test uses. Resolving the
  * shell here, rather than in createOhMyPoshAdapter's own parameter defaults,
  * is what lets that function's defaults stay the fixed "pwsh" a test relies
- * on without having to pass a shell of its own. See CHM-25.
+ * on without having to pass a shell of its own. See CHM-25. Wrapped in
+ * withActiveLayoutRespected (CHM-57) so a real apply never clobbers an
+ * active bundled layout's own pointer — see that function's own doc comment.
  */
 export function createDefaultOhMyPoshAdapter(): OhMyPoshAdapter {
   const shell = detectShell();
-  return createOhMyPoshAdapter(defaultConfigPath(), defaultProfilePath(shell), defaultPointerPath(), shell);
+  const profilePath = defaultProfilePath(shell);
+  const pointerPath = defaultPointerPath();
+  const adapter = createOhMyPoshAdapter(defaultConfigPath(), profilePath, pointerPath, shell);
+  return withActiveLayoutRespected(adapter, profilePath, pointerPath, shell);
 }
 
 function requireConfigPath(configPath: string | undefined): string {
