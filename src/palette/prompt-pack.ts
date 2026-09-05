@@ -188,3 +188,43 @@ export function findContrastFailures(layout: PromptLayout, roleHexes: Readonly<R
     return [`${packSlug}: segment ${index} measures ${ratio.toFixed(2)}, below ${TEXT_MIN_RATIO}`];
   });
 }
+
+// --- Switching a bundled layout in (CHM-47) ---------------------------------
+//
+// A bundled layout is authored entirely against `p:<role>` references (see
+// PALETTE_REF_PREFIX above) — this is the one step that turns it into an
+// actual Oh My Posh config, by resolving every one of those references
+// against a specific theme's own resolved roles. Pure, like everything else
+// in this file: the adapter (adapters/oh-my-posh.ts) is what writes the
+// result to Chameleon's own config file and repoints the pointer at it,
+// never touching the user's own .omp.json — see CLAUDE.md's "Never rewrite
+// a config file wholesale."
+
+/** `value` with every `p:<role>` string reference replaced by its hex from `roleHexes`, walking arrays and plain objects recursively — every field a resolved config carries, not only a segment's own foreground/background, so a block-level or top-level property referencing a role (should a future layout ever need one) resolves exactly the same way. Anything that is not a role reference — a number, a boolean, an ordinary string, `null` — is returned untouched. */
+function resolvedValueFor(value: unknown, roleHexes: Readonly<Record<Role, string>>): unknown {
+  if (typeof value === "string") {
+    const role = roleReferencedBy(value);
+    return role !== undefined ? roleHexes[role] : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => resolvedValueFor(item, roleHexes));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, fieldValue]) => [key, resolvedValueFor(fieldValue, roleHexes)]));
+  }
+  return value;
+}
+
+/**
+ * `layout` with every `p:<role>` reference resolved against `roleHexes` —
+ * the moment a bundled prompt pack becomes an Oh My Posh config Oh My Posh
+ * itself can render. `roleHexes` is a specific theme pack's own resolved
+ * "oh-my-posh" payload (ThemePackPayloads["oh-my-posh"]), so the same
+ * layout paints differently under every theme, the whole point of CHM-46's
+ * "any theme paints them for free". Pure — no file I/O — so this stays
+ * testable against fixtures the same way every other palette/ module is.
+ */
+export function resolvePromptLayoutRoleReferences(
+  layout: PromptLayout,
+  roleHexes: Readonly<Record<Role, string>>,
+): Record<string, unknown> {
+  return resolvedValueFor(layout, roleHexes) as Record<string, unknown>;
+}

@@ -74,6 +74,24 @@ const PointerSchema = z.object({
   updatedAtMs: z.number(),
 });
 
+/**
+ * The pointer file's own contents, or undefined when it does not exist yet
+ * or cannot be read — CHM-47 needs to read this back (to tell whether it
+ * already names Chameleon's own bundled-prompt file), where every previous
+ * use of PointerSchema only ever wrote it. Same "report the fact, never
+ * throw" contract as readActivePackState.
+ */
+function readPointerFile(pointerPath: string): z.infer<typeof PointerSchema> | undefined {
+  if (!existsSync(pointerPath)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(pointerPath, "utf8"));
+    const validated = PointerSchema.safeParse(parsed);
+    return validated.success ? validated.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface OhMyPoshAdapter {
   detect(): boolean;
   read(): OhMyPoshConfig;
@@ -980,6 +998,98 @@ function writePointer(pointerPath: string, configPath: string): void {
   mkdirSync(path.dirname(pointerPath), { recursive: true });
   const pointer: z.infer<typeof PointerSchema> = { configPath, updatedAtMs: Date.now() };
   writeFileSync(pointerPath, JSON.stringify(pointer, null, 2), "utf8");
+}
+
+// --- Switching a bundled prompt layout in, without touching the user's own
+// config (CHM-47) ------------------------------------------------------------
+//
+// Theme switching (applyOhMyPoshScheme, above) recolours whichever config is
+// already active, in place. A prompt-*layout* switch is a different config
+// entirely — a bundled `.omp.json`, resolved against the current theme's own
+// roles (see prompt-pack.ts's resolvePromptLayoutRoleReferences) — so this
+// writes it to a file Chameleon owns outright and repoints the pointer at
+// that, rather than opening the user's file at all. See CLAUDE.md's "Never
+// rewrite a config file wholesale" and this ticket's own "must never
+// overwrite the config the user already has."
+
+const BUNDLED_PROMPT_CONFIG_FILE_NAME = "bundled-prompt.omp.json";
+
+/** Where a bundled prompt layout, resolved to real hex, is written — never the user's own config path, whatever that happens to be. */
+export function defaultBundledPromptConfigPath(): string {
+  return path.join(stateDir(), BUNDLED_PROMPT_CONFIG_FILE_NAME);
+}
+
+/**
+ * The config path a bundled-layout switch should record as "the user's
+ * own", the moment before the very first switch — see prompt-state.ts's
+ * `originalConfigPath`. Prefers the pointer file's own configPath, which is
+ * authoritative once anything has ever been applied through it (theme or
+ * prompt); falls back to the same env-or-profile resolution
+ * createOhMyPoshAdapter itself uses only when the pointer does not exist
+ * yet. A pointer already naming `bundledPromptConfigPath` — Chameleon's own
+ * file, from an earlier prompt switch — is never adopted as "the user's
+ * own": that would happen only if `ch prompt <name>` were called a second
+ * time with no prompt-state file to read from, which readPromptState's own
+ * contract (CHM-47) is what prevents.
+ */
+export function activeConfigPathForPromptTracking(
+  configPath: string | undefined = defaultConfigPath(),
+  profilePath: string = defaultProfilePath(),
+  pointerPath: string = defaultPointerPath(),
+  shell: Shell = "pwsh",
+  bundledPromptConfigPath: string = defaultBundledPromptConfigPath(),
+): string {
+  const pointer = readPointerFile(pointerPath);
+  if (pointer && pointer.configPath !== bundledPromptConfigPath) return pointer.configPath;
+  return requireConfigPath(resolveConfigPath(configPath, profilePath, shell));
+}
+
+/** The real-shell convenience wrapper every caller besides a test uses — see createDefaultOhMyPoshAdapter's own doc comment for why shell resolution happens here rather than in a parameter default. */
+export function currentPromptTrackingConfigPath(): string {
+  const shell = detectShell();
+  return activeConfigPathForPromptTracking(defaultConfigPath(), defaultProfilePath(shell), defaultPointerPath(), shell);
+}
+
+/**
+ * Writes `resolvedConfig` — a bundled prompt layout with every `p:<role>`
+ * reference already resolved to hex — to Chameleon's own config file, and
+ * repoints the pointer at it. Installs the live-reload hook the same way
+ * applyOhMyPoshScheme does, in case a prompt-only switch is the very first
+ * thing this machine ever applied through Chameleon — there may be no
+ * theme apply to have installed it yet. The user's own config, at whatever
+ * path the pointer or the environment previously named, is never opened,
+ * let alone written.
+ */
+export function applyPromptLayout(
+  resolvedConfig: Record<string, unknown>,
+  bundledConfigPath: string = defaultBundledPromptConfigPath(),
+  profilePath: string = defaultProfilePath(),
+  pointerPath: string = defaultPointerPath(),
+  shell: Shell = "pwsh",
+): string | undefined {
+  mkdirSync(path.dirname(bundledConfigPath), { recursive: true });
+  writeFileSync(bundledConfigPath, JSON.stringify(resolvedConfig, null, 2), "utf8");
+  const profileNotice = upsertReloadHook(shell, profilePath, pointerPath);
+  writePointer(pointerPath, bundledConfigPath);
+  return profileNotice;
+}
+
+/** The real-shell convenience wrapper — see currentPromptTrackingConfigPath. */
+export function applyPromptLayoutForCurrentShell(resolvedConfig: Record<string, unknown>): string | undefined {
+  const shell = detectShell();
+  return applyPromptLayout(resolvedConfig, defaultBundledPromptConfigPath(), defaultProfilePath(shell), defaultPointerPath(), shell);
+}
+
+/**
+ * `ch prompt mine` — repoints the pointer at `originalConfigPath`, the exact
+ * path activeConfigPathForPromptTracking recorded before the first bundled
+ * layout was ever applied. Never touches the file at that path in any way:
+ * it was never written to begin with, so there is nothing to restore beyond
+ * the pointer itself — see this ticket's "must never overwrite" and "chm
+ * prompt mine puts the pointer back."
+ */
+export function restoreOriginalPrompt(originalConfigPath: string, pointerPath: string = defaultPointerPath()): void {
+  writePointer(pointerPath, originalConfigPath);
 }
 
 /**

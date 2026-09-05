@@ -1,12 +1,13 @@
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CurrentPackReport, LoadedThemePack } from "../src/index.js";
+import type { CurrentPackReport, LoadedThemePack, PromptPackListEntry } from "../src/index.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../src/index.js";
 import {
   buildTerminalPreviewSequence,
   buildTerminalResetSequence,
   createSettledFileTargetPreview,
   formatDriftLine,
+  formatPromptListLine,
   formatThemeLine,
   hasDrift,
   normalizeThemeQuery,
@@ -119,6 +120,31 @@ describe("formatThemeLine", () => {
     const bundled = findBundledPack("catppuccin-dark");
     const userPack: LoadedThemePack = { ...bundled, origin: "user" };
     expect(formatThemeLine(userPack)).toContain("(user)");
+  });
+});
+
+describe("formatPromptListLine", () => {
+  function entry(overrides: Partial<PromptPackListEntry> = {}): PromptPackListEntry {
+    return { slug: "lambda", name: "Lambda", description: "Minimal single-line prompt.", requiresNerdFont: false, nerdFontWarning: false, ...overrides };
+  }
+
+  it("carries no Nerd Font flag at all for a layout that needs none", () => {
+    expect(formatPromptListLine(entry())).toBe("Lambda — Minimal single-line prompt.");
+  });
+
+  it("marks a layout needing a Nerd Font, plainly, when one is selected", () => {
+    const line = formatPromptListLine(entry({ requiresNerdFont: true, nerdFontWarning: false }));
+    expect(line).toContain("Lambda");
+    expect(line).toContain("(Nerd Font)");
+    expect(line).not.toContain("not selected");
+  });
+
+  // CHM-47: still listed, never hidden — just flagged, and the flag says
+  // why it will look wrong.
+  it("flags, rather than hides, a layout needing a Nerd Font when none is selected", () => {
+    const line = formatPromptListLine(entry({ requiresNerdFont: true, nerdFontWarning: true }));
+    expect(line).toContain("Lambda");
+    expect(line).toContain("needs Nerd Font");
   });
 });
 
