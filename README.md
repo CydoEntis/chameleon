@@ -6,8 +6,9 @@ Oh My Posh prompt, and Herdr's UI — from a single palette. Nothing restarts.
 ```sh
 npm i -g @cydoentis/chameleon
 
-chm themes               # list every theme, with swatches — see `chm themes` for every name you can use
-chm pick                 # pick a theme interactively — arrow keys move, enter applies, esc cancels; prints the list instead when stdin isn't a TTY
+chm themes               # browse and pick interactively — arrow keys move, live preview repaints, enter applies, esc restores what was there
+chm themes --list        # print the plain list instead, with swatches — same output automatically when piped or non-interactive
+chm pick                 # alias for `chm themes`
 chm catppuccin-dark      # apply by slug
 chm "Catppuccin Mocha"   # apply by display name — matched case- and separator-insensitively
 chm catppuccin mocha     # ...or the same name as bare words, joined
@@ -36,7 +37,10 @@ Schemes are adapted from
 [mbadolato/iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)
 (MIT). Copyright in each individual theme belongs to its author.
 
-`chm themes` shows every pack `chm` can apply — the bundled ones plus
+`chm themes` opens an interactive picker in a TTY — arrow keys move, live
+preview repaints the terminal as you go, enter applies, esc restores whatever
+was active before you started picking. Piped, or with `--list`, it prints the
+plain list instead: every pack `chm` can apply — the bundled ones plus
 anything of your own — by the name a person reads, with a marker only on the
 packs that aren't bundled:
 

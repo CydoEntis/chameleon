@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CurrentPackReport, LoadedThemePack } from "../src/index.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../src/index.js";
-import { formatDriftLine, formatThemeLine, hasDrift, normalizeThemeQuery, resolveThemeQuery, USAGE } from "../src/cli.js";
+import { formatDriftLine, formatThemeLine, hasDrift, normalizeThemeQuery, resolveThemeQuery, USAGE, wantsPlainThemeList } from "../src/cli.js";
 
 // CHM-34: `ch doctor` was reporting "drift: none" — a comparison it never
 // performed — whenever the recorded pack could no longer be loaded (deleted
@@ -145,5 +145,35 @@ describe("resolveThemeQuery", () => {
 describe("USAGE", () => {
   it("names `chm themes` as the way to browse", () => {
     expect(USAGE).toContain("chm themes");
+  });
+
+  // CHM-44: chm themes moved from listing to picking, and the usage text has
+  // to say so plainly rather than still reading like a static list command.
+  it("describes `chm themes` as browsing/picking, not listing", () => {
+    expect(USAGE).toMatch(/chm themes\s+browse and pick/);
+    expect(USAGE).toContain("chm themes --list");
+    expect(USAGE).toContain("chm pick");
+  });
+});
+
+// CHM-44: `chm themes` opens the picker, but only when both streams are a
+// real TTY — reading arrow keys needs a real stdin, and repainting frames
+// needs a real stdout, so a pipe on either end (or an explicit `--list`)
+// must fall back to the plain, scriptable list instead.
+describe("wantsPlainThemeList", () => {
+  it("is false in a real terminal with no --list flag — the picker opens", () => {
+    expect(wantsPlainThemeList([], true, true)).toBe(false);
+  });
+
+  it("is true when --list is given, even in a real terminal", () => {
+    expect(wantsPlainThemeList(["--list"], true, true)).toBe(true);
+  });
+
+  it("is true when stdout is piped, so escape codes never land in the pipe", () => {
+    expect(wantsPlainThemeList([], true, false)).toBe(true);
+  });
+
+  it("is true when stdin isn't a TTY, so it never blocks on arrow keys that can't arrive", () => {
+    expect(wantsPlainThemeList([], false, true)).toBe(true);
   });
 });
