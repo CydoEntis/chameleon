@@ -62,6 +62,25 @@ export function contrastRatio(hexA: string, hexB: string): number {
 }
 
 /**
+ * Euclidean distance between two hex colours in 8-bit RGB space — 0 for
+ * identical colours, roughly 441 for black against white. This is a
+ * plain-eye "how far apart do these look" measure, never a stand-in for
+ * {@link contrastRatio}: it has no notion of luminance or text-on-background
+ * legibility, so it is only ever used to rank a fixed set of candidates
+ * against each other (e.g. Herdr's own built-in themes — see
+ * adapters/herdr.ts), never to gate a contrast decision.
+ */
+export function rgbDistance(hexA: string, hexB: string): number {
+  const channelsA = toRgbChannels(hexA);
+  const channelsB = toRgbChannels(hexB);
+  return Math.sqrt(
+    (channelsA.red - channelsB.red) ** 2 +
+      (channelsA.green - channelsB.green) ** 2 +
+      (channelsA.blue - channelsB.blue) ** 2,
+  );
+}
+
+/**
  * How colourful a hex reads, from 0 (grey) to 1 (a fully saturated channel
  * pair at the most colourful lightness for that pair). This is the spread
  * between a colour's lightest and darkest channel — what HSL calls chroma

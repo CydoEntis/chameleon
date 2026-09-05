@@ -3,8 +3,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ROLES, type Role } from "../constants.js";
-import { mix } from "../palette/color.js";
-import { toPalette, type Appearance } from "../palette/palette.js";
+import { mix, rgbDistance } from "../palette/color.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import { resolveSelectionAndBody } from "../palette/selection.js";
 import type { Scheme } from "../palette/scheme.js";
@@ -96,11 +95,11 @@ const HERDR_BUILTIN_THEME_NAMES: ReadonlySet<string> = new Set([
  *
  * A slug absent from this table — ayu, everforest, github, monokai,
  * night-owl, and nord-light, plus any user-supplied pack — has no Herdr
- * built-in at all (see CHM-28). Its `name` falls back to the nearest
- * built-in by appearance (see HERDR_DARK_FALLBACK_THEME/
- * HERDR_LIGHT_FALLBACK_THEME below); its own colours still reach Herdr
- * through the full [theme.custom] token set regardless, via
- * upsertCustomBlock, so the theme visibly changes either way.
+ * built-in at all (see CHM-28). Its `name` falls back to whichever built-in
+ * has the nearest ground by RGB distance (see nearestHerdrBuiltinThemeNameFor
+ * below); its own colours still reach Herdr through the full [theme.custom]
+ * token set regardless, via upsertCustomBlock, so the theme visibly changes
+ * either way.
  */
 const PACK_SLUG_TO_HERDR_THEME: Readonly<Record<string, string>> = {
   "catppuccin-dark": "catppuccin",
@@ -122,28 +121,81 @@ const PACK_SLUG_TO_HERDR_THEME: Readonly<Record<string, string>> = {
 };
 
 /**
- * The built-in Herdr falls back to when a pack's slug has no family match —
- * "terminal" is Herdr's own generic, non-family dark theme, the closest
- * thing its picker has to a neutral default. There is no equivalent neutral
- * light built-in, so "one-light" — the least family-branded of Herdr's five
- * light built-ins — stands in for one. Neither is a colour match; the
- * pack's actual colours still land in [theme.custom] regardless (see
- * herdrThemeNameFor's callers), which is what makes an unmatched pack's
- * apply visibly change Herdr at all rather than merely naming a real theme.
+ * Ground colour for every one of Herdr's own built-ins, keyed by the same
+ * name written to [theme].name — the only thing nearestHerdrBuiltinThemeNameFor
+ * below needs to pick the closest one for a pack with no family match (CHM-41).
+ * Herdr's CLI has no command that reports a built-in's own colours (its only
+ * relevant diagnostic is the bare name list — see HERDR_BUILTIN_THEME_NAMES),
+ * so these are pinned by hand:
+ *
+ * - Sixteen of the eighteen are the background of the Chameleon pack that
+ *   shares the built-in's own upstream family — see PACK_SLUG_TO_HERDR_THEME
+ *   and themes/<slug>.json — since Herdr's built-in and Chameleon's bundled
+ *   pack both trace back to the same original colour scheme.
+ * - "terminal", Herdr's generic non-family dark theme, is pure black — see
+ *   this ticket's own body (CHM-41) for the reasoning: it's what every
+ *   unmatched pack fell back to before this fix.
+ * - "vesper" has no Chameleon family at all; its ground is taken from
+ *   Rauno Freiberg's Vesper theme (https://github.com/raunofreiberg/vesper),
+ *   which is the theme Herdr's own built-in is named after.
  */
-const HERDR_DARK_FALLBACK_THEME = "terminal";
-const HERDR_LIGHT_FALLBACK_THEME = "one-light";
+export const HERDR_BUILTIN_GROUNDS: Readonly<Record<string, string>> = {
+  catppuccin: "#1e1e2e",
+  "catppuccin-latte": "#eff1f5",
+  terminal: "#000000",
+  "tokyo-night": "#1a1b26",
+  "tokyo-night-day": "#e1e2e7",
+  dracula: "#282a36",
+  nord: "#2e3440",
+  gruvbox: "#282828",
+  "gruvbox-light": "#fbf1c7",
+  "one-dark": "#282c34",
+  "one-light": "#fafafa",
+  solarized: "#002b36",
+  "solarized-light": "#fdf6e3",
+  kanagawa: "#1f1f28",
+  "kanagawa-lotus": "#f2ecbc",
+  "rose-pine": "#191724",
+  "rose-pine-dawn": "#faf4ed",
+  vesper: "#101010",
+};
+
+interface HerdrBuiltinGroundDistance {
+  readonly themeName: string;
+  readonly distance: number;
+}
+
+/**
+ * Herdr's own built-in whose ground is nearest `groundHex` by RGB distance
+ * (see rgbDistance) — the fallback for a pack whose slug has no entry in
+ * PACK_SLUG_TO_HERDR_THEME. Replaces the old generic terminal/one-light
+ * fallback (CHM-41): with 18 built-ins to choose from, something in the
+ * same colour family is almost always closer than a flat black or white,
+ * and it's the tab bar, borders and cursor — none of them reachable by
+ * [theme.custom] or [ui].accent — that this closeness is actually for.
+ *
+ * Exported so a test can assert the acceptance criterion directly — every
+ * bundled pack's chosen base within a stated RGB distance of its own ground
+ * — without re-deriving this file's own selection logic.
+ */
+export function nearestHerdrBuiltinThemeNameFor(groundHex: string): string {
+  const distances: HerdrBuiltinGroundDistance[] = Object.entries(HERDR_BUILTIN_GROUNDS).map(([themeName, builtinGroundHex]) => ({
+    themeName,
+    distance: rgbDistance(groundHex, builtinGroundHex),
+  }));
+  return distances.reduce((nearest, candidate) => (candidate.distance < nearest.distance ? candidate : nearest)).themeName;
+}
 
 /**
  * The Herdr theme name to write for `slug` — its own built-in when one
- * exists, otherwise the nearest fallback for `appearance`. Always a name
- * real Herdr accepts: checked against HERDR_BUILTIN_THEME_NAMES rather than
- * trusted, so an edit to the table above that introduces a name Herdr does
- * not recognise fails at apply time instead of writing a theme Herdr itself
- * would reject.
+ * exists, otherwise whichever built-in's ground is nearest `groundHex` (see
+ * nearestHerdrBuiltinThemeNameFor). Always a name real Herdr accepts: checked
+ * against HERDR_BUILTIN_THEME_NAMES rather than trusted, so an edit to either
+ * table above that introduces a name Herdr does not recognise fails at apply
+ * time instead of writing a theme Herdr itself would reject.
  */
-function herdrThemeNameFor(slug: string, appearance: Appearance): string {
-  const themeName = PACK_SLUG_TO_HERDR_THEME[slug] ?? (appearance === "dark" ? HERDR_DARK_FALLBACK_THEME : HERDR_LIGHT_FALLBACK_THEME);
+function herdrThemeNameFor(slug: string, groundHex: string): string {
+  const themeName = PACK_SLUG_TO_HERDR_THEME[slug] ?? nearestHerdrBuiltinThemeNameFor(groundHex);
   if (!HERDR_BUILTIN_THEME_NAMES.has(themeName)) {
     throw new Error(`"${themeName}" is not one of Herdr's own built-in themes — see HERDR_BUILTIN_THEME_NAMES`);
   }
@@ -629,7 +681,7 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
   const resolvedRoleHexes = resolveRoleHexes(scheme);
   const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedRoleHexes.ground, resolvedRoleHexes.body);
   const colorTable = { ...resolvedRoleHexes, body: body.hex };
-  const themeName = herdrThemeNameFor(slug, toPalette(scheme).appearance);
+  const themeName = herdrThemeNameFor(slug, colorTable.ground);
 
   const withName = upsertThemeName(originalText, eol, themeName);
   const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable, selection.hex);
