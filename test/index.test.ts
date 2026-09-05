@@ -101,7 +101,7 @@ describe("runDoctorChecks", () => {
   it("never hard-fails, and reports a well-formed row for every target plus the Nerd Font check", () => {
     const report = runDoctorChecks();
 
-    expect(report.targets.map((check) => check.target)).toEqual(["windows-terminal", "oh-my-posh", "herdr"]);
+    expect(report.targets.map((check) => check.target)).toEqual(["windows-terminal", "oh-my-posh", "herdr", "claude-code"]);
     for (const check of report.targets) {
       expect(typeof check.isInstalled).toBe("boolean");
     }

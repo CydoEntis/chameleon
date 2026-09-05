@@ -33,12 +33,15 @@ import {
 const windowsTerminalAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
 const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
 const herdrAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
+const claudeCodeAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload: vi.fn() };
 const undoWindowsTerminalMock = vi.fn();
 const undoOhMyPoshMock = vi.fn();
 const undoHerdrMock = vi.fn();
+const undoClaudeCodeMock = vi.fn();
 const windowsTerminalMatchesSchemeMock = vi.fn();
 const ohMyPoshMatchesRoleHexesMock = vi.fn();
 const herdrMatchesRoleHexesMock = vi.fn();
+const claudeCodeMatchesAppearanceMock = vi.fn();
 
 vi.mock("../src/adapters/windows-terminal.js", () => ({
   createWindowsTerminalAdapter: () => windowsTerminalAdapter,
@@ -58,6 +61,11 @@ vi.mock("../src/adapters/herdr.js", () => ({
   createHerdrAdapter: () => herdrAdapter,
   herdrMatchesRoleHexes: (...args: unknown[]) => herdrMatchesRoleHexesMock(...args),
   undoHerdr: () => undoHerdrMock(),
+}));
+vi.mock("../src/adapters/claude-code.js", () => ({
+  createClaudeCodeAdapter: () => claudeCodeAdapter,
+  claudeCodeMatchesAppearance: (...args: unknown[]) => claudeCodeMatchesAppearanceMock(...args),
+  undoClaudeCode: () => undoClaudeCodeMock(),
 }));
 
 let userThemeDir: string;
@@ -80,12 +88,18 @@ beforeEach(() => {
   herdrAdapter.apply.mockReset();
   herdrAdapter.read.mockReset();
   herdrAdapter.reload.mockReset();
+  claudeCodeAdapter.detect.mockReset().mockReturnValue(true);
+  claudeCodeAdapter.apply.mockReset();
+  claudeCodeAdapter.read.mockReset();
+  claudeCodeAdapter.reload.mockReset();
   undoWindowsTerminalMock.mockReset();
   undoOhMyPoshMock.mockReset();
   undoHerdrMock.mockReset();
+  undoClaudeCodeMock.mockReset();
   windowsTerminalMatchesSchemeMock.mockReset().mockReturnValue(true);
   ohMyPoshMatchesRoleHexesMock.mockReset().mockReturnValue(true);
   herdrMatchesRoleHexesMock.mockReset().mockReturnValue(true);
+  claudeCodeMatchesAppearanceMock.mockReset().mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -100,10 +114,12 @@ describe("applyThemePack", () => {
       { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "applied" },
+      { target: "claude-code", status: "applied" },
     ]);
     expect(windowsTerminalAdapter.apply).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.apply).toHaveBeenCalledTimes(1);
     expect(herdrAdapter.apply).toHaveBeenCalledTimes(1);
+    expect(claudeCodeAdapter.apply).toHaveBeenCalledTimes(1);
     expect(report.isFullyApplied).toBe(true);
     expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
   });
@@ -118,10 +134,12 @@ describe("applyThemePack", () => {
     expect(windowsTerminalAdapter.reload).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.reload).toHaveBeenCalledTimes(1);
     expect(herdrAdapter.reload).toHaveBeenCalledTimes(1);
+    expect(claudeCodeAdapter.reload).toHaveBeenCalledTimes(1);
     // Not just "called" — called after that same target's own write, never before it.
     expect(windowsTerminalAdapter.apply.mock.invocationCallOrder[0]!).toBeLessThan(windowsTerminalAdapter.reload.mock.invocationCallOrder[0]!);
     expect(ohMyPoshAdapter.apply.mock.invocationCallOrder[0]!).toBeLessThan(ohMyPoshAdapter.reload.mock.invocationCallOrder[0]!);
     expect(herdrAdapter.apply.mock.invocationCallOrder[0]!).toBeLessThan(herdrAdapter.reload.mock.invocationCallOrder[0]!);
+    expect(claudeCodeAdapter.apply.mock.invocationCallOrder[0]!).toBeLessThan(claudeCodeAdapter.reload.mock.invocationCallOrder[0]!);
   });
 
   it("skips a target that is not installed, never treating that as a failure — a machine with only Windows Terminal still succeeds", () => {
@@ -134,6 +152,7 @@ describe("applyThemePack", () => {
       { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "skipped", detail: "not installed" },
       { target: "herdr", status: "skipped", detail: "not installed" },
+      { target: "claude-code", status: "applied" },
     ]);
     expect(ohMyPoshAdapter.apply).not.toHaveBeenCalled();
     expect(herdrAdapter.apply).not.toHaveBeenCalled();
@@ -157,6 +176,7 @@ describe("applyThemePack", () => {
       { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "failed", detail: "no Herdr config found at C:\\fake\\config.toml" },
+      { target: "claude-code", status: "applied" },
     ]);
     // windows-terminal and oh-my-posh still ran, and still changed something
     // — a partial apply is never rolled back, only left unrecorded.
@@ -182,6 +202,7 @@ describe("applyThemePack", () => {
       { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "failed", detail: "POSH_THEME is not set — no active Oh My Posh config to apply to" },
       { target: "herdr", status: "applied" },
+      { target: "claude-code", status: "applied" },
     ]);
     expect(report.isFullyApplied).toBe(false);
     expect(readActivePackState(statePath)).toBeUndefined();
@@ -202,6 +223,7 @@ describe("applyThemePack", () => {
       { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "failed", detail: "Herdr did not reload: herdr reported \"status\" failed: duplicate key `text`" },
+      { target: "claude-code", status: "applied" },
     ]);
     // The write itself still happened — a reload failure never rolls it back.
     expect(herdrAdapter.apply).toHaveBeenCalledTimes(1);
@@ -221,6 +243,7 @@ describe("applyThemePack", () => {
       { target: "windows-terminal", status: "applied" },
       { target: "oh-my-posh", status: "applied" },
       { target: "herdr", status: "applied", detail: "Herdr is not running — nothing to reload" },
+      { target: "claude-code", status: "applied" },
     ]);
     expect(report.isFullyApplied).toBe(true);
     expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
@@ -243,6 +266,7 @@ describe("applyThemePack", () => {
     windowsTerminalAdapter.detect.mockReturnValue(false);
     ohMyPoshAdapter.detect.mockReturnValue(false);
     herdrAdapter.detect.mockReturnValue(false);
+    claudeCodeAdapter.detect.mockReturnValue(false);
 
     applyThemePack("catppuccin-dark", userThemeDir, statePath);
 
@@ -274,10 +298,12 @@ describe("undoAppliedPack", () => {
       { target: "windows-terminal", status: "restored" },
       { target: "oh-my-posh", status: "restored" },
       { target: "herdr", status: "skipped", detail: "not installed" },
+      { target: "claude-code", status: "restored" },
     ]);
     expect(undoWindowsTerminalMock).toHaveBeenCalledTimes(1);
     expect(undoOhMyPoshMock).toHaveBeenCalledTimes(1);
     expect(undoHerdrMock).not.toHaveBeenCalled();
+    expect(undoClaudeCodeMock).toHaveBeenCalledTimes(1);
   });
 
   it("reports one target's undo failure without stopping the others", () => {
@@ -291,6 +317,7 @@ describe("undoAppliedPack", () => {
       { target: "windows-terminal", status: "restored" },
       { target: "oh-my-posh", status: "failed", detail: "no backup found — nothing to undo" },
       { target: "herdr", status: "restored" },
+      { target: "claude-code", status: "restored" },
     ]);
   });
 
@@ -303,10 +330,12 @@ describe("undoAppliedPack", () => {
     expect(windowsTerminalAdapter.reload).toHaveBeenCalledTimes(1);
     expect(ohMyPoshAdapter.reload).toHaveBeenCalledTimes(1);
     expect(herdrAdapter.reload).toHaveBeenCalledTimes(1);
+    expect(claudeCodeAdapter.reload).toHaveBeenCalledTimes(1);
     // Not just "called" — called after that same target's own restore, never before it.
     expect(undoWindowsTerminalMock.mock.invocationCallOrder[0]!).toBeLessThan(windowsTerminalAdapter.reload.mock.invocationCallOrder[0]!);
     expect(undoOhMyPoshMock.mock.invocationCallOrder[0]!).toBeLessThan(ohMyPoshAdapter.reload.mock.invocationCallOrder[0]!);
     expect(undoHerdrMock.mock.invocationCallOrder[0]!).toBeLessThan(herdrAdapter.reload.mock.invocationCallOrder[0]!);
+    expect(undoClaudeCodeMock.mock.invocationCallOrder[0]!).toBeLessThan(claudeCodeAdapter.reload.mock.invocationCallOrder[0]!);
   });
 
   it("downgrades a target to failed, naming it, when its reload fails after a successful restore", () => {
@@ -320,6 +349,7 @@ describe("undoAppliedPack", () => {
       { target: "windows-terminal", status: "restored" },
       { target: "oh-my-posh", status: "restored" },
       { target: "herdr", status: "failed", detail: "Herdr did not reload: herdr reported \"server_error\"" },
+      { target: "claude-code", status: "restored" },
     ]);
   });
 
@@ -332,6 +362,7 @@ describe("undoAppliedPack", () => {
       { target: "windows-terminal", status: "restored" },
       { target: "oh-my-posh", status: "restored" },
       { target: "herdr", status: "restored", detail: "Herdr is not running — nothing to reload" },
+      { target: "claude-code", status: "restored" },
     ]);
   });
 });

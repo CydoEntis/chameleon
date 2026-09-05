@@ -159,6 +159,9 @@ function runDoctor(): number {
     if (check.installCommand) {
       process.stdout.write(`  would run: ${check.installCommand}\n`);
     }
+    if (check.target === "claude-code" && check.isInstalled && report.claudeCodeTheme) {
+      process.stdout.write(`  theme: ${report.claudeCodeTheme}\n`);
+    }
   }
 
   process.stdout.write(`${formatNerdFontLine(report.nerdFont)}\n`);
