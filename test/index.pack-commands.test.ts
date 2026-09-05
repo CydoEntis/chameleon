@@ -27,6 +27,9 @@ import {
 // imports regardless of where it appears in the file. Each adapter's own
 // "matches the recorded pack" comparison (CHM-27) is mocked too, defaulting
 // to "matches" so a test that isn't about drift never has to think about it.
+// index.ts's own orchestration calls createDefaultOhMyPoshAdapter, not
+// createOhMyPoshAdapter directly — see CHM-25 — so both must resolve to the
+// same mock here.
 const windowsTerminalAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
 const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
 const herdrAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn() };
@@ -45,6 +48,7 @@ vi.mock("../src/adapters/windows-terminal.js", () => ({
   WINDOWS_TERMINAL_WINGET_PACKAGE_ID: "Microsoft.WindowsTerminal",
 }));
 vi.mock("../src/adapters/oh-my-posh.js", () => ({
+  createDefaultOhMyPoshAdapter: () => ohMyPoshAdapter,
   createOhMyPoshAdapter: () => ohMyPoshAdapter,
   ohMyPoshMatchesRoleHexes: (...args: unknown[]) => ohMyPoshMatchesRoleHexesMock(...args),
   OH_MY_POSH_WINGET_PACKAGE_ID: "JanDeDobbeleer.OhMyPosh",

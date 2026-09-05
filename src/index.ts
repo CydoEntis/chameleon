@@ -6,7 +6,14 @@
 
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
 import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters/herdr.js";
-import { createOhMyPoshAdapter, ohMyPoshMatchesRoleHexes, OH_MY_POSH_WINGET_PACKAGE_ID, undoOhMyPosh } from "./adapters/oh-my-posh.js";
+import {
+  createDefaultOhMyPoshAdapter,
+  createOhMyPoshAdapter,
+  ohMyPoshMatchesRoleHexes,
+  OH_MY_POSH_WINGET_PACKAGE_ID,
+  undoOhMyPosh,
+} from "./adapters/oh-my-posh.js";
+import { isWindows } from "./adapters/platform.js";
 import { readActivePackState, writeActivePackState } from "./adapters/state.js";
 import { loadUserThemePacks } from "./adapters/user-theme-packs.js";
 import {
@@ -65,6 +72,7 @@ export type { Layout, LayoutBlock, LayoutBlockName, LayoutSegment, OhMyPoshAdapt
 export {
   addSegment,
   buildLayoutSegment,
+  createDefaultOhMyPoshAdapter,
   createOhMyPoshAdapter,
   isSegmentType,
   layoutBlocksOnSide,
@@ -100,9 +108,19 @@ export function loadAllThemePacks(userThemeDir?: string): {
   return { packs: mergeThemePacksBySlug(bundledPacks, userPacks), warnings };
 }
 
-/** One target's `ch doctor` row: whether it is installed, and the one-line command to fix it when it is not. */
+/**
+ * One target's `ch doctor` row: whether it is installed, and the one-line
+ * command to fix it when it is not. `isApplicable` is false only for
+ * Windows Terminal on a non-Windows platform, where the app itself cannot
+ * exist — see CHM-25's "must not tell a Linux user that Windows Terminal is
+ * missing as though that were a problem to fix." `isInstalled` is always
+ * false and `installCommand` always undefined when a target is not
+ * applicable, but the two questions are kept distinct so the CLI can report
+ * "not available here" rather than "not found".
+ */
 export interface DoctorTargetCheck {
   readonly target: Target;
+  readonly isApplicable: boolean;
   readonly isInstalled: boolean;
   readonly installCommand: string | undefined;
 }
@@ -141,11 +159,21 @@ function wingetInstallCommand(packageId: string): string {
   return `winget install --id ${packageId} -e`;
 }
 
-function checkTarget(target: Target, isInstalled: boolean, wingetPackageId: string | undefined): DoctorTargetCheck {
+/**
+ * `wingetPackageId` is only ever offered as an install command on Windows —
+ * winget itself is a Windows-only package manager, so suggesting it on
+ * Linux or macOS would be a command that cannot work, for a target that may
+ * well be legitimately missing there for reasons winget can't fix. A target
+ * that is not applicable at all (Windows Terminal on a non-Windows
+ * platform) is never reported installed and never offered a command either.
+ */
+function checkTarget(target: Target, isApplicable: boolean, isInstalled: boolean, wingetPackageId: string | undefined): DoctorTargetCheck {
+  const canOfferWingetInstall = isApplicable && !isInstalled && wingetPackageId !== undefined && isWindows();
   return {
     target,
-    isInstalled,
-    installCommand: isInstalled || !wingetPackageId ? undefined : wingetInstallCommand(wingetPackageId),
+    isApplicable,
+    isInstalled: isApplicable && isInstalled,
+    installCommand: canOfferWingetInstall ? wingetInstallCommand(wingetPackageId) : undefined,
   };
 }
 
@@ -191,9 +219,14 @@ function checkNerdFont(): DoctorNerdFontCheck {
 export function runDoctorChecks(userThemeDir?: string, statePath?: string): DoctorReport {
   return {
     targets: [
-      checkTarget("windows-terminal", detectSafely(() => createWindowsTerminalAdapter().detect()), WINDOWS_TERMINAL_WINGET_PACKAGE_ID),
-      checkTarget("oh-my-posh", detectSafely(() => createOhMyPoshAdapter().detect()), OH_MY_POSH_WINGET_PACKAGE_ID),
-      checkTarget("herdr", detectSafely(() => createHerdrAdapter().detect()), undefined),
+      checkTarget(
+        "windows-terminal",
+        isWindows(),
+        detectSafely(() => createWindowsTerminalAdapter().detect()),
+        WINDOWS_TERMINAL_WINGET_PACKAGE_ID,
+      ),
+      checkTarget("oh-my-posh", true, detectSafely(() => createDefaultOhMyPoshAdapter().detect()), OH_MY_POSH_WINGET_PACKAGE_ID),
+      checkTarget("herdr", true, detectSafely(() => createHerdrAdapter().detect()), undefined),
     ],
     nerdFont: checkNerdFont(),
     drift: currentPack(userThemeDir, statePath),
@@ -224,7 +257,7 @@ interface DetectableTargetAdapter {
 
 function adapterForTarget(target: Target): DetectableTargetAdapter {
   if (target === "windows-terminal") return createWindowsTerminalAdapter();
-  if (target === "oh-my-posh") return createOhMyPoshAdapter();
+  if (target === "oh-my-posh") return createDefaultOhMyPoshAdapter();
   return createHerdrAdapter();
 }
 
@@ -237,7 +270,7 @@ function adapterForTarget(target: Target): DetectableTargetAdapter {
  */
 function applyToTarget(target: Target, scheme: Scheme, slug: string): void {
   if (target === "windows-terminal") return createWindowsTerminalAdapter().apply(scheme);
-  if (target === "oh-my-posh") return createOhMyPoshAdapter().apply(scheme);
+  if (target === "oh-my-posh") return createDefaultOhMyPoshAdapter().apply(scheme);
   return createHerdrAdapter().apply(scheme, slug);
 }
 
@@ -341,7 +374,7 @@ function targetMatchesPack(target: Target, payloads: ThemePackPayloads): boolean
     return windowsTerminalMatchesScheme(createWindowsTerminalAdapter().read(), payloads["windows-terminal"]);
   }
   if (target === "oh-my-posh") {
-    return ohMyPoshMatchesRoleHexes(createOhMyPoshAdapter().read(), payloads["oh-my-posh"]);
+    return ohMyPoshMatchesRoleHexes(createDefaultOhMyPoshAdapter().read(), payloads["oh-my-posh"]);
   }
   return herdrMatchesRoleHexes(createHerdrAdapter().read(), payloads.herdr);
 }

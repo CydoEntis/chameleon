@@ -4,6 +4,7 @@ import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
 import { toPalette, type Appearance } from "../palette/palette.js";
 import type { Scheme } from "../palette/scheme.js";
+import { isWindows } from "./platform.js";
 import {
   buildArrayEntryBlockContent,
   buildPropertyBlockContent,
@@ -91,13 +92,27 @@ export interface WindowsTerminalAdapter {
   reload(): void;
 }
 
-/** Where Windows Terminal (stable) keeps settings.json, under the user's package LocalState directory. */
-function defaultSettingsPath(): string {
+/**
+ * Where Windows Terminal (stable) keeps settings.json, under the user's
+ * package LocalState directory — undefined on every platform but Windows,
+ * where the app itself does not exist, so `detect()` can report "not found"
+ * cleanly instead of throwing on a LOCALAPPDATA read that would never
+ * resolve to anything real. See CHM-25.
+ */
+function defaultSettingsPath(): string | undefined {
+  if (!isWindows()) return undefined;
   const localAppData = process.env["LOCALAPPDATA"];
   if (!localAppData) {
     throw new Error("LOCALAPPDATA is not set — cannot locate Windows Terminal's settings.json");
   }
   return path.join(localAppData, "Packages", STABLE_PACKAGE_FAMILY_NAME, "LocalState", "settings.json");
+}
+
+function requireSettingsPath(settingsPath: string | undefined): string {
+  if (!settingsPath) {
+    throw new Error("Windows Terminal is not available on this platform — there is no settings.json to edit");
+  }
+  return settingsPath;
 }
 
 function backupPathFor(settingsPath: string): string {
@@ -232,8 +247,8 @@ function upsertSelectedFont(settingsPath: string, text: string, fontFace: string
   return upsertMarkedBlock(dedupedText, container, buildPropertyBlockContent("font", { ...existingFont, face: fontFace }, eol), eol, "font");
 }
 
-function detectWindowsTerminal(settingsPath: string): boolean {
-  return existsSync(settingsPath);
+function detectWindowsTerminal(settingsPath: string | undefined): boolean {
+  return settingsPath !== undefined && existsSync(settingsPath);
 }
 
 /**
@@ -288,14 +303,16 @@ function reloadWindowsTerminal(): void {
 
 /**
  * Builds the Windows Terminal adapter. `settingsPath` defaults to the real
- * stable-channel location and is only ever overridden by tests, which point
- * it at a fixture copy so nothing here touches a real settings.json.
+ * stable-channel location — undefined on every platform but Windows, where
+ * Windows Terminal cannot exist — and is only ever overridden by tests,
+ * which point it at a fixture copy so nothing here touches a real
+ * settings.json.
  */
-export function createWindowsTerminalAdapter(settingsPath: string = defaultSettingsPath()): WindowsTerminalAdapter {
+export function createWindowsTerminalAdapter(settingsPath: string | undefined = defaultSettingsPath()): WindowsTerminalAdapter {
   return {
     detect: () => detectWindowsTerminal(settingsPath),
-    read: () => readWindowsTerminalSettings(settingsPath),
-    apply: (scheme) => applyWindowsTerminalScheme(settingsPath, scheme),
+    read: () => readWindowsTerminalSettings(requireSettingsPath(settingsPath)),
+    apply: (scheme) => applyWindowsTerminalScheme(requireSettingsPath(settingsPath), scheme),
     reload: () => reloadWindowsTerminal(),
   };
 }
@@ -308,17 +325,18 @@ export function createWindowsTerminalAdapter(settingsPath: string = defaultSetti
  * — but it lives beside the adapter because settings.json's shape is this
  * file's business.
  */
-export function selectWindowsTerminalFont(fontFace: string, settingsPath: string = defaultSettingsPath()): void {
-  if (!existsSync(settingsPath)) {
-    throw new Error(`no Windows Terminal settings.json found at ${settingsPath}`);
+export function selectWindowsTerminalFont(fontFace: string, settingsPath: string | undefined = defaultSettingsPath()): void {
+  const resolvedSettingsPath = requireSettingsPath(settingsPath);
+  if (!existsSync(resolvedSettingsPath)) {
+    throw new Error(`no Windows Terminal settings.json found at ${resolvedSettingsPath}`);
   }
 
-  copyFileSync(settingsPath, backupPathFor(settingsPath));
+  copyFileSync(resolvedSettingsPath, backupPathFor(resolvedSettingsPath));
 
-  const originalText = readFileSync(settingsPath, "utf8");
-  const updatedText = upsertSelectedFont(settingsPath, originalText, fontFace);
+  const originalText = readFileSync(resolvedSettingsPath, "utf8");
+  const updatedText = upsertSelectedFont(resolvedSettingsPath, originalText, fontFace);
 
-  writeFileSync(settingsPath, updatedText, "utf8");
+  writeFileSync(resolvedSettingsPath, updatedText, "utf8");
 }
 
 /**
@@ -327,10 +345,11 @@ export function selectWindowsTerminalFont(fontFace: string, settingsPath: string
  * a step in the theming pipeline — but it lives beside the adapter because
  * the backup file's location and format are this file's business.
  */
-export function undoWindowsTerminal(settingsPath: string = defaultSettingsPath()): void {
-  const backupPath = backupPathFor(settingsPath);
+export function undoWindowsTerminal(settingsPath: string | undefined = defaultSettingsPath()): void {
+  const resolvedSettingsPath = requireSettingsPath(settingsPath);
+  const backupPath = backupPathFor(resolvedSettingsPath);
   if (!existsSync(backupPath)) {
     throw new Error(`no backup found at ${backupPath} — nothing to undo`);
   }
-  copyFileSync(backupPath, settingsPath);
+  copyFileSync(backupPath, resolvedSettingsPath);
 }
