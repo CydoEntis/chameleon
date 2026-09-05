@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
-import { isKnownRole, ROLES, type Role } from "../constants.js";
+import { isKnownRole, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
 import { repairForegroundAgainstBackgrounds, resolveRoleHexes } from "../palette/repair.js";
 import { recoloredHexFor } from "../palette/role-mapping.js";
 import type { Scheme } from "../palette/scheme.js";
@@ -577,7 +577,7 @@ function overrideKeysBySignatureFor(
   backgroundHexesBySignature: ReadonlyMap<string, readonly string[]>,
 ): ReadonlyMap<string, { readonly overrideKey: string; readonly repairedHex: string }> {
   const repairedBySignature = [...backgroundHexesBySignature.entries()]
-    .map(([signature, backgroundHexes]) => [signature, repairForegroundAgainstBackgrounds(foregroundHex, backgroundHexes)] as const)
+    .map(([signature, backgroundHexes]) => [signature, repairForegroundAgainstBackgrounds(foregroundHex, backgroundHexes, TEXT_MIN_RATIO)] as const)
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
     .sort(([signatureA], [signatureB]) => (signatureA < signatureB ? -1 : signatureA > signatureB ? 1 : 0));
 

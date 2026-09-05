@@ -367,12 +367,17 @@ function worstContrastAgainst(foregroundHex: string, backgroundHexes: readonly s
 
 /**
  * The repaired foreground a segment needs in place of `foregroundHex`, or
- * undefined when it already clears TEXT_MIN_RATIO against every one of
+ * undefined when it already clears `minRatio` against every one of
  * `backgroundHexes` and needs no change. See CHM-40: a segment's background
  * is often templated — Oh My Posh swaps it at render time between several
  * candidates (one per battery level, one per git state, …) — so a fix has
  * to hold up against every candidate that could actually render behind this
  * text, not just whichever one a check happened to sample.
+ *
+ * `minRatio` is a parameter, not always TEXT_MIN_RATIO, since CHM-50 reuses
+ * this same search for Herdr's subtext0 against MUTED_MIN_RATIO — a second
+ * caller checking a second floor is exactly why this generalised rather than
+ * staying hardcoded to the one CHM-40 needed.
  *
  * Searches both directions a fixed hue/chroma can move away from a fixed
  * point — see repairAtHue — anchored on whichever background is hardest
@@ -395,12 +400,13 @@ function worstContrastAgainst(foregroundHex: string, backgroundHexes: readonly s
 export function repairForegroundAgainstBackgrounds(
   foregroundHex: string,
   backgroundHexes: readonly string[],
+  minRatio: number,
 ): string | undefined {
-  if (backgroundHexes.length === 0 || worstContrastAgainst(foregroundHex, backgroundHexes) >= TEXT_MIN_RATIO) {
+  if (backgroundHexes.length === 0 || worstContrastAgainst(foregroundHex, backgroundHexes) >= minRatio) {
     return undefined;
   }
 
-  const minAcceptableRatio = TEXT_MIN_RATIO * RATIO_CLEARANCE_MARGIN;
+  const minAcceptableRatio = minRatio * RATIO_CLEARANCE_MARGIN;
   const { hue } = toHsl(foregroundHex);
   const chroma = chromaOf(foregroundHex);
   const darkestBackground = backgroundHexes.reduce((darkest, candidate) =>
@@ -412,8 +418,8 @@ export function repairForegroundAgainstBackgrounds(
 
   const darker = repairAtHue(hue, chroma, darkestBackground, minAcceptableRatio, minAcceptableRatio, false).hex;
   const lighter = repairAtHue(hue, chroma, lightestBackground, minAcceptableRatio, minAcceptableRatio, true).hex;
-  const doesDarkerClearEverything = worstContrastAgainst(darker, backgroundHexes) >= TEXT_MIN_RATIO;
-  const doesLighterClearEverything = worstContrastAgainst(lighter, backgroundHexes) >= TEXT_MIN_RATIO;
+  const doesDarkerClearEverything = worstContrastAgainst(darker, backgroundHexes) >= minRatio;
+  const doesLighterClearEverything = worstContrastAgainst(lighter, backgroundHexes) >= minRatio;
 
   if (doesDarkerClearEverything !== doesLighterClearEverything) {
     return doesDarkerClearEverything ? darker : lighter;
