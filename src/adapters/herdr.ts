@@ -203,6 +203,18 @@ const HERDR_ACCEPTED_CUSTOM_TOKENS: ReadonlySet<string> = new Set([
   "yellow",
 ]);
 
+/**
+ * Whether `config`'s own [theme.custom] tokens and [ui] accent already carry
+ * every one of `roleHexes`' six role values, under Herdr's own token names —
+ * the same keys customTokenValues and upsertUiAccent themselves write on
+ * apply, so a mismatch means this target has drifted from whatever pack `ch`
+ * last recorded as active. See CHM-27.
+ */
+export function herdrMatchesRoleHexes(config: HerdrConfig, roleHexes: Readonly<Record<Role, string>>): boolean {
+  const customTokensMatch = ROLES.every((role) => config.theme.custom[ROLE_TO_HERDR_TOKEN[role]] === roleHexes[role]);
+  return customTokensMatch && config.ui.accent === roleHexes.accent;
+}
+
 function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, string>>): void {
   for (const token of Object.keys(tokenValues)) {
     if (!HERDR_ACCEPTED_CUSTOM_TOKENS.has(token)) {

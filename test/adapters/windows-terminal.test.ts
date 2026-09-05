@@ -4,7 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWindowsTerminalAdapter, selectedFontFace, selectWindowsTerminalFont, undoWindowsTerminal } from "../../src/adapters/windows-terminal.js";
+import {
+  createWindowsTerminalAdapter,
+  selectedFontFace,
+  selectWindowsTerminalFont,
+  undoWindowsTerminal,
+  windowsTerminalMatchesScheme,
+} from "../../src/adapters/windows-terminal.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -313,6 +319,41 @@ describe("selectedFontFace", () => {
     const settingsPath = path.join(mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-font-")), "settings.json");
     writeFileSync(settingsPath, JSON.stringify({ profiles: { defaults: {} } }), "utf8");
     expect(selectedFontFace(createWindowsTerminalAdapter(settingsPath).read())).toBeUndefined();
+  });
+});
+
+// CHM-27: this is the exact comparison `ch current`/`ch doctor` use to
+// notice a target that has drifted from the recorded pack.
+describe("windowsTerminalMatchesScheme", () => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-drift-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+    writeFileSync(settingsPath, LF_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("matches right after apply", () => {
+    const adapter = createWindowsTerminalAdapter(settingsPath);
+    adapter.apply(ZEROX96F_SCHEME);
+
+    expect(windowsTerminalMatchesScheme(adapter.read(), ZEROX96F_SCHEME)).toBe(true);
+  });
+
+  it("does not match a scheme other than the one last applied", () => {
+    const adapter = createWindowsTerminalAdapter(settingsPath);
+    adapter.apply(ZEROX96F_SCHEME);
+
+    expect(windowsTerminalMatchesScheme(adapter.read(), AARDVARK_BLUE_SCHEME)).toBe(false);
+  });
+
+  it("does not match a config that was never themed by Chameleon at all", () => {
+    expect(windowsTerminalMatchesScheme(createWindowsTerminalAdapter(settingsPath).read(), ZEROX96F_SCHEME)).toBe(false);
   });
 });
 
