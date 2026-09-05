@@ -18,6 +18,14 @@ const ohMyPoshAdapter = { detect: vi.fn(), apply: vi.fn(), read: vi.fn(), reload
 const applyPromptLayoutForCurrentShellMock = vi.fn();
 const currentPromptTrackingConfigPathMock = vi.fn();
 const restoreOriginalPromptMock = vi.fn();
+// CHM-57: currentPromptPack now checks the pointer, never prompt-state.json
+// alone — see index.ts's own doc comment. applyPromptLayoutForCurrentShell/
+// restoreOriginalPrompt are mocked above and never touch a real pointer
+// file, so this mock stands in for "what the pointer would say": true once
+// a layout has been applied, flipped back to false by the tests that
+// exercise `chm prompt mine`'s own "pointer no longer names the bundled
+// config" outcome.
+const pointerNamesBundledPromptConfigMock = vi.fn();
 
 vi.mock("../src/adapters/oh-my-posh.js", () => ({
   createDefaultOhMyPoshAdapter: () => ohMyPoshAdapter,
@@ -28,6 +36,7 @@ vi.mock("../src/adapters/oh-my-posh.js", () => ({
   applyPromptLayoutForCurrentShell: (...args: unknown[]) => applyPromptLayoutForCurrentShellMock(...args),
   currentPromptTrackingConfigPath: (...args: unknown[]) => currentPromptTrackingConfigPathMock(...args),
   restoreOriginalPrompt: (...args: unknown[]) => restoreOriginalPromptMock(...args),
+  pointerNamesBundledPromptConfig: (...args: unknown[]) => pointerNamesBundledPromptConfigMock(...args),
 }));
 vi.mock("../src/adapters/windows-terminal.js", () => ({
   createWindowsTerminalAdapter: () => ({ detect: () => false, read: vi.fn(), apply: vi.fn(), reload: vi.fn() }),
@@ -67,6 +76,11 @@ beforeEach(() => {
   applyPromptLayoutForCurrentShellMock.mockReset().mockReturnValue(undefined);
   currentPromptTrackingConfigPathMock.mockReset().mockReturnValue("C:\\Users\\me\\my-real-prompt.omp.json");
   restoreOriginalPromptMock.mockReset();
+  // Every applyPromptPack in this file is a real, single apply — the
+  // pointer agrees with prompt-state.json's own activeSlug by default, the
+  // same as adapters/oh-my-posh.ts's real applyPromptLayout always leaves
+  // it. Only restorePromptToMine's own tests flip this back to false.
+  pointerNamesBundledPromptConfigMock.mockReset().mockReturnValue(true);
 
   // A theme must already be applied — a bundled layout is authored purely
   // against Chameleon's roles and has no colour of its own to fall back to.
@@ -135,6 +149,9 @@ describe("restorePromptToMine", () => {
     applyPromptPack("lambda", promptStatePath, userThemeDir, statePath);
 
     restorePromptToMine(promptStatePath);
+    // restoreOriginalPrompt is mocked and never writes a real pointer — this
+    // is what stands in for it no longer naming the bundled config.
+    pointerNamesBundledPromptConfigMock.mockReturnValue(false);
 
     expect(restoreOriginalPromptMock).toHaveBeenCalledWith("C:\\Users\\me\\my-real-prompt.omp.json");
     expect(currentPromptPack(promptStatePath)).toEqual({ slug: undefined, name: undefined });
@@ -159,6 +176,18 @@ describe("currentPromptPack", () => {
   it("names the active bundled layout after a switch", () => {
     applyPromptPack("spaceship", promptStatePath, userThemeDir, statePath);
     expect(currentPromptPack(promptStatePath)).toEqual({ slug: "spaceship", name: "Spaceship" });
+  });
+
+  // CHM-57's own reproduction: applying a theme used to clobber the pointer
+  // back to the user's own config while prompt-state.json still recorded a
+  // layout as active. This is the read side of that fix — chm current must
+  // report what a shell would actually load (the pointer), never what
+  // prompt-state.json alone still believes.
+  it("reports 'mine', not the recorded slug, once the pointer no longer names the bundled config", () => {
+    applyPromptPack("spaceship", promptStatePath, userThemeDir, statePath);
+    pointerNamesBundledPromptConfigMock.mockReturnValue(false);
+
+    expect(currentPromptPack(promptStatePath)).toEqual({ slug: undefined, name: undefined });
   });
 });
 

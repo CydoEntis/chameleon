@@ -1226,8 +1226,18 @@ function renderPromptPickerRow(entry: PromptPackListEntry, isHighlighted: boolea
   return `${cursor} ${entry.name}${nerdFontFlag}`;
 }
 
-function renderPromptPickerFrame(entries: readonly PromptPackListEntry[], highlightedIndex: number, filterText: string): string[] {
-  const filterLine = filterText === "" ? PICKER_HINT_LINE : `filter: ${filterText}`;
+/**
+ * `chm prompts`' own hint line — never PICKER_HINT_LINE, `chm themes`' own.
+ * Oh My Posh only paints at prompt-render time, so moving the highlight
+ * cannot repaint the prompt the way `chm themes`' own live preview repaints
+ * the terminal (see runInteractivePromptPicker's own doc comment) — this
+ * says so plainly, naming when a choice actually takes effect, rather than
+ * implying a live preview that cannot exist here. See CHM-57.
+ */
+const PROMPT_PICKER_HINT_LINE = "up/down move, type to filter, enter apply, esc cancel — a layout takes effect on your next prompt";
+
+export function renderPromptPickerFrame(entries: readonly PromptPackListEntry[], highlightedIndex: number, filterText: string): string[] {
+  const filterLine = filterText === "" ? PROMPT_PICKER_HINT_LINE : `filter: ${filterText}`;
   const rowLines =
     entries.length === 0 ? ["  no matches"] : entries.map((entry, index) => renderPromptPickerRow(entry, index === highlightedIndex));
   return [filterLine, ...rowLines];
