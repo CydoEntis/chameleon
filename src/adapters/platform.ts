@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -108,12 +110,133 @@ export function detectShell(nodePlatform: NodeJS.Platform = process.platform): S
  * on every prompt render of one already open. cmd.exe has no such file of
  * its own; its hook is a Clink Lua script instead, so it is routed to
  * clinkScriptPath rather than a profile.
+ *
+ * `pwsh` covers both PowerShell editions, and the two read *different*
+ * profile files under *different* folder names — see
+ * choosePowerShellEdition and windowsDocumentsDir. Assuming either one, the
+ * way this used to hardcode PowerShell 7's `Documents\PowerShell`, writes a
+ * hook to a file the installed edition never loads — see CHM-39.
  */
 export function ohMyPoshProfilePathFor(shell: Shell): string {
   if (shell === "cmd") return clinkScriptPath();
   if (shell === "bash") return path.join(homedir(), ".bashrc");
   if (shell === "zsh") return path.join(process.env["ZDOTDIR"] || homedir(), ".zshrc");
-  return path.join(homedir(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
+
+  const documentsDir = windowsDocumentsDir();
+  // Never assume pwsh: Windows PowerShell ships on every Windows machine and
+  // pwsh does not, so a tie (both or neither detected) falls back to the
+  // edition guaranteed to exist rather than the exception.
+  const edition = detectPowerShellEdition(documentsDir) ?? "windowsPowerShell";
+  return powerShellProfilePathFor(documentsDir, edition);
+}
+
+// --- PowerShell edition and Documents-folder resolution, for CHM-39 --------
+//
+// Two path errors used to compound here: assuming PowerShell 7 (`pwsh`) on a
+// machine that only has Windows PowerShell 5.1, and assuming `~/Documents`
+// on a machine where Windows has redirected it (to OneDrive, among other
+// places). Both are resolved below rather than assumed.
+
+export type PowerShellEdition = "pwsh" | "windowsPowerShell";
+
+/** The profile folder name each PowerShell edition reads from under Documents — `pwsh`'s own convention, distinct from Windows PowerShell's pre-existing one. */
+function powerShellProfilePathFor(documentsDir: string, edition: PowerShellEdition): string {
+  const profileFolderName = edition === "pwsh" ? "PowerShell" : "WindowsPowerShell";
+  return path.join(documentsDir, profileFolderName, "Microsoft.PowerShell_profile.ps1");
+}
+
+/**
+ * Which PowerShell edition `ch` should treat as the real one, given what is
+ * actually installed and which of the two profiles already exists on disk.
+ * Pure — so this decision is testable without spawning a real shell or
+ * touching a real filesystem — see detectPowerShellEdition, which supplies
+ * both real inputs.
+ *
+ * A machine with only one edition installed gets that one, never an
+ * assumption. Where both are installed, the one whose profile file already
+ * exists wins — that is the one this machine's own shell has actually been
+ * loading. A tie between the two (both or neither profile present) falls
+ * back to Windows PowerShell, since that edition is guaranteed to exist and
+ * pwsh is not — see CHM-39, where a machine had no pwsh at all.
+ */
+export function choosePowerShellEdition(
+  isInstalled: Readonly<Record<PowerShellEdition, boolean>>,
+  doesProfileExist: Readonly<Record<PowerShellEdition, boolean>>,
+): PowerShellEdition | undefined {
+  if (isInstalled.pwsh && !isInstalled.windowsPowerShell) return "pwsh";
+  if (isInstalled.windowsPowerShell && !isInstalled.pwsh) return "windowsPowerShell";
+  if (!isInstalled.pwsh && !isInstalled.windowsPowerShell) return undefined;
+  return doesProfileExist.pwsh && !doesProfileExist.windowsPowerShell ? "pwsh" : "windowsPowerShell";
+}
+
+/** The binary name each PowerShell edition is installed under — `pwsh` never shares a binary name with Windows PowerShell's `powershell.exe`. */
+const POWERSHELL_BINARY_NAMES: Readonly<Record<PowerShellEdition, string>> = {
+  pwsh: "pwsh",
+  windowsPowerShell: "powershell",
+};
+
+/** Whether `edition`'s own binary actually runs on this machine — the one thing that tells the two editions apart when neither's profile exists yet. */
+function isPowerShellEditionInstalled(edition: PowerShellEdition): boolean {
+  const result = spawnSync(POWERSHELL_BINARY_NAMES[edition], ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit"], {
+    encoding: "utf8",
+  });
+  return !result.error && result.status === 0;
+}
+
+/**
+ * The real detector behind choosePowerShellEdition's decision: which
+ * edition(s) are actually installed, and which of the two profiles already
+ * exists under `documentsDir`. Returns undefined only when neither edition's
+ * binary runs at all.
+ */
+export function detectPowerShellEdition(documentsDir: string = windowsDocumentsDir()): PowerShellEdition | undefined {
+  const isInstalled: Record<PowerShellEdition, boolean> = {
+    pwsh: isPowerShellEditionInstalled("pwsh"),
+    windowsPowerShell: isPowerShellEditionInstalled("windowsPowerShell"),
+  };
+  const doesProfileExist: Record<PowerShellEdition, boolean> = {
+    pwsh: existsSync(powerShellProfilePathFor(documentsDir, "pwsh")),
+    windowsPowerShell: existsSync(powerShellProfilePathFor(documentsDir, "windowsPowerShell")),
+  };
+  return choosePowerShellEdition(isInstalled, doesProfileExist);
+}
+
+/** The registry key Windows itself records a redirected special folder under — user-specific, never machine-wide, matching where OneDrive points Documents when it takes it over. */
+const SHELL_FOLDERS_REGISTRY_KEY = String.raw`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`;
+
+/** The value name Windows stores the Documents folder's own (possibly redirected) path under, inside SHELL_FOLDERS_REGISTRY_KEY — "Personal" is Windows' own historical name for Documents. */
+const DOCUMENTS_SHELL_FOLDER_VALUE_NAME = "Personal";
+
+/** Expands a `%VARIABLE%`-style reference the registry's own stored value can carry — e.g. `%USERPROFILE%\Documents` — leaving an unset variable's reference untouched rather than guessing. */
+function expandWindowsEnvironmentReferences(rawPath: string): string {
+  return rawPath.replace(/%([^%]+)%/g, (reference, name: string) => process.env[name] ?? reference);
+}
+
+/**
+ * Parses `reg query`'s own tabular output for the Documents folder's stored
+ * path — pure, so the redirected-vs-default cases are testable without
+ * spawning `reg.exe` itself. Returns undefined for any output this project
+ * does not recognise, rather than guessing.
+ */
+export function documentsDirFromRegistryQueryOutput(regQueryStdout: string): string | undefined {
+  const match = regQueryStdout.match(/Personal\s+REG_(?:EXPAND_)?SZ\s+(.+)/);
+  const rawValue = match?.[1]?.trim();
+  return rawValue ? expandWindowsEnvironmentReferences(rawValue) : undefined;
+}
+
+/**
+ * The real Documents folder — resolved from the registry key Windows itself
+ * (or OneDrive, redirecting it) writes, rather than assumed at
+ * `~/Documents`. `path.join(homedir(), "Documents")` is silently wrong the
+ * moment Documents is redirected, which is common enough that CHM-39 was
+ * filed over exactly this. Falls back to that same unredirected default only
+ * when the registry lookup itself fails — off Windows, or on a Windows
+ * install too locked down to run `reg query` at all.
+ */
+function windowsDocumentsDir(): string {
+  const result = spawnSync("reg", ["query", SHELL_FOLDERS_REGISTRY_KEY, "/v", DOCUMENTS_SHELL_FOLDER_VALUE_NAME], { encoding: "utf8" });
+  const registryDir = !result.error && result.status === 0 ? documentsDirFromRegistryQueryOutput(result.stdout) : undefined;
+  return registryDir ?? path.join(homedir(), "Documents");
 }
 
 /**
