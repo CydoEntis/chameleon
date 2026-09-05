@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ROLES, type Role } from "../constants.js";
+import { mix } from "../palette/color.js";
 import { toPalette, type Appearance } from "../palette/palette.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import type { Scheme } from "../palette/scheme.js";
@@ -53,18 +54,50 @@ export interface HerdrAdapter {
 }
 
 /**
+ * Herdr's own built-in theme names, copied verbatim from the "valid themes:"
+ * list Herdr itself prints when `[theme].name` names something it does not
+ * recognise (`theme.name = "definitely-not-a-theme"; using "catppuccin"`,
+ * with `"status":"partial"` — see this ticket's body, CHM-28). This is the
+ * authoritative list — not a table Chameleon invented and could let drift —
+ * and herdrThemeNameFor below is checked against it on every apply, so a
+ * typo or a renamed Herdr built-in fails loudly instead of writing a name
+ * Herdr silently falls back from.
+ */
+const HERDR_BUILTIN_THEME_NAMES: ReadonlySet<string> = new Set([
+  "catppuccin",
+  "catppuccin-latte",
+  "terminal",
+  "tokyo-night",
+  "tokyo-night-day",
+  "dracula",
+  "nord",
+  "gruvbox",
+  "gruvbox-light",
+  "one-dark",
+  "one-light",
+  "solarized",
+  "solarized-light",
+  "kanagawa",
+  "kanagawa-lotus",
+  "rose-pine",
+  "rose-pine-dawn",
+  "vesper",
+]);
+
+/**
  * Chameleon pack slug → Herdr's own built-in theme slug, for the packs whose
- * upstream family already ships as one — see Herdr's own theme picker for
- * the authoritative list. "Catppuccin Mocha" (the Windows Terminal scheme's
- * display name Chameleon used to write verbatim) was never one of these:
- * Herdr's built-in is named `catppuccin`, and it silently ignores anything
- * else — see CHM-21.
+ * upstream family already ships as one — every value here must be a member
+ * of HERDR_BUILTIN_THEME_NAMES above. "Catppuccin Mocha" (the Windows
+ * Terminal scheme's display name Chameleon used to write verbatim) was
+ * never one of these: Herdr's built-in is named `catppuccin`, and it
+ * silently ignores anything else — see CHM-21.
  *
- * A slug absent from this table — github, ayu, night-owl, everforest,
- * monokai, and any user-supplied pack — has no Herdr built-in at all. Its
- * `name` falls back to the nearest built-in by appearance (see
- * HERDR_DARK_FALLBACK_THEME/HERDR_LIGHT_FALLBACK_THEME below); its own
- * colours still reach Herdr through [theme.custom] regardless, via
+ * A slug absent from this table — ayu, everforest, github, monokai,
+ * night-owl, and nord-light, plus any user-supplied pack — has no Herdr
+ * built-in at all (see CHM-28). Its `name` falls back to the nearest
+ * built-in by appearance (see HERDR_DARK_FALLBACK_THEME/
+ * HERDR_LIGHT_FALLBACK_THEME below); its own colours still reach Herdr
+ * through the full [theme.custom] token set regardless, via
  * upsertCustomBlock, so the theme visibly changes either way.
  */
 const PACK_SLUG_TO_HERDR_THEME: Readonly<Record<string, string>> = {
@@ -81,7 +114,9 @@ const PACK_SLUG_TO_HERDR_THEME: Readonly<Record<string, string>> = {
   "solarized-dark": "solarized",
   "solarized-light": "solarized-light",
   "kanagawa-dark": "kanagawa",
+  "kanagawa-light": "kanagawa-lotus",
   "rose-pine-dark": "rose-pine",
+  "rose-pine-light": "rose-pine-dawn",
 };
 
 /**
@@ -97,9 +132,20 @@ const PACK_SLUG_TO_HERDR_THEME: Readonly<Record<string, string>> = {
 const HERDR_DARK_FALLBACK_THEME = "terminal";
 const HERDR_LIGHT_FALLBACK_THEME = "one-light";
 
-/** The Herdr theme name to write for `slug` — its own built-in when one exists, otherwise the nearest fallback for `appearance`. Always a name real Herdr accepts. */
+/**
+ * The Herdr theme name to write for `slug` — its own built-in when one
+ * exists, otherwise the nearest fallback for `appearance`. Always a name
+ * real Herdr accepts: checked against HERDR_BUILTIN_THEME_NAMES rather than
+ * trusted, so an edit to the table above that introduces a name Herdr does
+ * not recognise fails at apply time instead of writing a theme Herdr itself
+ * would reject.
+ */
 function herdrThemeNameFor(slug: string, appearance: Appearance): string {
-  return PACK_SLUG_TO_HERDR_THEME[slug] ?? (appearance === "dark" ? HERDR_DARK_FALLBACK_THEME : HERDR_LIGHT_FALLBACK_THEME);
+  const themeName = PACK_SLUG_TO_HERDR_THEME[slug] ?? (appearance === "dark" ? HERDR_DARK_FALLBACK_THEME : HERDR_LIGHT_FALLBACK_THEME);
+  if (!HERDR_BUILTIN_THEME_NAMES.has(themeName)) {
+    throw new Error(`"${themeName}" is not one of Herdr's own built-in themes — see HERDR_BUILTIN_THEME_NAMES`);
+  }
+  return themeName;
 }
 
 /**
@@ -108,11 +154,11 @@ function herdrThemeNameFor(slug: string, appearance: Appearance): string {
  * `muted`, `success` or `error` — those were invented, and Herdr silently
  * dropped all five (see CHM-21). Only `accent` was ever a real token.
  *
- * Ideally sourced from `herdr --default-config` rather than hand-maintained,
- * per the ticket, but that requires a live Herdr install — not something
- * this adapter, or its tests, can depend on. Herdr's own docs list these as
- * the tokens a config's [theme.custom] honours, alongside ones Chameleon has
- * no role for (active_row_bg, selection_bg, panel_bg, surface_dim).
+ * This covers 6 of the 19 tokens Herdr's [theme.custom] actually accepts
+ * (established by probing `herdr config check` — see CHM-28's ticket body);
+ * the remaining 13 have no Chameleon role to key off and are derived
+ * directly from the scheme instead — see structuralTokenValues and
+ * extraAccentTokenValues below.
  */
 const ROLE_TO_HERDR_TOKEN: Readonly<Record<Role, string>> = {
   ground: "sidebar_bg",
@@ -122,6 +168,113 @@ const ROLE_TO_HERDR_TOKEN: Readonly<Record<Role, string>> = {
   success: "green",
   error: "red",
 };
+
+/**
+ * Every token Herdr's [theme.custom] table honours — established by probing
+ * `herdr config check`, which reports "unknown config key theme.custom.X;
+ * ignoring key" for anything outside this set (see CHM-28's ticket body).
+ * 19 tokens, not the 7 Herdr's own default config happens to mention.
+ *
+ * Chameleon must never write a key outside this set: CHM-21 already showed
+ * what happens when it does — Herdr accepts the file and silently drops
+ * every key it does not recognise, so the mistake never surfaces on its
+ * own. assertOnlyAcceptedHerdrTokens is the guard that catches it instead.
+ */
+const HERDR_ACCEPTED_CUSTOM_TOKENS: ReadonlySet<string> = new Set([
+  "sidebar_bg",
+  "active_row_bg",
+  "selection_bg",
+  "panel_bg",
+  "surface_dim",
+  "surface0",
+  "surface1",
+  "overlay0",
+  "overlay1",
+  "text",
+  "subtext0",
+  "accent",
+  "red",
+  "green",
+  "blue",
+  "mauve",
+  "peach",
+  "teal",
+  "yellow",
+]);
+
+function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, string>>): void {
+  for (const token of Object.keys(tokenValues)) {
+    if (!HERDR_ACCEPTED_CUSTOM_TOKENS.has(token)) {
+      throw new Error(`"${token}" is not one of Herdr's own [theme.custom] tokens — see HERDR_ACCEPTED_CUSTOM_TOKENS`);
+    }
+  }
+}
+
+/**
+ * Fractions of the way from ground to body (see mix in palette/color.ts)
+ * that make up Herdr's neutral surface scale — its token names borrow
+ * Catppuccin's, running from nearest ground to nearest body. Evenly spaced
+ * rather than tuned per theme: these tokens never carry text, so the scale
+ * only needs to read as a ramp, not clear any particular contrast ratio.
+ */
+const SURFACE_DIM_FRACTION = 1 / 6;
+const SURFACE_0_FRACTION = 2 / 6;
+const SURFACE_1_FRACTION = 3 / 6;
+const OVERLAY_0_FRACTION = 4 / 6;
+const OVERLAY_1_FRACTION = 5 / 6;
+
+/** Herdr's neutral surface scale, walking from ground toward body — see SURFACE_DIM_FRACTION and friends. */
+function surfaceScale(groundHex: string, bodyHex: string): Record<string, string> {
+  return {
+    surface_dim: mix(groundHex, bodyHex, SURFACE_DIM_FRACTION),
+    surface0: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
+    surface1: mix(groundHex, bodyHex, SURFACE_1_FRACTION),
+    overlay0: mix(groundHex, bodyHex, OVERLAY_0_FRACTION),
+    overlay1: mix(groundHex, bodyHex, OVERLAY_1_FRACTION),
+  };
+}
+
+/**
+ * Herdr's structural background tokens beyond `sidebar_bg` (ground) and
+ * `text` (body) — the ones this ticket exists to fix (CHM-28): without
+ * them, a pack with no Herdr built-in left every panel and row painted in
+ * the fallback theme's own colours, with only the accent actually changing.
+ *
+ * `selection_bg` is not derived at all: the scheme already carries its own
+ * authored selection colour, so that is written through unchanged rather
+ * than invented from ground and body.
+ */
+function structuralTokenValues(scheme: Scheme, groundHex: string, bodyHex: string): Record<string, string> {
+  return {
+    panel_bg: groundHex,
+    // An active row reads as a slightly raised surface — the same tone as
+    // surface0, not a colour of its own.
+    active_row_bg: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
+    selection_bg: scheme.selectionBackground,
+    ...surfaceScale(groundHex, bodyHex),
+  };
+}
+
+/**
+ * Herdr's four extra accent tokens beyond Chameleon's own accent/success/
+ * error roles, drawn straight from the scheme's own base ANSI slots — the
+ * same slots role assignment measures from (see BASE_COLOR_SLOTS in
+ * palette/roles.ts) but taken at face value here, the way ground and body
+ * already are. These are supplementary swatches Herdr paints labels and
+ * badges with, not text that must clear a contrast floor.
+ *
+ * No ANSI slot is orange, so `peach` is approximated as the midpoint
+ * between the two slots that bracket it on the colour wheel.
+ */
+function extraAccentTokenValues(scheme: Scheme): Record<string, string> {
+  return {
+    blue: scheme.blue,
+    teal: scheme.cyan,
+    mauve: scheme.purple,
+    yellow: scheme.yellow,
+    peach: mix(scheme.red, scheme.yellow, 0.5),
+  };
+}
 
 /**
  * The one colour key under [ui] — Herdr's own docs call it "Accent color for
@@ -396,14 +549,28 @@ function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenV
   return spliceTableBody(lines, table, updatedBodyLines, eol);
 }
 
-/** [theme.custom]'s own token values for `colorTable`, keyed by Herdr's own token names rather than Chameleon's role names — see ROLE_TO_HERDR_TOKEN. */
-function customTokenValues(colorTable: Readonly<Record<Role, string>>): Record<string, string> {
-  return Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]]));
+/**
+ * Every [theme.custom] token value Chameleon writes: the six roles under
+ * Herdr's own token names (see ROLE_TO_HERDR_TOKEN), plus the structural and
+ * extra-accent tokens derived straight from `scheme` and `colorTable`'s
+ * ground/body — see structuralTokenValues and extraAccentTokenValues. Every
+ * key is asserted against HERDR_ACCEPTED_CUSTOM_TOKENS before it reaches the
+ * config, so a future addition that invents a token fails immediately
+ * instead of shipping a key Herdr silently ignores (CHM-21).
+ */
+function customTokenValues(scheme: Scheme, colorTable: Readonly<Record<Role, string>>): Record<string, string> {
+  const tokenValues = {
+    ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
+    ...structuralTokenValues(scheme, colorTable.ground, colorTable.body),
+    ...extraAccentTokenValues(scheme),
+  };
+  assertOnlyAcceptedHerdrTokens(tokenValues);
+  return tokenValues;
 }
 
-/** Upserts Chameleon's six roles into [theme.custom], under Herdr's own token names. See upsertMarkedTokens. */
-function upsertCustomBlock(text: string, eol: string, colorTable: Readonly<Record<Role, string>>): string {
-  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(colorTable));
+/** Upserts every [theme.custom] token Chameleon owns — see customTokenValues. */
+function upsertCustomBlock(text: string, eol: string, scheme: Scheme, colorTable: Readonly<Record<Role, string>>): string {
+  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable));
 }
 
 /**
@@ -416,10 +583,10 @@ function upsertUiAccent(text: string, eol: string, accentHex: string): string {
 
 /**
  * Backs up config.toml, then sets [theme].name to a real Herdr built-in for
- * `slug`, upserts the [theme.custom] colour tokens under Herdr's own token
- * names for `scheme`'s resolved roles, and upserts [ui]'s own `accent` to
- * match — accent is the only colour key under [ui]; see CHM-23. Every other
- * [ui] setting, its comments included, is left untouched.
+ * `slug`, upserts every [theme.custom] token Chameleon owns (see
+ * customTokenValues) under Herdr's own token names, and upserts [ui]'s own
+ * `accent` to match — accent is the only colour key under [ui]; see CHM-23.
+ * Every other [ui] setting, its comments included, is left untouched.
  */
 function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
   const resolvedConfigPath = requireConfigPath(configPath);
@@ -435,7 +602,7 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
   const themeName = herdrThemeNameFor(slug, toPalette(scheme).appearance);
 
   const withName = upsertThemeName(originalText, eol, themeName);
-  const withCustom = upsertCustomBlock(withName, eol, colorTable);
+  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable);
   const withUiAccent = upsertUiAccent(withCustom, eol, colorTable.accent);
 
   writeFileSync(resolvedConfigPath, withUiAccent, "utf8");

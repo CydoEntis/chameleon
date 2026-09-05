@@ -108,9 +108,74 @@ const OTHER_MAPPED_DARK_SLUG = "dracula-dark";
 const OTHER_MAPPED_DARK_HERDR_THEME = "dracula";
 const UNMAPPED_DARK_SLUG = "monokai-dark";
 const UNMAPPED_LIGHT_SLUG = "github-light";
+// kanagawa-light and rose-pine-light each have a real Herdr built-in
+// (kanagawa-lotus, rose-pine-dawn respectively) that the mapping table used
+// to omit for no reason — CHM-28, problem 1.
+const KANAGAWA_LIGHT_SLUG = "kanagawa-light";
+const KANAGAWA_LIGHT_HERDR_THEME = "kanagawa-lotus";
+const ROSE_PINE_LIGHT_SLUG = "rose-pine-light";
+const ROSE_PINE_LIGHT_HERDR_THEME = "rose-pine-dawn";
 
 /** Herdr's own [theme.custom] token names for Chameleon's six roles, in role order — see ROLE_TO_HERDR_TOKEN in adapters/herdr.ts. */
 const HERDR_TOKENS_IN_ROLE_ORDER = ["sidebar_bg", "text", "accent", "subtext0", "green", "red"];
+
+/**
+ * Every token Herdr's own [theme.custom] table accepts — copied verbatim
+ * from probing `herdr config check` (see CHM-28's ticket body), the same way
+ * HERDR_BUILTIN_THEME_NAMES below is copied from Herdr's own bogus-theme-name
+ * diagnostic. Declared independently of adapters/herdr.ts's own
+ * HERDR_ACCEPTED_CUSTOM_TOKENS so this test proves the adapter's behaviour
+ * against Herdr's real vocabulary, not against its own copy of it.
+ */
+const HERDR_ACCEPTED_CUSTOM_TOKENS = new Set([
+  "sidebar_bg",
+  "active_row_bg",
+  "selection_bg",
+  "panel_bg",
+  "surface_dim",
+  "surface0",
+  "surface1",
+  "overlay0",
+  "overlay1",
+  "text",
+  "subtext0",
+  "accent",
+  "red",
+  "green",
+  "blue",
+  "mauve",
+  "peach",
+  "teal",
+  "yellow",
+]);
+
+/**
+ * Herdr's own built-in theme names, copied verbatim from the "valid themes:"
+ * list Herdr prints for an unrecognised `[theme].name` — see this ticket's
+ * body (CHM-28) and HERDR_BUILTIN_THEME_NAMES in adapters/herdr.ts. Declared
+ * independently here for the same reason as HERDR_ACCEPTED_CUSTOM_TOKENS
+ * above.
+ */
+const HERDR_BUILTIN_THEME_NAMES = new Set([
+  "catppuccin",
+  "catppuccin-latte",
+  "terminal",
+  "tokyo-night",
+  "tokyo-night-day",
+  "dracula",
+  "nord",
+  "gruvbox",
+  "gruvbox-light",
+  "one-dark",
+  "one-light",
+  "solarized",
+  "solarized-light",
+  "kanagawa",
+  "kanagawa-lotus",
+  "rose-pine",
+  "rose-pine-dawn",
+  "vesper",
+]);
 
 /**
  * True when every line of `original`, in order, appears verbatim somewhere
@@ -415,6 +480,136 @@ describe("herdr adapter — theme name and token mapping", () => {
     expect(config.theme.custom["success"]).toBeUndefined();
     expect(config.theme.custom["error"]).toBeUndefined();
   });
+
+  // CHM-28, problem 1: these two packs each have a real Herdr built-in that
+  // the mapping table used to omit for no reason, so they fell back to
+  // "terminal"/"one-light" instead.
+  it("maps kanagawa-light to its real Herdr built-in, kanagawa-lotus", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, KANAGAWA_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.name).toBe(KANAGAWA_LIGHT_HERDR_THEME);
+  });
+
+  it("maps rose-pine-light to its real Herdr built-in, rose-pine-dawn", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, ROSE_PINE_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.name).toBe(ROSE_PINE_LIGHT_HERDR_THEME);
+  });
+
+  // CHM-28: the valid theme list must come from Herdr rather than a
+  // hardcoded table, so it cannot drift. This sweeps every slug this file
+  // exercises — mapped, unmapped, and both appearances — and checks the
+  // written name against Herdr's own reported list rather than against
+  // adapters/herdr.ts's own copy of it (see HERDR_BUILTIN_THEME_NAMES above).
+  it("never writes a [theme].name outside Herdr's own reported list of valid themes", () => {
+    const adapter = createHerdrAdapter(configPath);
+    const cases: ReadonlyArray<[Scheme, string]> = [
+      [ZEROX96F_SCHEME, MAPPED_DARK_SLUG],
+      [AARDVARK_BLUE_SCHEME, OTHER_MAPPED_DARK_SLUG],
+      [AARDVARK_BLUE_SCHEME, UNMAPPED_DARK_SLUG],
+      [GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG],
+      [GITHUB_LIGHT_SCHEME, KANAGAWA_LIGHT_SLUG],
+      [GITHUB_LIGHT_SCHEME, ROSE_PINE_LIGHT_SLUG],
+    ];
+
+    for (const [scheme, slug] of cases) {
+      adapter.apply(scheme, slug);
+      const config = adapter.read();
+      expect(HERDR_BUILTIN_THEME_NAMES.has(config.theme.name ?? "")).toBe(true);
+    }
+  });
+});
+
+// CHM-28, problem 2: a pack with no Herdr built-in used to set only six
+// [theme.custom] tokens, leaving every other panel, row and surface Herdr
+// paints in the fallback theme's own colours — only the accent visibly
+// changed. These tests pin the fix: Chameleon now derives and writes
+// Herdr's full 19-token vocabulary, and never a key outside it.
+describe("herdr adapter — full custom token vocabulary (CHM-28)", () => {
+  let configDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-tokens-"));
+    configPath = path.join(configDir, "config.toml");
+    // A minimal config with no pre-existing [theme.custom] of its own — the
+    // vocabulary tests below check exactly what Chameleon itself writes, not
+    // a mix of that and a user's own unrelated custom keys (already covered
+    // by the "keeps a user's own overrides untouched" tests elsewhere).
+    writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("writes every one of Herdr's 19 accepted tokens for a pack with no Herdr built-in", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    for (const token of HERDR_ACCEPTED_CUSTOM_TOKENS) {
+      expect(config.theme.custom[token]).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it("never writes a [theme.custom] key outside Herdr's own accepted vocabulary", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    for (const key of Object.keys(config.theme.custom)) {
+      expect(HERDR_ACCEPTED_CUSTOM_TOKENS.has(key)).toBe(true);
+    }
+  });
+
+  it("passes the scheme's own selection colour straight through to selection_bg", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.custom["selection_bg"]).toBe(GITHUB_LIGHT_SCHEME.selectionBackground);
+  });
+
+  it("draws the extra accent tokens straight from the scheme's own base ANSI slots", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    expect(config.theme.custom["blue"]).toBe(GITHUB_LIGHT_SCHEME.blue);
+    expect(config.theme.custom["teal"]).toBe(GITHUB_LIGHT_SCHEME.cyan);
+    expect(config.theme.custom["mauve"]).toBe(GITHUB_LIGHT_SCHEME.purple);
+    expect(config.theme.custom["yellow"]).toBe(GITHUB_LIGHT_SCHEME.yellow);
+  });
+
+  it("gives panel_bg, active_row_bg and the surface scale distinct tones between ground and body", () => {
+    createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+
+    const config = createHerdrAdapter(configPath).read();
+    const expectedColorTable = resolveRoleHexes(GITHUB_LIGHT_SCHEME);
+    // panel_bg matches sidebar_bg (both are the pack's own ground) — the
+    // fix here is that it is set at all, not that it differs from ground.
+    expect(config.theme.custom["panel_bg"]).toBe(expectedColorTable.ground);
+    // The rest of the scale must actually move away from ground and body,
+    // not just repeat one of them — otherwise "the row colours changed" is
+    // a name change with no visible effect, exactly what this ticket is
+    // about.
+    const surfaceTokens = ["surface_dim", "surface0", "surface1", "overlay0", "overlay1", "active_row_bg"];
+    for (const token of surfaceTokens) {
+      const value = config.theme.custom[token];
+      expect(value).not.toBe(expectedColorTable.ground);
+      expect(value).not.toBe(expectedColorTable.body);
+    }
+  });
+
+  it("stays idempotent across the full token set — applying the same pack twice produces the same file", () => {
+    const adapter = createHerdrAdapter(configPath);
+
+    adapter.apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+    const afterFirstApply = readFileSync(configPath, "utf8");
+    adapter.apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
+    const afterSecondApply = readFileSync(configPath, "utf8");
+
+    expect(afterSecondApply).toBe(afterFirstApply);
+  });
 });
 
 // CHM-22: Chameleon's marked block wrote `text` and `subtext0` a second time
@@ -469,9 +664,9 @@ describe("herdr adapter — duplicate key dedup", () => {
     createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const resultText = readFileSync(configPath, "utf8");
-    expect(countOccurrences(resultText, "surface_dim = ")).toBe(1);
-    expect(resultText).toContain('surface_dim = "#001100"');
-    expect(resultText).toContain("# surface_dim isn't one of Chameleon's own tokens — must survive untouched");
+    expect(countOccurrences(resultText, "tab_bg = ")).toBe(1);
+    expect(resultText).toContain('tab_bg = "#001100"');
+    expect(resultText).toContain("# tab_bg is one of Herdr's explicitly rejected keys, never Chameleon's — must survive untouched");
   });
 
   it("still writes the remaining role tokens inside the marker", () => {
@@ -680,6 +875,31 @@ describe("herdr adapter — reload", () => {
 
     const adapter = createHerdrAdapter("unused/config.toml");
     expect(() => adapter.reload()).toThrow(/duplicate key `text` in table `theme\.custom`/);
+  });
+
+  // CHM-28: an unknown [theme].name must be treated as a failure, not a
+  // silent fallback — Herdr's own repro for this is
+  // `theme.name = "definitely-not-a-theme"; using "catppuccin"`, reported
+  // with "status":"partial" rather than "failed". This pins that CHM-22's
+  // status check (which only special-cased "applied" as success) already
+  // catches "partial" too, since it is simply not "applied" — no separate
+  // handling needed.
+  it("treats a zero exit whose JSON payload reports status partial as a failed reload, for an unknown theme name", () => {
+    vi.mocked(spawnSync).mockReturnValue(
+      makeSpawnResult({
+        status: 0,
+        stdout: JSON.stringify({
+          result: {
+            diagnostics: ['unknown theme name theme.name = "definitely-not-a-theme"; using "catppuccin"'],
+            status: "partial",
+            type: "config_reload",
+          },
+        }),
+      }),
+    );
+
+    const adapter = createHerdrAdapter("unused/config.toml");
+    expect(() => adapter.reload()).toThrow(/unknown theme name/);
   });
 
   it("succeeds when the JSON payload confirms status applied with empty diagnostics", () => {
