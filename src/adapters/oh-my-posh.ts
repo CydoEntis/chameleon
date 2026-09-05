@@ -307,6 +307,15 @@ function upsertPaletteTable(configPath: string, text: string, paletteTable: Reco
  * Chameleon's role names, so replacing the table with just the six roles
  * deleted every key the prompt actually used and left it colourless.
  *
+ * A key Chameleon itself generated on a previous apply (see
+ * isGeneratedOverrideKey) is dropped here rather than carried forward and
+ * recoloured — repairSegmentForegrounds regenerates whichever of these this
+ * apply still needs, from the true source key's own fresh colour, under the
+ * same stable name. Carrying the old one forward instead is CHM-43's own
+ * bug: a generated key recoloured like an ordinary source key, then
+ * re-suffixed if it still failed, compounds one generation of "-legible" per
+ * apply.
+ *
  * A key that is already one of Chameleon's own roles (from a layout `ch
  * edit` built, or a previous apply) is recoloured by that same role, never
  * reclassified by its current colour — its name already says exactly what
@@ -317,10 +326,9 @@ function upsertPaletteTable(configPath: string, text: string, paletteTable: Reco
  */
 function recoloredPaletteTable(existingPalette: Record<string, string> | undefined, resolvedRoleHexes: Record<Role, string>): Record<string, string> {
   const recoloredExisting = Object.fromEntries(
-    Object.entries(existingPalette ?? {}).map(([key, hex]) => [
-      key,
-      isKnownRole(key) ? resolvedRoleHexes[key] : recoloredHexFor(key, hex, resolvedRoleHexes),
-    ]),
+    Object.entries(existingPalette ?? {})
+      .filter(([key]) => !isGeneratedOverrideKey(key))
+      .map(([key, hex]) => [key, isKnownRole(key) ? resolvedRoleHexes[key] : recoloredHexFor(key, hex, resolvedRoleHexes)]),
   );
   const missingRoles = ROLES.filter((role) => !(role in recoloredExisting));
   const additions = Object.fromEntries(missingRoles.map((role) => [role, resolvedRoleHexes[role]]));
@@ -365,14 +373,87 @@ function assertNoDanglingPaletteReferences(configPath: string, configText: strin
  * Suffix CHM-40 gives a foreign palette key's own repaired copy, when a
  * segment's own background makes that key's recoloured value illegible
  * there. The shared key itself is never touched — every other segment still
- * reading fine off it keeps doing exactly that — only the one segment that
- * failed gets repointed at a copy carrying the fix. See CHM-40's "adjust the
+ * reading fine off it keeps doing exactly that — only the segment(s) that
+ * failed get repointed at a copy carrying the fix. See CHM-40's "adjust the
  * foreground role for that segment rather than the shared palette entry."
+ *
+ * A source key's own override is named `<sourceKey>-legible`, or that name
+ * with a "-2", "-3", … counter when the same source key is paired with more
+ * than one genuinely different set of backgrounds in the same apply — see
+ * overrideKeysBySignatureFor, which orders that counter by the backgrounds'
+ * own content rather than by which segment happened to fail first, so the
+ * same set of colours always assigns the same names. What CHM-43 actually
+ * fixes is not this counter, but a generated key being read back as an
+ * ordinary source key on the next apply: that compounded a fresh "-legible"
+ * onto every one of these every time the user switched themes —
+ * c-badge-text-legible-2 becoming c-badge-text-legible-2-legible and so on,
+ * without bound. See GENERATED_OVERRIDE_KEY_SUFFIX_PATTERN and sourceKeyFor,
+ * which recognise and unwind exactly that, and
+ * withGeneratedForegroundReferencesNormalized, which stops it from
+ * happening again.
  */
 const SEGMENT_FOREGROUND_REPAIR_SUFFIX = "legible";
 
+/**
+ * Matches a generated override key's own suffix, including a counter a
+ * pre-CHM-43 apply may have appended: "-legible", "-legible-2", "-legible-3".
+ * Never matches a plain source key, which never carries this suffix on its
+ * own.
+ */
+const GENERATED_OVERRIDE_KEY_SUFFIX_PATTERN = new RegExp(`-${SEGMENT_FOREGROUND_REPAIR_SUFFIX}(?:-\\d+)?$`);
+
+/**
+ * The source key `key` was generated from, unwinding every generation a
+ * pre-CHM-43 apply piled onto it (see GENERATED_OVERRIDE_KEY_SUFFIX_PATTERN) —
+ * "c-badge-text-legible-2-legible" unwinds to "c-badge-text". Returns `key`
+ * unchanged when it carries no generated suffix at all, which is every
+ * ordinary source key.
+ */
+function sourceKeyFor(key: string): string {
+  let sourceKey = key;
+  while (GENERATED_OVERRIDE_KEY_SUFFIX_PATTERN.test(sourceKey)) {
+    sourceKey = sourceKey.replace(GENERATED_OVERRIDE_KEY_SUFFIX_PATTERN, "");
+  }
+  return sourceKey;
+}
+
+/** Whether `key` is itself a palette key Chameleon generated on a previous apply, rather than one a user or a theme author wrote — see sourceKeyFor. CHM-39's own root cause, repeated here: Chameleon's own output must never be read back as user input. */
+function isGeneratedOverrideKey(key: string): boolean {
+  return sourceKeyFor(key) !== key;
+}
+
+/**
+ * The base palette key `sourceKey`'s own repaired copy is named from —
+ * `overrideKeysBySignatureFor` uses this verbatim for the first background
+ * signature a source key needs a fix for, and with a counter appended for
+ * any further one. Deterministic in `sourceKey` alone, unlike the disambig-
+ * uation this used to run against whatever else the palette table happened
+ * to hold at the time — so an apply that needs the same fix again reuses
+ * this exact name instead of minting another. See CHM-43.
+ */
+function overrideKeyFor(sourceKey: string): string {
+  return `${sourceKey}-${SEGMENT_FOREGROUND_REPAIR_SUFFIX}`;
+}
+
 /** One raw segment object, exactly as a config's own "blocks" array writes it — every property beyond the four this repair reads (`foreground`, `foreground_templates`, `background`, `background_templates`) is carried through unknown and untouched. */
 type RawSegment = Readonly<Record<string, unknown>>;
+
+/** `rawBlock`'s own "segments" array, when it has one — undefined for a block this walk does not recognise (missing a `segments` array, or not an object at all), which every block-walking function below passes straight through untouched rather than dropping. See parseLayoutBlocks/blocksFromLayout for the same "rprompt and friends survive" contract on `ch edit`'s own, narrower layout model. */
+function segmentsOf(rawBlock: unknown): readonly unknown[] | undefined {
+  if (typeof rawBlock !== "object" || rawBlock === null) return undefined;
+  const segments = (rawBlock as RawSegment)["segments"];
+  return Array.isArray(segments) ? segments : undefined;
+}
+
+/** `rawBlock` with every one of its own segments passed through `transformSegment` — the "walk a block's segments, leave anything else untouched" shape withGeneratedBlockForegroundsNormalized and withOverridesAppliedToBlock both need, differing only in which transform they run per segment. */
+function withSegmentsTransformed(rawBlock: unknown, transformSegment: (segment: RawSegment) => RawSegment): unknown {
+  const segments = segmentsOf(rawBlock);
+  if (segments === undefined) return rawBlock;
+  return {
+    ...(rawBlock as RawSegment),
+    segments: segments.map((rawSegment: unknown) => (typeof rawSegment === "object" && rawSegment !== null ? transformSegment(rawSegment as RawSegment) : rawSegment)),
+  };
+}
 
 /** Every hex `segment`'s own `background`/`background_templates` fields could resolve to through `paletteTable` — see paletteReferencesIn. A reference `paletteTable` does not define is skipped here; assertNoDanglingPaletteReferences is what reports that, once, by name. */
 function segmentBackgroundHexes(segment: RawSegment, paletteTable: Readonly<Record<string, string>>): string[] {
@@ -408,15 +489,166 @@ function segmentWithForegroundRepointed(segment: RawSegment, foregroundKey: stri
   };
 }
 
-/** A palette key for `foregroundKey`'s own repaired copy that collides with neither `paletteTable` nor an override this same apply already minted — see SEGMENT_FOREGROUND_REPAIR_SUFFIX. */
-function uniqueOverrideKey(foregroundKey: string, paletteTable: Readonly<Record<string, string>>, overridesSoFar: Readonly<Record<string, string>>): string {
-  const isTaken = (candidateKey: string) => candidateKey in paletteTable || candidateKey in overridesSoFar;
-  const baseKey = `${foregroundKey}-${SEGMENT_FOREGROUND_REPAIR_SUFFIX}`;
-  if (!isTaken(baseKey)) return baseKey;
+/**
+ * `segment` with every foreground reference to a key Chameleon generated on
+ * a previous apply repointed back at the true source key it was generated
+ * from. Runs before this apply recomputes anything, so a foreground that no
+ * longer needs a fix reverts to its plain source key instead of carrying a
+ * stale override forward forever, and one that still needs a fix is
+ * measured fresh from the source key's own newly recoloured hex, not from
+ * an already-repaired copy of it. See CHM-43: skipping this step is what let
+ * a generated key get read back as an ordinary source key and re-suffixed
+ * every apply.
+ */
+function withGeneratedForegroundReferencesNormalized(segment: RawSegment): RawSegment {
+  return segmentForegroundKeys(segment)
+    .filter((foregroundKey) => isGeneratedOverrideKey(foregroundKey))
+    .reduce(
+      (currentSegment, foregroundKey) => segmentWithForegroundRepointed(currentSegment, foregroundKey, sourceKeyFor(foregroundKey)),
+      segment,
+    );
+}
 
-  let disambiguator = 2;
-  while (isTaken(`${baseKey}-${disambiguator}`)) disambiguator += 1;
-  return `${baseKey}-${disambiguator}`;
+/** `rawBlock` with every one of its segments' own foreground references normalized — see withGeneratedForegroundReferencesNormalized. A block missing a `segments` array, or not an object at all, is passed through untouched, the same as everywhere else this file walks "blocks". */
+function withGeneratedBlockForegroundsNormalized(rawBlock: unknown): unknown {
+  return withSegmentsTransformed(rawBlock, withGeneratedForegroundReferencesNormalized);
+}
+
+/**
+ * A stable, order-independent fingerprint of one segment's own resolved
+ * background hexes — de-duplicated and sorted, so two segments pairing the
+ * same foreground key against the same set of backgrounds (in any order,
+ * with any repeats) always produce the same signature, and therefore always
+ * share one override — see overrideKeysBySignatureFor. Two segments whose
+ * backgrounds actually differ get different signatures, and therefore
+ * different overrides: a foreground shared across a badge segment and a git
+ * segment can genuinely need two different repaired colours, since nothing
+ * ties one segment's fix to what another segment happens to need.
+ */
+function backgroundSignatureFor(backgroundHexes: readonly string[]): string {
+  return [...new Set(backgroundHexes)].sort().join(",");
+}
+
+/**
+ * Adds `segment`'s own resolvable background hexes onto
+ * `signaturesByForegroundKey`'s running collection, keyed first by every
+ * foreground key `segment` carries and then by that segment's own
+ * background signature — the accumulator repairSegmentForegrounds folds
+ * every segment in the config into, so every distinct background set a
+ * source key is ever paired against anywhere in the config is known before
+ * any override is named. See CHM-43: naming an override the moment a
+ * segment failed, in document order, made its name depend on where in the
+ * config that segment happened to sit.
+ */
+function collectSegmentBackgroundHexes(
+  segment: RawSegment,
+  paletteTable: Readonly<Record<string, string>>,
+  signaturesByForegroundKey: Map<string, Map<string, readonly string[]>>,
+): void {
+  const backgroundHexes = segmentBackgroundHexes(segment, paletteTable);
+  if (backgroundHexes.length === 0) return;
+  const signature = backgroundSignatureFor(backgroundHexes);
+
+  for (const foregroundKey of segmentForegroundKeys(segment)) {
+    const signaturesForKey = signaturesByForegroundKey.get(foregroundKey) ?? new Map<string, readonly string[]>();
+    signaturesForKey.set(signature, backgroundHexes);
+    signaturesByForegroundKey.set(foregroundKey, signaturesForKey);
+  }
+}
+
+/**
+ * What repairing one source key's foreground against every distinct
+ * background signature it is ever paired with, anywhere in the config,
+ * produced: the override key each signature needing a fix gets, keyed by
+ * that signature. A signature that already clears TEXT_MIN_RATIO needs no
+ * override at all, and carries no entry here.
+ *
+ * Every signature needing a fix gets `overrideKeyFor(foregroundKey)` itself,
+ * or that name with a "-2", "-3", … counter, ordered by the signature text
+ * — never by which segment happened to fail first. See CHM-43: sorting by
+ * content rather than by document encounter order is what makes this
+ * assignment reproducible from one apply to the next, given the same
+ * colours, instead of depending on where in the config a failing segment
+ * happened to sit.
+ */
+function overrideKeysBySignatureFor(
+  foregroundKey: string,
+  foregroundHex: string,
+  backgroundHexesBySignature: ReadonlyMap<string, readonly string[]>,
+): ReadonlyMap<string, { readonly overrideKey: string; readonly repairedHex: string }> {
+  const repairedBySignature = [...backgroundHexesBySignature.entries()]
+    .map(([signature, backgroundHexes]) => [signature, repairForegroundAgainstBackgrounds(foregroundHex, backgroundHexes)] as const)
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .sort(([signatureA], [signatureB]) => (signatureA < signatureB ? -1 : signatureA > signatureB ? 1 : 0));
+
+  const bySignature = new Map<string, { overrideKey: string; repairedHex: string }>();
+  repairedBySignature.forEach(([signature, repairedHex], index) => {
+    const overrideKey = index === 0 ? overrideKeyFor(foregroundKey) : `${overrideKeyFor(foregroundKey)}-${index + 1}`;
+    bySignature.set(signature, { overrideKey, repairedHex });
+  });
+  return bySignature;
+}
+
+/**
+ * What repairing every source key's own foreground against every
+ * background signature it is ever paired with produced: the override key
+ * each (foreground key, signature) pair needing a fix gets, and the palette
+ * entries those overrides need.
+ */
+interface ForegroundOverrides {
+  readonly overrideKeysByForegroundKeyAndSignature: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  readonly additionalPaletteEntries: Readonly<Record<string, string>>;
+}
+
+function computeForegroundOverrides(
+  signaturesByForegroundKey: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>,
+  paletteTable: Readonly<Record<string, string>>,
+): ForegroundOverrides {
+  const overrideKeysByForegroundKeyAndSignature = new Map<string, ReadonlyMap<string, string>>();
+  const additionalPaletteEntries: Record<string, string> = {};
+
+  for (const [foregroundKey, backgroundHexesBySignature] of signaturesByForegroundKey) {
+    const foregroundHex = paletteTable[foregroundKey];
+    if (foregroundHex === undefined) continue;
+
+    const overridesBySignature = overrideKeysBySignatureFor(foregroundKey, foregroundHex, backgroundHexesBySignature);
+    if (overridesBySignature.size === 0) continue;
+
+    const overrideKeysBySignature = new Map<string, string>();
+    for (const [signature, { overrideKey, repairedHex }] of overridesBySignature) {
+      overrideKeysBySignature.set(signature, overrideKey);
+      additionalPaletteEntries[overrideKey] = repairedHex;
+    }
+    overrideKeysByForegroundKeyAndSignature.set(foregroundKey, overrideKeysBySignature);
+  }
+  return { overrideKeysByForegroundKeyAndSignature, additionalPaletteEntries };
+}
+
+/** `segment` with every foreground key that has an override for `segment`'s own background signature repointed at it — see computeForegroundOverrides. A foreground key with no matching entry needs no fix here and is left referencing its source key untouched. */
+function segmentWithOverridesApplied(
+  segment: RawSegment,
+  paletteTable: Readonly<Record<string, string>>,
+  overrideKeysByForegroundKeyAndSignature: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): RawSegment {
+  const backgroundHexes = segmentBackgroundHexes(segment, paletteTable);
+  if (backgroundHexes.length === 0) return segment;
+  const signature = backgroundSignatureFor(backgroundHexes);
+
+  return segmentForegroundKeys(segment).reduce((currentSegment, foregroundKey) => {
+    const overrideKey = overrideKeysByForegroundKeyAndSignature.get(foregroundKey)?.get(signature);
+    return overrideKey === undefined ? currentSegment : segmentWithForegroundRepointed(currentSegment, foregroundKey, overrideKey);
+  }, segment);
+}
+
+/** `rawBlock` with every one of its segments repointed at whichever overrides it needs — see segmentWithOverridesApplied. */
+function withOverridesAppliedToBlock(
+  rawBlock: unknown,
+  paletteTable: Readonly<Record<string, string>>,
+  overrideKeysByForegroundKeyAndSignature: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): unknown {
+  return withSegmentsTransformed(rawBlock, (segment) =>
+    segmentWithOverridesApplied(segment, paletteTable, overrideKeysByForegroundKeyAndSignature),
+  );
 }
 
 /**
@@ -430,32 +662,40 @@ function uniqueOverrideKey(foregroundKey: string, paletteTable: Readonly<Record<
 interface SegmentForegroundRepairResult {
   readonly blocks: readonly unknown[];
   readonly additionalPaletteEntries: Readonly<Record<string, string>>;
-  readonly wasAnySegmentRepaired: boolean;
+  readonly wereBlocksChanged: boolean;
 }
 
 /**
- * Walks every segment of every block, resolves its own foreground and
- * background(s) through `paletteTable`, and requires TEXT_MIN_RATIO between
- * them (see repairForegroundAgainstBackgrounds). CHM-37 kept every one of a
- * scheme's own roles distinct from every other, but never checked the one
- * pairing that actually renders together — a segment's own foreground
- * against its own background — so a light role could still land on a light
- * background. See CHM-40.
+ * Resolves every segment's own foreground and background(s) through
+ * `paletteTable`, and requires TEXT_MIN_RATIO between them (see
+ * repairForegroundAgainstBackgrounds). CHM-37 kept every one of a scheme's
+ * own roles distinct from every other, but never checked the one pairing
+ * that actually renders together — a segment's own foreground against its
+ * own background — so a light role could still land on a light background.
+ * See CHM-40.
  *
- * A segment's foreground stays a single, shared colour — a segment with
- * several background candidates (battery's own eight charge levels, say)
- * gets one repaired override, not a different one per candidate, because
- * Oh My Posh evaluates a segment's `foreground`/`foreground_templates`
- * completely independently of its `background`/`background_templates`:
- * nothing ties a foreground template to the background condition that
- * happens to be true at the same render, so there is no safe way to hand
- * two different candidates two different colours without risking the wrong
- * one landing on the wrong background. repairForegroundAgainstBackgrounds
- * already searches for the one colour that reads against every candidate at
- * once, and ships its best effort even on the rare set of candidates no
- * single colour can satisfy simultaneously — closer to legible than the
- * original, even where it cannot clear the floor against all of them at
- * once.
+ * Every reference to a key Chameleon generated on an earlier apply is
+ * normalized back to its true source key first (see
+ * withGeneratedForegroundReferencesNormalized), so this always repairs from
+ * the source key's own fresh colour rather than from an already-repaired
+ * copy of it — see CHM-43. A source key stays a single, shared colour
+ * across every segment that pairs it with the same backgrounds — two
+ * segments failing the exact same way share one override, named
+ * deterministically from the source key and which distinct background
+ * signature this is for that key (see overrideKeysBySignatureFor), never
+ * from which segment happened to fail first. Two segments pairing the same
+ * source key against genuinely different backgrounds still get different
+ * overrides: nothing ties one segment's own fix to what an unrelated
+ * segment sharing the same foreground key happens to need, since Oh My Posh
+ * evaluates a segment's `foreground`/`foreground_templates` completely
+ * independently of its `background`/`background_templates` — there is no
+ * safe way to hand every usage of a source key one shared colour without
+ * risking it landing illegibly on a background it was never checked
+ * against. repairForegroundAgainstBackgrounds already searches for the one
+ * colour that reads against every one of a single signature's candidates at
+ * once, and ships its best effort even on the rare set no single colour can
+ * satisfy simultaneously — closer to legible than the original, even where
+ * it cannot clear the floor against all of them at once.
  *
  * A segment with no resolvable background (no `background`/
  * `background_templates` field, or neither names a key `paletteTable`
@@ -466,54 +706,31 @@ interface SegmentForegroundRepairResult {
  * JSON rather than Chameleon's narrower `ch edit` layout model, precisely so
  * a block type that model does not parse (e.g. "rprompt") still survives an
  * apply.
- *
- * Two segments that need the exact same fix — the same foreground key
- * failing against the exact same set of backgrounds, chips's own six
- * project-language segments all sharing "generic error" among their
- * candidates — are repointed at one shared override, not six near-identical
- * ones, so a repair does not bloat the palette table with copies nobody
- * asked to tell apart.
  */
 function repairSegmentForegrounds(rawBlocks: readonly unknown[], paletteTable: Readonly<Record<string, string>>): SegmentForegroundRepairResult {
-  const additionalPaletteEntries: Record<string, string> = {};
-  const overrideKeysBySignature = new Map<string, string>();
-  let wasAnySegmentRepaired = false;
+  const normalizedBlocks = rawBlocks.map(withGeneratedBlockForegroundsNormalized);
 
-  const repairSegment = (segment: RawSegment): RawSegment => {
-    const backgroundHexes = segmentBackgroundHexes(segment, paletteTable);
-    if (backgroundHexes.length === 0) return segment;
-
-    return segmentForegroundKeys(segment).reduce((currentSegment, foregroundKey) => {
-      const foregroundHex = paletteTable[foregroundKey];
-      if (foregroundHex === undefined) return currentSegment;
-      const repairedHex = repairForegroundAgainstBackgrounds(foregroundHex, backgroundHexes);
-      if (repairedHex === undefined) return currentSegment;
-
-      const signature = `${foregroundKey}|${backgroundHexes.join(",")}`;
-      let overrideKey = overrideKeysBySignature.get(signature);
-      if (overrideKey === undefined) {
-        overrideKey = uniqueOverrideKey(foregroundKey, paletteTable, additionalPaletteEntries);
-        overrideKeysBySignature.set(signature, overrideKey);
-        additionalPaletteEntries[overrideKey] = repairedHex;
+  const signaturesByForegroundKey = new Map<string, Map<string, readonly string[]>>();
+  for (const rawBlock of normalizedBlocks) {
+    const segments = segmentsOf(rawBlock);
+    if (segments === undefined) continue;
+    for (const rawSegment of segments) {
+      if (typeof rawSegment === "object" && rawSegment !== null) {
+        collectSegmentBackgroundHexes(rawSegment as RawSegment, paletteTable, signaturesByForegroundKey);
       }
-      wasAnySegmentRepaired = true;
-      return segmentWithForegroundRepointed(currentSegment, foregroundKey, overrideKey);
-    }, segment);
-  };
+    }
+  }
 
-  const blocks = rawBlocks.map((rawBlock) => {
-    if (typeof rawBlock !== "object" || rawBlock === null) return rawBlock;
-    const block = rawBlock as RawSegment;
-    if (!Array.isArray(block["segments"])) return block;
-    return {
-      ...block,
-      segments: block["segments"].map((rawSegment: unknown) =>
-        typeof rawSegment === "object" && rawSegment !== null ? repairSegment(rawSegment as RawSegment) : rawSegment,
-      ),
-    };
-  });
+  const { overrideKeysByForegroundKeyAndSignature, additionalPaletteEntries } = computeForegroundOverrides(signaturesByForegroundKey, paletteTable);
+  const blocks = normalizedBlocks.map((rawBlock) => withOverridesAppliedToBlock(rawBlock, paletteTable, overrideKeysByForegroundKeyAndSignature));
 
-  return { blocks, additionalPaletteEntries, wasAnySegmentRepaired };
+  // Compared structurally, not tracked with a mutable flag through both
+  // passes above: a stale generated reference reverting to its source key
+  // (see withGeneratedForegroundReferencesNormalized) is exactly as much a
+  // change here as a fresh override being minted, and this is what those
+  // rejoin into one answer.
+  const wereBlocksChanged = JSON.stringify(blocks) !== JSON.stringify(rawBlocks);
+  return { blocks, additionalPaletteEntries, wereBlocksChanged };
 }
 
 /**
@@ -815,10 +1032,11 @@ function applyOhMyPoshScheme(
   const finalPaletteTable = { ...paletteTable, ...segmentRepair.additionalPaletteEntries };
 
   let updatedConfigText = upsertPaletteTable(configPath, originalText, finalPaletteTable);
-  // "blocks" is left completely untouched — not even re-upserted — when no
-  // segment needed a fix, so the overwhelming common case still round-trips
-  // byte-identical outside the palette block, same as before this ticket.
-  if (segmentRepair.wasAnySegmentRepaired) {
+  // "blocks" is left completely untouched — not even re-upserted — when
+  // nothing about it changed, so the overwhelming common case still
+  // round-trips byte-identical outside the palette block, same as before
+  // this ticket.
+  if (segmentRepair.wereBlocksChanged) {
     updatedConfigText = upsertBlocksArray(configPath, updatedConfigText, [...segmentRepair.blocks]);
   }
   assertNoDanglingPaletteReferences(configPath, updatedConfigText, finalPaletteTable);
