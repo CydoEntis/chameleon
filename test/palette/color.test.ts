@@ -6,6 +6,7 @@ import {
   fromHueChromaMatch,
   mix,
   relativeLuminance,
+  rgbDistance,
   toHsl,
 } from "../../src/palette/color.js";
 
@@ -60,6 +61,26 @@ describe("contrastRatio", () => {
 
   it("matches the known ratio between iTerm2 Solarized Dark's background and foreground", () => {
     expect(contrastRatio("#002b36", "#839496")).toBeCloseTo(4.747877839876171, 10);
+  });
+});
+
+describe("rgbDistance", () => {
+  it("gives a colour against itself a distance of 0", () => {
+    expect(rgbDistance("#1e1e2e", "#1e1e2e")).toBe(0);
+  });
+
+  it("gives black against white the maximum RGB distance", () => {
+    expect(rgbDistance("#000000", "#ffffff")).toBeCloseTo(Math.sqrt(3 * 255 ** 2), 10);
+  });
+
+  it("does not depend on argument order", () => {
+    expect(rgbDistance("#1e1e2e", "#cdd6f4")).toBe(rgbDistance("#cdd6f4", "#1e1e2e"));
+  });
+
+  it("matches the distance CHM-41 measured between Monokai's ground and Gruvbox Dark's, the nearest Herdr built-in it falls back to", () => {
+    // #272822 and #282828 are Monokai's and Gruvbox Dark's own real
+    // backgrounds — see themes/monokai-dark.json and themes/gruvbox-dark.json.
+    expect(rgbDistance("#272822", "#282828")).toBeCloseTo(6.082762530298219, 10);
   });
 });
 

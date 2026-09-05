@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "../../src/adapters/herdr.js";
+import { HERDR_BUILTIN_GROUNDS, createHerdrAdapter, herdrMatchesRoleHexes, nearestHerdrBuiltinThemeNameFor, undoHerdr } from "../../src/adapters/herdr.js";
+import { rgbDistance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 
@@ -485,11 +486,16 @@ describe("herdr adapter — theme name and token mapping", () => {
     expect(config.theme.name).toBe(MAPPED_DARK_HERDR_THEME);
   });
 
-  it("falls back to Herdr's neutral dark built-in for a dark pack with no family match, and still carries its own colours", () => {
+  // CHM-41: a slug with no family match used to fall back to a generic
+  // "terminal"/"one-light" regardless of the pack's own colours. It now
+  // falls back to whichever built-in's ground is nearest this pack's own
+  // ground — here, Aardvark Blue's #102040 lands nearest "solarized"
+  // (#002b36), not the flat black "terminal" used to write unconditionally.
+  it("falls back to the built-in with the nearest ground for a dark pack with no family match, and still carries its own colours", () => {
     createHerdrAdapter(configPath).apply(AARDVARK_BLUE_SCHEME, UNMAPPED_DARK_SLUG);
 
     const config = createHerdrAdapter(configPath).read();
-    expect(config.theme.name).toBe("terminal");
+    expect(config.theme.name).toBe("solarized");
 
     const expectedColorTable = resolveRoleHexes(AARDVARK_BLUE_SCHEME);
     expect(config.theme.custom["sidebar_bg"]).toBe(expectedColorTable.ground);
@@ -500,7 +506,11 @@ describe("herdr adapter — theme name and token mapping", () => {
     expect(config.theme.custom["red"]).toBe(expectedColorTable.error);
   });
 
-  it("falls back to a light built-in for a light pack with no family match", () => {
+  // GitHub Light's own ground, #ffffff, happens to land nearest "one-light"
+  // (#fafafa) either way — this pins that the light side of the same
+  // nearest-ground fallback still picks a real built-in, not that it always
+  // agrees with the old hardcoded fallback.
+  it("falls back to the built-in with the nearest ground for a light pack with no family match", () => {
     createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
 
     const config = createHerdrAdapter(configPath).read();
@@ -556,6 +566,54 @@ describe("herdr adapter — theme name and token mapping", () => {
       const config = adapter.read();
       expect(HERDR_BUILTIN_THEME_NAMES.has(config.theme.name ?? "")).toBe(true);
     }
+  });
+});
+
+// CHM-41: a pack with no Herdr built-in used to fall back to a generic
+// terminal (dark) or one-light (light) base regardless of its own colours,
+// leaving the tab bar, borders and cursor — none of them reachable by any
+// [theme.custom] token — stuck on that base's own colours rather than
+// anything close to the theme actually picked. These pin the replacement
+// directly: nearestHerdrBuiltinThemeNameFor, fed each unmapped bundled
+// pack's own ground, against the exact distances measured in this ticket's
+// own body. Every ground below is real — copied verbatim from that pack's
+// own bundled payload (see themes/<slug>.json's payloads.herdr.ground) —
+// never invented.
+describe("herdr adapter — nearest built-in ground fallback (CHM-41)", () => {
+  // slug -> [ground, expected nearest built-in, its measured RGB distance]
+  const UNMAPPED_PACK_GROUNDS: ReadonlyArray<[string, string, string, number]> = [
+    ["ayu-dark", "#1f2430", "catppuccin", 6.40],
+    ["monokai-dark", "#272822", "gruvbox", 6.08],
+    ["everforest-dark", "#232a2e", "gruvbox", 8.06],
+    ["github-dark", "#0d1117", "vesper", 7.68],
+    ["ayu-light", "#f8f9fa", "one-light", 2.24],
+    ["github-light", "#ffffff", "one-light", 8.66],
+    ["night-owl-light", "#ffffff", "one-light", 8.66],
+    ["nord-light", "#e5e9f0", "tokyo-night-day", 12.08],
+    ["everforest-light", "#efebd4", "gruvbox-light", 18.68],
+    ["night-owl-dark", "#011627", "rose-pine", 24.21],
+  ];
+
+  it.each(UNMAPPED_PACK_GROUNDS)("picks %s's nearest built-in, %s, for ground %s", (_slug, groundHex, expectedThemeName) => {
+    expect(nearestHerdrBuiltinThemeNameFor(groundHex)).toBe(expectedThemeName);
+  });
+
+  it.each(UNMAPPED_PACK_GROUNDS)("never falls back to terminal for %s when a closer built-in exists", (_slug, groundHex) => {
+    expect(nearestHerdrBuiltinThemeNameFor(groundHex)).not.toBe("terminal");
+  });
+
+  // The stated bound: every measured distance above is comfortably under 30
+  // (the worst, night-owl-dark, is ~24.2), against the old fallback's ~62+
+  // for everforest-dark on terminal alone — see this ticket's own body.
+  const MAX_ACCEPTABLE_HERDR_BUILTIN_GROUND_DISTANCE = 30;
+
+  it.each(UNMAPPED_PACK_GROUNDS)("keeps %s's chosen base within the stated distance of its own ground", (_slug, groundHex, expectedThemeName, measuredDistance) => {
+    const chosenThemeName = nearestHerdrBuiltinThemeNameFor(groundHex);
+    const chosenGroundHex = HERDR_BUILTIN_GROUNDS[chosenThemeName];
+    expect(chosenGroundHex).toBeDefined();
+    const distance = rgbDistance(groundHex, chosenGroundHex ?? "");
+    expect(distance).toBeCloseTo(measuredDistance, 1);
+    expect(distance).toBeLessThan(MAX_ACCEPTABLE_HERDR_BUILTIN_GROUND_DISTANCE);
   });
 });
 
