@@ -172,6 +172,30 @@ export function resolveActiveRowBackground(groundHex: string, bodyHex: string, m
   return { hex: mix(groundHex, bodyHex, fraction), wasRepaired: true };
 }
 
+/**
+ * Repairs overlay0 — the one token of Herdr's evenly-spaced surface scale
+ * (see adapters/herdr.ts's surfaceScale) that actually carries text.
+ * Established by probe, not by reading Herdr's own docs, which describe
+ * every ramp token with the same generic "override the token" line (CHM-78's
+ * ticket body): setting surface_dim, surface0, surface1, overlay0 and
+ * overlay1 to five distinct loud colours and reloading showed overlay0
+ * painting both the sidebar's own section headers and every agent row's
+ * subtitle line — read text, not a ramp step — while surface_dim painted
+ * only the separator rule and the other three appeared nowhere in the
+ * sidebar at all.
+ *
+ * `candidateHex` is overlay0's own plain ramp value (ground/body mixed at
+ * OVERLAY_0_FRACTION); `activeRowBackgroundHex` is `resolveActiveRowAndText`'s
+ * own settled row, since a subtitle line renders on both an ordinary sidebar
+ * row (`groundHex`) and a selected one. Hue and chroma held fixed, the same
+ * repairForegroundAgainstBackgrounds machinery `resolveActiveRowAndText`
+ * itself already uses for text and subtext0 — unrepaired when the plain
+ * ramp value already clears TEXT_MIN_RATIO against both.
+ */
+export function repairOverlay0(candidateHex: string, groundHex: string, activeRowBackgroundHex: string): string {
+  return repairForegroundAgainstBackgrounds(candidateHex, [groundHex, activeRowBackgroundHex], TEXT_MIN_RATIO) ?? candidateHex;
+}
+
 export interface ResolvedRowAndText {
   readonly activeRowBackgroundHex: string;
   readonly textHex: string;

@@ -3,7 +3,12 @@ import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, TEXT_MIN_RATIO } from ".
 import { contrastRatio, mix } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
-import { ACTIVE_ROW_IDEAL_FRACTION, resolveActiveRowAndText, resolveActiveRowBackground } from "../../src/palette/surfaces.js";
+import {
+  ACTIVE_ROW_IDEAL_FRACTION,
+  repairOverlay0,
+  resolveActiveRowAndText,
+  resolveActiveRowBackground,
+} from "../../src/palette/surfaces.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 // Real vendored/bundled values (mbadolato/iTerm2-Color-Schemes, via
@@ -95,6 +100,42 @@ describe("resolveActiveRowBackground", () => {
     // The fallback is a real retreat toward ground, not the ideal blend
     // reproduced by coincidence.
     expect(activeRow.hex).not.toBe(idealHex);
+  });
+});
+
+// CHM-78: adapters/herdr.ts's surfaceScale mixes overlay0 at 4/6 of the way
+// from ground to body — duplicated here rather than imported, the same way
+// this file's own ground/body/muted fixtures already stand in for herdr.ts's
+// real inputs.
+const OVERLAY_0_FRACTION = 4 / 6;
+
+describe("repairOverlay0", () => {
+  it("repairs the plain ramp value when it fails TEXT_MIN_RATIO against the active row — CHM-78's own reported case", () => {
+    const activeRow = resolveActiveRowBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body, MONOKAI_DARK.muted, ACTIVE_ROW_IDEAL_FRACTION);
+    const candidateHex = mix(MONOKAI_DARK.ground, MONOKAI_DARK.body, OVERLAY_0_FRACTION);
+    // The exact pair this ticket's own body measured on the reporter's live
+    // config: overlay0 #b6b7ac on active_row_bg #585a52 reads 3.45, short of
+    // TEXT_MIN_RATIO even though overlay0 painted text there all along.
+    expect(candidateHex).toBe("#b6b7ac");
+    expect(activeRow.hex).toBe("#585a52");
+    expect(contrastRatio(candidateHex, activeRow.hex)).toBeLessThan(TEXT_MIN_RATIO);
+
+    const repaired = repairOverlay0(candidateHex, MONOKAI_DARK.ground, activeRow.hex);
+
+    expect(repaired).not.toBe(candidateHex);
+    expect(contrastRatio(repaired, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(repaired, activeRow.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+  });
+
+  it("leaves an already-readable candidate unchanged", () => {
+    // body itself always clears TEXT_MIN_RATIO against ground (see
+    // repairFailingRoles) and, here, against the settled row too — a stand-in
+    // for a candidate that needs no repair at all.
+    const activeRow = resolveActiveRowBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body, MONOKAI_DARK.muted, ACTIVE_ROW_IDEAL_FRACTION);
+    expect(contrastRatio(MONOKAI_DARK.body, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(MONOKAI_DARK.body, activeRow.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+
+    expect(repairOverlay0(MONOKAI_DARK.body, MONOKAI_DARK.ground, activeRow.hex)).toBe(MONOKAI_DARK.body);
   });
 });
 
