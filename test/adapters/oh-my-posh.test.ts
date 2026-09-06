@@ -16,9 +16,11 @@ import {
   layoutBlocksOnSide,
   moveSegmentBetweenBlocks,
   ohMyPoshMatchesRoleHexes,
+  ohMyPoshOwnedConfigStatus,
   readOhMyPoshLayout,
   removeSegment,
   reorderSegment,
+  reseedOhMyPoshOwnedConfig,
   undoOhMyPosh,
   writeOhMyPoshLayout,
   type Layout,
@@ -1751,5 +1753,211 @@ describe("createDefaultOhMyPoshAdapter performance (CHM-54)", () => {
     // No new spawn at all — every probe the second construction needed was
     // already memoized by the first.
     expect(vi.mocked(spawnSync).mock.calls.length).toBe(spawnCallsAfterFirstConstruction);
+  });
+});
+
+// CHM-74: a config whose segments carry no palette reference at all — every
+// foreground a literal hex, like the reporter's own zash.omp.json — used to
+// be copied straight into Chameleon's owned path by whichever shell's
+// profile or POSH_CONFIG happened to name it, forever, since the
+// `existsSync(ownedConfigPath)` guard never re-checks after that. Recolouring
+// it was then a palette-table swap nothing in the file ever reads. The two
+// literal "#ff0000" foregrounds below are arbitrary, structural values —
+// this exercises the lift/repoint mechanics, not a contrast claim — and each
+// segment's `background` is deliberately a literal hex too (never a "p:"
+// reference), so CHM-40's own contrast repair has nothing to resolve and
+// this stays focused on CHM-74 alone.
+function literalHexOnlyConfigText(): string {
+  return JSON.stringify({
+    blocks: [
+      {
+        type: "prompt",
+        alignment: "left",
+        segments: [
+          { type: "path", foreground: "#ff0000", background: "#000000" },
+          { type: "git", foreground: "#ff0000", background: "#111111" },
+          { type: "text", foreground: "#00ff00" },
+          { type: "session", foreground: "lightBlue" },
+        ],
+      },
+    ],
+  });
+}
+
+describe("seeding refuses a config with no palette references (CHM-74)", () => {
+  let stateDir: string;
+  let ownedConfigPath: string;
+  let profilePath: string;
+  let sourceConfigPath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm74-seed-"));
+    ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
+    profilePath = path.join(stateDir, "profile.ps1");
+    sourceConfigPath = path.join(stateDir, "literal-hex-only.omp.json");
+    writeFileSync(sourceConfigPath, literalHexOnlyConfigText(), "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
+
+  it("refuses to copy it in automatically, naming the config and pointing to chm reseed", () => {
+    vi.stubEnv("POSH_CONFIG", sourceConfigPath);
+    const seed = () => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
+
+    expect(seed).toThrow(sourceConfigPath);
+    expect(seed).toThrow(/palette key/);
+    expect(seed).toThrow(/chm reseed/);
+    // Refusing means refusing to write anything, not writing it and
+    // complaining afterwards — nothing here is silently accepted.
+    expect(existsSync(ownedConfigPath)).toBe(false);
+  });
+});
+
+describe("explicit reseed lifts literal-hex foregrounds into palette keys on the next apply (CHM-74)", () => {
+  let stateDir: string;
+  let ownedConfigPath: string;
+  let profilePath: string;
+  let sourceConfigPath: string;
+  let sourceConfigText: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm74-lift-"));
+    ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
+    profilePath = path.join(stateDir, "profile.ps1");
+    sourceConfigPath = path.join(stateDir, "literal-hex-only.omp.json");
+    sourceConfigText = literalHexOnlyConfigText();
+    writeFileSync(sourceConfigPath, sourceConfigText, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("seeds a byte-identical raw copy — the lift only happens on apply, never on seed itself", () => {
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+    expect(readFileSync(ownedConfigPath, "utf8")).toBe(sourceConfigText);
+  });
+
+  it("lifts each distinct literal hex into its own palette key, repointing every segment that shared it, and names the one segment it could not lift", () => {
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+
+    const detail = createOhMyPoshAdapter(ownedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
+
+    const resultText = readFileSync(ownedConfigPath, "utf8");
+    const parsed = parseWritten(resultText) as { palette: Record<string, string>; blocks: Array<{ segments: Array<Record<string, unknown>> }> };
+    const segments = parsed.blocks[0]!.segments;
+
+    // "path" and "git" shared the same literal "#ff0000" — they share one
+    // lifted key, not two.
+    expect(segments[0]!["foreground"]).toBe("p:literal-ff0000");
+    expect(segments[1]!["foreground"]).toBe("p:literal-ff0000");
+    expect(segments[2]!["foreground"]).toBe("p:literal-00ff00");
+    expect(parsed.palette["literal-ff0000"]).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(parsed.palette["literal-00ff00"]).toMatch(/^#[0-9a-f]{6}$/i);
+
+    // "session"'s own foreground is an Oh My Posh ANSI colour name, not a
+    // hex — there is no destination-scheme colour that legitimately stands
+    // in for a bare name, so it is left exactly as it was rather than
+    // guessed at, and named in the apply's own detail instead.
+    expect(segments[3]!["foreground"]).toBe("lightBlue");
+    expect(detail).toContain("session");
+  });
+
+  it("is idempotent — recolouring the same literal-hex config twice produces the same file, with no keys accumulating (the CHM-43 failure mode)", () => {
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+    const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+
+    adapter.apply(ZEROX96F_SCHEME);
+    const afterFirstApply = readFileSync(ownedConfigPath, "utf8");
+    adapter.apply(ZEROX96F_SCHEME);
+    const afterSecondApply = readFileSync(ownedConfigPath, "utf8");
+
+    expect(afterSecondApply).toBe(afterFirstApply);
+    const palette = (parseWritten(afterSecondApply) as { palette: Record<string, string> }).palette;
+    const literalKeys = Object.keys(palette).filter((key) => key.startsWith("literal-"));
+    expect(literalKeys.sort()).toEqual(["literal-00ff00", "literal-ff0000"]);
+  });
+
+  it("recolours the lifted keys again on a real theme switch, the same as any other palette key", () => {
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+    const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+
+    adapter.apply(ZEROX96F_SCHEME);
+    const firstThemePalette = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> }).palette;
+
+    adapter.apply(AARDVARK_BLUE_SCHEME);
+    const secondThemePalette = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> }).palette;
+
+    expect(secondThemePalette["literal-ff0000"]).not.toBe(firstThemePalette["literal-ff0000"]);
+  });
+});
+
+describe("a config that already uses palette keys is unaffected by the literal-hex lift (CHM-74)", () => {
+  let stateDir: string;
+  let configPath: string;
+  let profilePath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm74-noop-"));
+    configPath = path.join(stateDir, "theme.omp.json");
+    profilePath = path.join(stateDir, "profile.ps1");
+    writeFileSync(configPath, LF_CONFIG_FIXTURE, "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("mints no \"literal-\" key at all, since every segment already references a palette key", () => {
+    createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+    const palette = (parseWritten(readFileSync(configPath, "utf8")) as { palette: Record<string, string> }).palette;
+    expect(Object.keys(palette).some((key) => key.startsWith("literal-"))).toBe(false);
+  });
+});
+
+describe("chm doctor reports which config Chameleon owns and which it was seeded from (CHM-74)", () => {
+  let stateDir: string;
+  let ownedConfigPath: string;
+  let profilePath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm74-status-"));
+    ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
+    profilePath = path.join(stateDir, "profile.ps1");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
+
+  it("reports undefined before anything has ever been seeded", () => {
+    expect(ohMyPoshOwnedConfigStatus(ownedConfigPath)).toBeUndefined();
+  });
+
+  it("reports the owned path and the config automatic seeding found, once seeded", () => {
+    const sourceConfigPath = path.join(stateDir, "theme.omp.json");
+    writeFileSync(sourceConfigPath, LF_CONFIG_FIXTURE, "utf8");
+    vi.stubEnv("POSH_CONFIG", sourceConfigPath);
+
+    ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
+
+    expect(ohMyPoshOwnedConfigStatus(ownedConfigPath)).toEqual({ ownedConfigPath, seededFromPath: sourceConfigPath });
+  });
+
+  it("updates the recorded source after an explicit reseed", () => {
+    const firstSourcePath = path.join(stateDir, "first.omp.json");
+    const secondSourcePath = path.join(stateDir, "second.omp.json");
+    writeFileSync(firstSourcePath, LF_CONFIG_FIXTURE, "utf8");
+    writeFileSync(secondSourcePath, LF_CONFIG_FIXTURE, "utf8");
+
+    reseedOhMyPoshOwnedConfig(firstSourcePath, ownedConfigPath);
+    reseedOhMyPoshOwnedConfig(secondSourcePath, ownedConfigPath);
+
+    expect(ohMyPoshOwnedConfigStatus(ownedConfigPath)).toEqual({ ownedConfigPath, seededFromPath: secondSourcePath });
   });
 });

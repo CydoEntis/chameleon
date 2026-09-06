@@ -13,8 +13,10 @@ import {
   createDefaultOhMyPoshAdapter,
   createOhMyPoshAdapter,
   ohMyPoshMatchesRoleHexes,
+  ohMyPoshOwnedConfigStatus,
   OH_MY_POSH_WINGET_PACKAGE_ID,
   undoOhMyPosh,
+  type OhMyPoshOwnedConfigStatus,
 } from "./adapters/oh-my-posh.js";
 import {
   captureOriginalSnapshotIfMissing,
@@ -81,7 +83,17 @@ export { loadCuratedThemePacks, mergeThemePacksBySlug } from "./palette/theme-pa
 export type { WindowsTerminalAdapter, WindowsTerminalSettings } from "./adapters/windows-terminal.js";
 export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/windows-terminal.js";
 
-export type { Layout, LayoutBlock, LayoutBlockName, LayoutSegment, OhMyPoshAdapter, OhMyPoshConfig, SegmentType } from "./adapters/oh-my-posh.js";
+export type {
+  Layout,
+  LayoutBlock,
+  LayoutBlockName,
+  LayoutSegment,
+  OhMyPoshAdapter,
+  OhMyPoshConfig,
+  OhMyPoshOwnedConfigStatus,
+  OhMyPoshSeedState,
+  SegmentType,
+} from "./adapters/oh-my-posh.js";
 export {
   addSegment,
   buildLayoutSegment,
@@ -91,8 +103,10 @@ export {
   layoutBlocksOnSide,
   moveSegmentBetweenBlocks,
   readOhMyPoshLayout,
+  readOhMyPoshSeedState,
   removeSegment,
   reorderSegment,
+  reseedOhMyPoshOwnedConfig,
   SEGMENT_TYPES,
   undoOhMyPosh,
   writeOhMyPoshLayout,
@@ -164,6 +178,8 @@ export interface DoctorReport {
   readonly drift: CurrentPackReport | undefined;
   /** Claude Code's own live "theme" value — undefined when it is not installed, or its settings.json cannot be read. See CHM-49's "reports which theme is set." */
   readonly claudeCodeTheme: string | undefined;
+  /** Which config Chameleon owns for Oh My Posh, and which config it was seeded from — undefined before the very first seed. See CHM-74. */
+  readonly ohMyPoshOwnedConfig: OhMyPoshOwnedConfigStatus | undefined;
 }
 
 /**
@@ -251,11 +267,13 @@ function checkNerdFont(): DoctorNerdFontCheck {
 /**
  * Runs every check `ch doctor` reports: whether each themeable target is
  * installed, whether a Nerd Font is installed and actually selected in
- * Windows Terminal, and whether any detected target has drifted from the
+ * Windows Terminal, whether any detected target has drifted from the
  * pack `ch` last recorded as active (CHM-27) — see currentPack's own
- * driftedTargets. Herdr is detect-only and never offered an install command
- * — see CLAUDE.md, "Herdr stays detect-only, never installed." `userThemeDir`
- * and `statePath` are only ever overridden by tests.
+ * driftedTargets — and which config Chameleon owns for Oh My Posh, and which
+ * config it was seeded from (CHM-74). Herdr is detect-only and never offered
+ * an install command — see CLAUDE.md, "Herdr stays detect-only, never
+ * installed." `userThemeDir` and `statePath` are only ever overridden by
+ * tests.
  */
 export function runDoctorChecks(userThemeDir?: string, statePath?: string, previewStatePath?: string): DoctorReport {
   return {
@@ -273,6 +291,7 @@ export function runDoctorChecks(userThemeDir?: string, statePath?: string, previ
     nerdFont: checkNerdFont(),
     drift: currentPack(userThemeDir, statePath, previewStatePath),
     claudeCodeTheme: currentClaudeCodeTheme(),
+    ohMyPoshOwnedConfig: ohMyPoshOwnedConfigStatus(),
   };
 }
 

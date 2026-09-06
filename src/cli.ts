@@ -29,6 +29,7 @@ import {
   readOhMyPoshLayout,
   removeSegment,
   reorderSegment,
+  reseedOhMyPoshOwnedConfig,
   restoreOriginal,
   resyncInterruptedPreview,
   ROLES,
@@ -117,6 +118,20 @@ function formatNerdFontLine(nerdFont: DoctorNerdFontCheck): string {
 export function formatClaudeCodeRestartNote(isInstalled: boolean): string | undefined {
   if (!isInstalled) return undefined;
   return "  restart Claude Code to pick up a theme change — it reads its theme once, at startup";
+}
+
+/**
+ * `chm doctor`'s own line naming which config Chameleon owns for Oh My Posh
+ * and which config it was seeded from — CHM-74's own "reports which config
+ * Chameleon owns and which config it was seeded from." Undefined before the
+ * very first seed, when there is nothing to report yet. A config seeded
+ * before this was tracked (or migrated from CHM-63's own deleted bundled
+ * prompt layout) reads as "unknown," never a guess.
+ */
+export function formatOhMyPoshOwnedConfigLine(owned: DoctorReport["ohMyPoshOwnedConfig"]): string | undefined {
+  if (!owned) return undefined;
+  const seededFromClause = owned.seededFromPath ? `seeded from ${owned.seededFromPath}` : "seeded from an unknown config — seeded before this was tracked";
+  return `oh-my-posh owns ${owned.ownedConfigPath} — ${seededFromClause}`;
 }
 
 /** Comma-joined target names, for a drift report — shared by `chm doctor` and `chm current`, see matchesVerbFor. */
@@ -211,6 +226,10 @@ function runDoctor(): number {
     if (check.target === "claude-code") {
       const restartNote = formatClaudeCodeRestartNote(check.isInstalled);
       if (restartNote) process.stdout.write(`${restartNote}\n`);
+    }
+    if (check.target === "oh-my-posh") {
+      const ownedConfigLine = formatOhMyPoshOwnedConfigLine(report.ohMyPoshOwnedConfig);
+      if (ownedConfigLine) process.stdout.write(`  ${ownedConfigLine}\n`);
     }
   }
 
@@ -697,6 +716,34 @@ function runOriginal(): number {
       return 1;
     }
   });
+}
+
+/**
+ * `chm reseed <path>` — CHM-74: the supported way to change which config
+ * Chameleon owns for Oh My Posh, or to accept a config `ensureOhMyPoshOwnedConfigSeeded`
+ * refused to pick automatically because none of its segments reference a
+ * palette key (see noPaletteReferencesMessage). The alternative is
+ * hand-deleting chameleon.omp.json, which would also throw away every
+ * recolour it already has. Never themes the freshly seeded file by itself —
+ * the next `chm <theme>` does that, the same as any other apply, and is what
+ * lifts a literal-hex config's own segments into palette keys the first
+ * time (see recolorConfigInto).
+ */
+function runReseed(args: readonly string[]): number {
+  const [rawPath] = args;
+  if (!rawPath) {
+    process.stderr.write("chm reseed: give the path of the Oh My Posh config to seed from\n");
+    return 1;
+  }
+  try {
+    const sourceConfigPath = path.resolve(rawPath);
+    reseedOhMyPoshOwnedConfig(sourceConfigPath);
+    process.stdout.write(`chm reseed: now owns a fresh copy of ${sourceConfigPath} — run \`chm <theme>\` to recolour it\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
 }
 
 /** `chm next` — cycles to the next pack in `chm themes` order, wrapping past the end, and applies it. */
@@ -1643,6 +1690,7 @@ chm undo               put back the most recently applied theme
 chm original           put back everything, exactly as it was before Chameleon's first apply
 chm doctor             what is installed
 chm edit ...           edit the Oh My Posh prompt layout
+chm reseed <path>      seed (or re-seed) the Oh My Posh config Chameleon owns from <path>
 chm statusline         print one themed line for Claude Code's own status bar
 
 run \`chm themes\` to browse what you can apply
@@ -1671,6 +1719,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "themes" || command === "pick") return runThemes(rest);
   if (command === "doctor") return runDoctor();
   if (command === "edit") return runEdit(rest);
+  if (command === "reseed") return runReseed(rest);
   if (command === "statusline") return runStatusline();
   if (command === "current") return runCurrent(rest);
   if (command === "undo") return runUndo();
