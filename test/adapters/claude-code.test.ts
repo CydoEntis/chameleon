@@ -289,6 +289,92 @@ describe("claude code adapter — edge cases", () => {
   });
 });
 
+// CHM-68: applying a theme also sets up `chm statusline` as Claude Code's
+// own statusLine — but only when the key was never there at all, and never
+// overwriting a script a user wrote themselves.
+describe("claude code adapter — statusLine (CHM-68)", () => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-claude-code-statusline-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  it("sets statusLine to `chm statusline` when the key is entirely absent — no separate install step", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "light" }, null, 2), "utf8");
+
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    expect(createClaudeCodeAdapter(settingsPath).read().statusLine).toEqual({ type: "command", command: "chm statusline" });
+  });
+
+  it("says nothing on the apply that sets statusLine for the first time — that already just works", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "light" }, null, 2), "utf8");
+
+    const notice = createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    expect(notice).toBeUndefined();
+  });
+
+  it("never overwrites a statusLine the user already had", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "light", statusLine: { type: "command", command: "node ~/.claude/statusline.js" } }, null, 2), "utf8");
+
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    expect(createClaudeCodeAdapter(settingsPath).read().statusLine).toEqual({ type: "command", command: "node ~/.claude/statusline.js" });
+  });
+
+  it("says so, once, the first time it notices a pre-existing statusLine", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "light", statusLine: { type: "command", command: "node ~/.claude/statusline.js" } }, null, 2), "utf8");
+
+    const notice = createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    expect(notice).toContain("statusLine is already set");
+  });
+
+  // CHM-68's own acceptance criterion: "says so at most once rather than on
+  // every apply" — a second, third, fourth apply against the same
+  // settings.json must all stay silent about it.
+  it("never repeats the pre-existing-statusLine notice on a later apply", () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: "light", statusLine: { type: "command", command: "node ~/.claude/statusline.js" } }, null, 2), "utf8");
+    const adapter = createClaudeCodeAdapter(settingsPath);
+
+    const firstNotice = adapter.apply("dark");
+    const secondNotice = adapter.apply("light");
+    const thirdNotice = adapter.apply("dark");
+
+    expect(firstNotice).toContain("statusLine is already set");
+    expect(secondNotice).toBeUndefined();
+    expect(thirdNotice).toBeUndefined();
+  });
+
+  it("leaves every other key byte-identical when it sets statusLine for the first time", () => {
+    const fixture = JSON.stringify({ theme: "light", permissions: { allow: ["Bash(npm run test:*)"] }, effortLevel: "high" }, null, 2);
+    writeFileSync(settingsPath, fixture, "utf8");
+
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+    expect(parsed["permissions"]).toEqual({ allow: ["Bash(npm run test:*)"] });
+    expect(parsed["effortLevel"]).toBe("high");
+  });
+
+  it("never writes a ch:begin or ch:end marker for statusLine either", () => {
+    writeFileSync(settingsPath, "{}", "utf8");
+
+    createClaudeCodeAdapter(settingsPath).apply("dark");
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(resultText).not.toContain("ch:begin");
+    expect(resultText).not.toContain("ch:end");
+  });
+});
+
 // CHM-27: this is the exact comparison `ch current`/`ch doctor` use to
 // notice a target that has drifted from the recorded pack. There is no
 // marker in settings.json for this to key off (see CHM-51) — it is always a
