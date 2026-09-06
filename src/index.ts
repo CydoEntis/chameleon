@@ -7,6 +7,7 @@
 import { claudeCodeMatchesAppearance, createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
 import type { Role } from "./constants.js";
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
+import { currentGitBranch } from "./adapters/git.js";
 import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters/herdr.js";
 import {
   createDefaultOhMyPoshAdapter,
@@ -93,6 +94,8 @@ export { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
 
 export type { ClaudeCodeAdapter, ClaudeCodeSettings } from "./adapters/claude-code.js";
 export { createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
+
+export { currentGitBranch } from "./adapters/git.js";
 
 export type { UserThemePackLoadResult } from "./adapters/user-theme-packs.js";
 export { defaultUserThemePackDir, loadUserThemePacks } from "./adapters/user-theme-packs.js";
@@ -291,6 +294,18 @@ function adapterForTarget(target: Target): DetectableTargetAdapter {
 }
 
 /**
+ * Combines two possibly-present details into one, for the one target whose
+ * `apply` and `reload` can both have something to say at once — see
+ * applyToTarget's own claude-code branch. Neither present stays undefined,
+ * matching the plain `??` every other target still uses for its own "these
+ * never coincide" case.
+ */
+function combinedDetail(first: string | undefined, second: string | undefined): string | undefined {
+  if (first !== undefined && second !== undefined) return `${first} — ${second}`;
+  return first ?? second;
+}
+
+/**
  * Applies `scheme` to `target` and then reloads it, so the running program
  * actually shows what was just written — see CHM-45: before this, `apply`
  * wrote the config and nothing ever called the adapter's own `reload`,
@@ -311,12 +326,16 @@ function adapterForTarget(target: Target): DetectableTargetAdapter {
  * without failing anything — Oh My Posh's own profile-creation notice
  * (CHM-39), Herdr's own "nothing running to reload" notice (CHM-45), and
  * Claude Code's own "restart Claude Code to see it" notice (CHM-49, since it
- * has no live reload of its own to trigger) — and neither ever fires
- * alongside the other, so returning whichever one is defined never silently
- * drops a message. Claude Code's own `apply` takes the pack's appearance
- * rather than the raw scheme — it renders from the terminal's own ANSI
- * slots, already written by this same apply for windows-terminal, so there
- * is no colour of its own to derive.
+ * has no live reload of its own to trigger) — and for oh-my-posh and herdr
+ * the two never fire alongside each other, so returning whichever one is
+ * defined never silently drops a message. Claude Code is the one exception:
+ * its own `reload` always has something to say, and its own `apply` can too
+ * — CHM-68's own one-time "statusLine is already set" notice — so the two
+ * really can coincide, and combinedDetail is what keeps that apply from
+ * losing either message. Claude Code's own `apply` takes the pack's
+ * appearance rather than the raw scheme — it renders from the terminal's own
+ * ANSI slots, already written by this same apply for windows-terminal, so
+ * there is no colour of its own to derive.
  */
 function applyToTarget(target: Target, scheme: Scheme, slug: string): string | undefined {
   if (target === "oh-my-posh") {
@@ -332,8 +351,9 @@ function applyToTarget(target: Target, scheme: Scheme, slug: string): string | u
   }
   if (target === "claude-code") {
     const adapter = createClaudeCodeAdapter();
-    adapter.apply(toPalette(scheme).appearance);
-    return adapter.reload();
+    const applyDetail = adapter.apply(toPalette(scheme).appearance);
+    const reloadDetail = adapter.reload();
+    return combinedDetail(applyDetail, reloadDetail);
   }
   const adapter = createHerdrAdapter();
   adapter.apply(scheme, slug);
@@ -618,6 +638,23 @@ export interface CurrentPackReport {
 }
 
 /**
+ * The recorded active pack's own slug, alongside the loaded pack it
+ * currently resolves to — undefined when nothing has ever been applied.
+ * `loaded` itself comes back undefined when the recorded slug no longer
+ * resolves to anything loadable (a dropped-in pack the user later removed,
+ * say), which is the one "cannot check" case currentPack's own `name` and
+ * activePackRoleHexes both need to agree on. Shared so the two can never
+ * disagree about which pack is active.
+ */
+function loadedActivePack(userThemeDir: string | undefined, statePath: string | undefined): { slug: string; loaded: LoadedThemePack | undefined } | undefined {
+  const state = readActivePackState(statePath);
+  if (!state) return undefined;
+
+  const { packs } = loadAllThemePacks(userThemeDir);
+  return { slug: state.slug, loaded: packs.find((candidate) => candidate.pack.manifest.slug === state.slug) };
+}
+
+/**
  * The pack `ch` most recently applied, or undefined when nothing has been
  * applied yet. `name` comes back undefined when the recorded slug no longer
  * resolves to a loadable pack — a dropped-in pack the user later removed,
@@ -625,17 +662,29 @@ export interface CurrentPackReport {
  * `statePath`, like `userThemeDir`, is only ever overridden by tests.
  */
 export function currentPack(userThemeDir?: string, statePath?: string, previewStatePath?: string): CurrentPackReport | undefined {
-  const state = readActivePackState(statePath);
-  if (!state) return undefined;
+  const active = loadedActivePack(userThemeDir, statePath);
+  if (!active) return undefined;
 
-  const { packs } = loadAllThemePacks(userThemeDir);
-  const loaded = packs.find((candidate) => candidate.pack.manifest.slug === state.slug);
   return {
-    slug: state.slug,
-    name: loaded?.pack.manifest.name,
-    driftedTargets: loaded ? detectPackDrift(state.slug, userThemeDir) : [],
+    slug: active.slug,
+    name: active.loaded?.pack.manifest.name,
+    driftedTargets: active.loaded ? detectPackDrift(active.slug, userThemeDir) : [],
     previewInFlight: isPreviewInFlight(previewStatePath),
   };
+}
+
+/**
+ * The active pack's own six role colours — ground, body, accent, muted,
+ * success, error — or undefined when nothing has ever been applied, or the
+ * recorded pack no longer resolves to a loadable one (the same "cannot
+ * check" case currentPack's own `name` goes undefined for). This is `chm
+ * statusline`'s only source of colour (CHM-68): reading the pack Chameleon
+ * itself recorded as active, never a copy of its own, is what keeps the
+ * status line from ever disagreeing with the terminal it is printed inside
+ * of. `userThemeDir` and `statePath` are only ever overridden by tests.
+ */
+export function activePackRoleHexes(userThemeDir?: string, statePath?: string): Readonly<Record<Role, string>> | undefined {
+  return loadedActivePack(userThemeDir, statePath)?.loaded?.pack.payloads["oh-my-posh"];
 }
 
 /**

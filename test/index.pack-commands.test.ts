@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readActivePackState, writeActivePackState } from "../src/adapters/state.js";
 import { shouldRestoreOriginalSelectionOnExit } from "../src/cli.js";
 import {
+  activePackRoleHexes,
   applyThemePack,
   beginThemePreview,
   currentPack,
@@ -254,6 +255,24 @@ describe("applyThemePack", () => {
     ]);
     expect(report.isFullyApplied).toBe(true);
     expect(readActivePackState(statePath)?.slug).toBe("catppuccin-dark");
+  });
+
+  // CHM-68: Claude Code is the one target whose own apply can have
+  // something to say — the one-time "statusLine is already set" notice —
+  // at the same moment its reload always does ("restart Claude Code to see
+  // it"). Unlike every other target, the two are not mutually exclusive,
+  // and both must survive onto the one `detail` a PackActionResult carries.
+  it("combines claude-code's own apply detail with its reload detail when both are present", () => {
+    claudeCodeAdapter.apply.mockReturnValue("statusLine is already set — left it alone");
+    claudeCodeAdapter.reload.mockReturnValue("restart Claude Code to see it");
+
+    const report = applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
+
+    expect(report.results).toContainEqual({
+      target: "claude-code",
+      status: "applied",
+      detail: "statusLine is already set — left it alone — restart Claude Code to see it",
+    });
   });
 
   it("leaves a previously recorded pack in place when a later apply only partially succeeds", () => {
@@ -553,6 +572,40 @@ describe("currentPack", () => {
       driftedTargets: ["oh-my-posh"],
       previewInFlight: true,
     });
+  });
+});
+
+// CHM-68: `chm statusline`'s only source of colour — reading the pack
+// Chameleon itself recorded as active, never a copy of its own, so the
+// status line can never disagree with the terminal.
+describe("activePackRoleHexes", () => {
+  it("returns undefined when nothing has ever been applied", () => {
+    expect(activePackRoleHexes(userThemeDir, statePath)).toBeUndefined();
+  });
+
+  it("returns the active pack's own six role colours, matching its own payload exactly", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
+
+    const { packs } = loadAllThemePacks(userThemeDir);
+    const catppuccinDark = packs.find((loaded) => loaded.pack.manifest.slug === "catppuccin-dark");
+
+    expect(activePackRoleHexes(userThemeDir, statePath)).toEqual(catppuccinDark?.pack.payloads["oh-my-posh"]);
+  });
+
+  it("changes when the active pack changes, with no further action", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
+    const catppuccinRoleHexes = activePackRoleHexes(userThemeDir, statePath);
+
+    applyThemePack("tokyo-night-light", userThemeDir, statePath, previewStatePath);
+    const tokyoNightRoleHexes = activePackRoleHexes(userThemeDir, statePath);
+
+    expect(tokyoNightRoleHexes).not.toEqual(catppuccinRoleHexes);
+  });
+
+  it("returns undefined when the recorded pack is no longer in the library", () => {
+    writeActivePackState("a-pack-that-got-deleted", statePath);
+
+    expect(activePackRoleHexes(userThemeDir, statePath)).toBeUndefined();
   });
 });
 

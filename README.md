@@ -19,6 +19,7 @@ chm current              # print the active theme's slug ("--short" for just its
 chm undo                 # put it back
 chm doctor               # what is installed
 chm edit ...             # edit the Oh My Posh prompt layout
+chm statusline           # print one themed line — this is what Claude Code's own statusLine runs
 ```
 
 ## Why
