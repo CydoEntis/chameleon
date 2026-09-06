@@ -579,6 +579,123 @@ describe.each([
 
       expect(readFileSync(profilePath, "utf8")).toBe(original);
     });
+
+    describe("on a profile Chameleon already applied to before this takeover existed (CHM-77)", () => {
+      // The reporter's own machine after CHM-73 merged: their init line at
+      // line 16, never touched by any earlier apply, and Chameleon's own
+      // block — from an apply that predates CHM-73 — appended at the end,
+      // line 84 in the ticket's own account. upsertProfileBlock's own
+      // marker check ran first and returned before findPreexistingInitLineSpan
+      // ever got a chance to look, so this exact shape survived any number
+      // of re-applies. The stale block's own config path is deliberately
+      // different from `configPath` below, so a test that finds `configPath`
+      // in the result knows the block was rewritten, not merely left as-is.
+      const STALE_OWNED_CONFIG_PATH = String.raw`C:\old\stale\chameleon.omp.json`;
+
+      function staleBlock(): string {
+        return ["# ch:begin", `oh-my-posh init pwsh --config "${STALE_OWNED_CONFIG_PATH}" | Invoke-Expression`, "# ch:end"].join(eol);
+      }
+
+      function alreadyMigratedProfile(): string {
+        return `${preexistingInitProfile()}${eol}${staleBlock()}${eol}`;
+      }
+
+      it("leaves exactly one live init line in the file", () => {
+        writeFileSync(profilePath, alreadyMigratedProfile(), "utf8");
+
+        createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+        const resultText = readFileSync(profilePath, "utf8");
+        const stillLive = liveInitLines(resultText);
+        expect(stillLive).toHaveLength(1);
+        expect(stillLive[0]).toContain(configPath);
+      });
+
+      it("neutralises the pre-existing line in place with the same prefix a first-time apply uses, keeping the rest of the line byte for byte", () => {
+        writeFileSync(profilePath, alreadyMigratedProfile(), "utf8");
+
+        createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+        const resultText = readFileSync(profilePath, "utf8");
+        const lineCarryingIt = resultText.split(eol).find((line) => line.includes(ORIGINAL_INIT_LINE));
+        expect(lineCarryingIt).toBe(`# ch: superseded by the block below — ${ORIGINAL_INIT_LINE}`);
+      });
+
+      it("moves Chameleon's block to the neutralised line's position, leaving none behind where it previously sat", () => {
+        writeFileSync(profilePath, alreadyMigratedProfile(), "utf8");
+
+        createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+        const resultText = readFileSync(profilePath, "utf8");
+        expect(countOccurrences(resultText, "# ch:begin")).toBe(1);
+        expect(resultText).not.toContain(STALE_OWNED_CONFIG_PATH);
+
+        const lines = resultText.split(eol);
+        const neutralizedIndex = lines.findIndex((line) => line.includes("zash.omp.json"));
+        const chBeginIndex = lines.findIndex((line) => line.includes("# ch:begin"));
+        const setPoshContextIndex = lines.findIndex((line) => line.includes("function Set-PoshContext"));
+
+        expect(neutralizedIndex).toBeGreaterThanOrEqual(0);
+        expect(chBeginIndex).toBe(neutralizedIndex + 1);
+        expect(chBeginIndex).toBeLessThan(setPoshContextIndex);
+      });
+
+      it("leaves a Set-PoshContext defined after the original init line still in effect — it still runs after the single remaining init line", () => {
+        writeFileSync(profilePath, alreadyMigratedProfile(), "utf8");
+
+        createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+        const resultText = readFileSync(profilePath, "utf8");
+        expect(resultText).toContain("function Set-PoshContext {");
+        expect(resultText).toContain("deliberately overrides oh-my-posh's own stub");
+        const lines = resultText.split(eol);
+        const chEndIndex = lines.findIndex((line) => line.includes("# ch:end"));
+        const setPoshContextIndex = lines.findIndex((line) => line.includes("function Set-PoshContext"));
+        expect(setPoshContextIndex).toBeGreaterThan(chEndIndex);
+      });
+
+      it("applying twice in a row produces a byte-identical profile", () => {
+        writeFileSync(profilePath, alreadyMigratedProfile(), "utf8");
+        const adapter = createOhMyPoshAdapter(configPath, profilePath);
+
+        adapter.apply(ZEROX96F_SCHEME);
+        const afterFirstApply = readFileSync(profilePath, "utf8");
+        adapter.apply(ZEROX96F_SCHEME);
+        const afterSecondApply = readFileSync(profilePath, "utf8");
+
+        expect(afterSecondApply).toBe(afterFirstApply);
+        expect(countOccurrences(afterSecondApply, "# ch:begin")).toBe(1);
+      });
+
+      it("leaves a profile with a Chameleon block and no stray init line exactly where it is, unmoved", () => {
+        // The other half of the same branch: a profile already carrying
+        // Chameleon's own block, but with nothing else left live to take
+        // over (either it never had a stray line, or an earlier apply
+        // already neutralised the only one it had). Re-applying must not go
+        // hunting for something to move the block to.
+        const adapter = createOhMyPoshAdapter(configPath, profilePath);
+        adapter.apply(ZEROX96F_SCHEME);
+        const afterFirstApply = readFileSync(profilePath, "utf8");
+        const blockIndexBefore = afterFirstApply.indexOf("# ch:begin");
+
+        adapter.apply(AARDVARK_BLUE_SCHEME);
+        const afterSecondApply = readFileSync(profilePath, "utf8");
+        const blockIndexAfter = afterSecondApply.indexOf("# ch:begin");
+
+        expect(blockIndexAfter).toBe(blockIndexBefore);
+        expect(countOccurrences(afterSecondApply, "# ch:begin")).toBe(1);
+      });
+
+      it("undoOhMyPosh restores the both-lines starting shape to its original bytes", () => {
+        const original = alreadyMigratedProfile();
+        writeFileSync(profilePath, original, "utf8");
+
+        createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+        undoOhMyPosh(configPath, profilePath);
+
+        expect(readFileSync(profilePath, "utf8")).toBe(original);
+      });
+    });
   });
 
   describe("layout — ch edit's segment editor", () => {
