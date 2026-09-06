@@ -238,6 +238,33 @@ export function dedupeConflict(text: string, container: Node, conflict: Node | u
 }
 
 /**
+ * Restores a comma right after `lastSpan`'s own JSON property value, in
+ * `text`, when one is not already there — CHM-74's own latent bug:
+ * `lastSpan`'s own trailing comma was decided when *it* was written, based
+ * on whatever followed it *then*. When that block owns the very last
+ * property in `container` and something this same overall edit is about to
+ * dedupe and replace used to sit right after it, that comma can already be
+ * gone by the time a sibling key's own upsertMarkedBlock call runs — see
+ * removeNodeFromContainer's own "previous sibling's trailing comma is now
+ * dangling" cleanup, which has no way to know a sibling block is about to
+ * land right back there. `text` is returned unchanged when `lastSpan` is
+ * undefined (nothing precedes the block about to be appended) or the comma
+ * is already there.
+ *
+ * Inserted right after the real JSON value, never after the `// ch:end`
+ * marker's own comment text — a comma placed after a `//` comment is not a
+ * token at all, just more comment.
+ */
+function withLeadingCommaRestored(text: string, container: Node, lastSpan: MarkedBlockSpan | undefined): string {
+  if (!lastSpan) return text;
+  const lastKeyProperty = findPropertyNode(container, lastSpan.key);
+  if (!lastKeyProperty) return text;
+  const propertyEndOffset = lastKeyProperty.offset + lastKeyProperty.length;
+  if (commaOffsetAfter(text, propertyEndOffset) !== null) return text;
+  return `${text.slice(0, propertyEndOffset)},${text.slice(propertyEndOffset)}`;
+}
+
+/**
  * Upserts `ownedContent` as `key`'s own marked block inside `container`,
  * wrapped in ch:begin/ch:end. A block already owned by `key` is replaced in
  * place; a brand new one is appended right after whichever Chameleon-owned
@@ -251,14 +278,20 @@ export function dedupeConflict(text: string, container: Node, conflict: Node | u
  *
  * A trailing comma is added only when there is real content left after the
  * block — an empty array or object with nothing else in it must not gain a
- * dangling comma before the closing bracket.
+ * dangling comma before the closing bracket. Appending (rather than
+ * replacing in place) first restores a missing comma after whichever block
+ * currently comes last, when one is needed — see withLeadingCommaRestored.
  */
 export function upsertMarkedBlock(text: string, container: Node, ownedContent: string, eol: string, key: string): string {
-  const containerStart = container.offset + 1;
-  const containerEnd = container.offset + container.length - 1;
   const spans = ownedBlockSpans(text, container);
   const existingSpan = spans.find((span) => span.key === key);
-  const lastSpanEndOffsetInclusive = spans[spans.length - 1]?.endOffsetInclusive;
+  const lastSpan = spans[spans.length - 1];
+  const workingText = existingSpan ? text : withLeadingCommaRestored(text, container, lastSpan);
+  const insertedCommaLength = workingText.length - text.length;
+
+  const containerStart = container.offset + 1;
+  const containerEnd = container.offset + container.length - 1 + insertedCommaLength;
+  const lastSpanEndOffsetInclusive = lastSpan !== undefined ? lastSpan.endOffsetInclusive + insertedCommaLength : undefined;
 
   // Replacing an existing block removes it, and only it, in place. A brand
   // new block is inserted right after the last block this container already
@@ -278,14 +311,14 @@ export function upsertMarkedBlock(text: string, container: Node, ownedContent: s
       : containerStart;
   const replaceEnd = existingSpan ? existingSpan.endOffsetInclusive : (lastSpanEndOffsetInclusive ?? containerStart);
 
-  const hasContentAfterBlock = text.slice(replaceEnd, containerEnd).trim().length > 0;
+  const hasContentAfterBlock = workingText.slice(replaceEnd, containerEnd).trim().length > 0;
   const separator = hasContentAfterBlock ? "," : "";
   // The end marker is always followed by a line ending of our own — `//` is
   // a line comment, so without one it would silently swallow whatever
   // originally followed the block's own position.
   const replacement = `${eol}${INSERTED_BLOCK_INDENT}${markerBegin(key)}${eol}${ownedContent}${separator}${eol}${INSERTED_BLOCK_INDENT}${markerEnd(key)}${eol}`;
 
-  return text.slice(0, replaceStart) + replacement + text.slice(replaceEnd);
+  return workingText.slice(0, replaceStart) + replacement + workingText.slice(replaceEnd);
 }
 
 /**
