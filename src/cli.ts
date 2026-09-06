@@ -599,12 +599,13 @@ function runCurrent(args: readonly string[]): number {
   return 0;
 }
 
-/** One picker row: enough to render a line with two colour swatches, filter it by slug or name, apply it, and preview it live. */
-interface PickerEntry {
+/** One picker row: enough to paint the row in its own pack's ground and body (CHM-64), keep its accent visible, filter it by slug or name, apply it, and preview it live. */
+export interface PickerEntry {
   readonly slug: string;
   readonly name: string;
   readonly origin: string;
   readonly groundHex: string;
+  readonly bodyHex: string;
   readonly accentHex: string;
   /**
    * The full scheme this entry's live preview paints with escape codes
@@ -618,13 +619,14 @@ interface PickerEntry {
   readonly scheme: Scheme;
 }
 
-function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
+export function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
   const roleHexes = loaded.pack.payloads["oh-my-posh"];
   return {
     slug: loaded.pack.manifest.slug,
     name: loaded.pack.manifest.name,
     origin: loaded.origin,
     groundHex: roleHexes.ground,
+    bodyHex: roleHexes.body,
     accentHex: roleHexes.accent,
     scheme: loaded.pack.payloads["windows-terminal"],
   };
@@ -762,23 +764,44 @@ export function createSettledFileTargetPreview(
 
 const HEX_COLOR_PATTERN = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
 
+/** Parses a 6-digit hex colour into its three 0-255 channels, or undefined for anything HEX_COLOR_PATTERN does not match — the one guard sgrColor and swatch both sit behind, so a bad hex degrades to "paint nothing" rather than a garbled escape sequence. */
+function parseHexChannels(hex: string): { red: number; green: number; blue: number } | undefined {
+  const channels = HEX_COLOR_PATTERN.exec(hex);
+  if (!channels) return undefined;
+  const [, redHex, greenHex, blueHex] = channels;
+  return {
+    red: Number.parseInt(redHex!, 16),
+    green: Number.parseInt(greenHex!, 16),
+    blue: Number.parseInt(blueHex!, 16),
+  };
+}
+
+/** SGR's own base codes for "set foreground" and "set background" in the 24-bit `<base>;2;r;g;b` form — see sgrColor. */
+const SGR_FOREGROUND_BASE = 38;
+const SGR_BACKGROUND_BASE = 48;
+const SGR_RESET = "\x1b[0m";
+
+/** A 24-bit SGR escape setting the foreground or background (sgrBase) to `hex` — empty for a hex parseHexChannels cannot read. */
+function sgrColor(sgrBase: number, hex: string): string {
+  const channels = parseHexChannels(hex);
+  if (!channels) return "";
+  return `\x1b[${sgrBase};2;${channels.red};${channels.green};${channels.blue}m`;
+}
+
 /**
- * Two spaces painted with `hex` as a background colour — a picker row's
- * swatch. This is deliberately a solid block of colour rather than a glyph:
- * see CLAUDE.md, "Terminal output must read without a Nerd Font installed."
- * The escape codes are plain ANSI 24-bit colour and cursor movement, nothing
- * Windows Terminal renders differently under cmd.exe, PowerShell or
- * git-bash — see CHM-24's "must not depend on a terminal feature only one
- * of them has."
+ * Two spaces painted with `hex` as a background colour — the accent swatch
+ * `chm themes --list` and every picker row still carry (CHM-64: "keep the
+ * accent visible somewhere per row; the pack's accent is the second thing
+ * people are choosing on"). Deliberately a solid block of colour rather than
+ * a glyph: see CLAUDE.md, "Terminal output must read without a Nerd Font
+ * installed." The escape codes are plain ANSI 24-bit colour, nothing Windows
+ * Terminal renders differently under cmd.exe, PowerShell or git-bash — see
+ * CHM-24's "must not depend on a terminal feature only one of them has."
  */
 function swatch(hex: string): string {
-  const channels = HEX_COLOR_PATTERN.exec(hex);
+  const channels = parseHexChannels(hex);
   if (!channels) return "  ";
-  const [, redHex, greenHex, blueHex] = channels;
-  const redChannel = Number.parseInt(redHex!, 16);
-  const greenChannel = Number.parseInt(greenHex!, 16);
-  const blueChannel = Number.parseInt(blueHex!, 16);
-  return `\x1b[48;2;${redChannel};${greenChannel};${blueChannel}m  \x1b[0m`;
+  return `${sgrColor(SGR_BACKGROUND_BASE, hex)}  ${SGR_RESET}`;
 }
 
 /** Whether `entry` matches the picker's type-to-filter text, by slug or by name — an empty filter matches everything. */
@@ -788,11 +811,35 @@ function matchesPickerFilter(entry: PickerEntry, filterText: string): boolean {
   return entry.slug.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle);
 }
 
-/** One picker row: swatches and the display name, matching `chm themes`' own formatting (CHM-42) — the slug stays typeable for the filter, but is never shown. */
-function renderPickerRow(entry: PickerEntry, isHighlighted: boolean): string {
+/** SGR 7 — reverse video, swapping whatever foreground and background are already active. This is the highlight mechanism CHM-64 asks for: it stands out on every pack without ever reading that pack's own colours, so it cannot vanish the way a fixed highlight background could on a pack that happens to share it. */
+const SGR_REVERSE_VIDEO = "\x1b[7m";
+
+/**
+ * The background-then-foreground SGR prefix a picker row is painted with:
+ * that pack's own ground behind its own body (CHM-64). Highlighted adds
+ * reverse video on top of the same two codes — see SGR_REVERSE_VIDEO for why
+ * that, and not a tint, is what marks the highlighted row.
+ */
+function sgrRowPaint(groundHex: string, bodyHex: string, isHighlighted: boolean): string {
+  const reverseVideo = isHighlighted ? SGR_REVERSE_VIDEO : "";
+  return `${reverseVideo}${sgrColor(SGR_BACKGROUND_BASE, groundHex)}${sgrColor(SGR_FOREGROUND_BASE, bodyHex)}`;
+}
+
+/**
+ * One picker row, painted end to end in that pack's own colours — its own
+ * ground behind its own body, the way tint's picker reads at a glance,
+ * rather than the name in the terminal's own colours beside two small
+ * swatches (CHM-64). The accent swatch stays and restores the row's own
+ * paint immediately after itself, so the coloured name text either side of
+ * it is never left in the swatch's colours. The slug stays typeable for the
+ * filter, but is never shown.
+ */
+export function renderPickerRow(entry: PickerEntry, isHighlighted: boolean): string {
   const cursor = isHighlighted ? ">" : " ";
   const userMarker = entry.origin === "user" ? "  (user)" : "";
-  return `${cursor} ${swatch(entry.groundHex)}${swatch(entry.accentHex)} ${entry.name}${userMarker}`;
+  const rowPaint = sgrRowPaint(entry.groundHex, entry.bodyHex, isHighlighted);
+  const accentSwatch = `${sgrColor(SGR_BACKGROUND_BASE, entry.accentHex)}  ${rowPaint}`;
+  return `${cursor} ${rowPaint} ${accentSwatch} ${entry.name}${userMarker}${SGR_RESET}`;
 }
 
 const PICKER_HINT_LINE = "up/down move, type to filter, enter apply, esc cancel";
