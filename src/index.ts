@@ -16,6 +16,15 @@ import {
   OH_MY_POSH_WINGET_PACKAGE_ID,
   undoOhMyPosh,
 } from "./adapters/oh-my-posh.js";
+import {
+  captureOriginalSnapshotIfMissing,
+  readOriginalSnapshot,
+  restoreClaudeCodeFromSnapshot,
+  restoreHerdrFromSnapshot,
+  restoreOhMyPoshFromSnapshot,
+  restoreWindowsTerminalFromSnapshot,
+  type OriginalSnapshot,
+} from "./adapters/original-snapshot.js";
 import { isWindows } from "./adapters/platform.js";
 import { clearPreviewState, readPreviewState, writePreviewState } from "./adapters/preview-state.js";
 import { readActivePackState, writeActivePackState } from "./adapters/state.js";
@@ -94,6 +103,9 @@ export { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
 
 export type { ClaudeCodeAdapter, ClaudeCodeSettings } from "./adapters/claude-code.js";
 export { createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
+
+export type { OriginalSnapshot } from "./adapters/original-snapshot.js";
+export { defaultOriginalSnapshotPath, readOriginalSnapshot } from "./adapters/original-snapshot.js";
 
 export { currentGitBranch } from "./adapters/git.js";
 
@@ -456,9 +468,25 @@ function findLoadedPack(slug: string, userThemeDir: string | undefined): LoadedT
  * real, explicit apply is the authoritative word on what every target should
  * show, and it supersedes whatever a preview left behind. Cleared first, so
  * a throw partway through this function never leaves the marker set.
+ *
+ * CHM-71: also captures the one-time original snapshot first, before any
+ * target below is touched — a no-op every apply after the very first, since
+ * captureOriginalSnapshotIfMissing guards on the snapshot already existing.
+ * This is what lets applyToTarget's own claude-code branch set statusLine
+ * unconditionally on every apply from here on: whatever the user had is
+ * already safely recorded by the time that write happens, and `chm original`
+ * (restoreOriginal) is what gives it back. `originalSnapshotPath`, like
+ * `statePath` and `previewStatePath`, is only ever overridden by tests.
  */
-export function applyThemePack(slug: string, userThemeDir?: string, statePath?: string, previewStatePath?: string): ApplyPackReport {
+export function applyThemePack(
+  slug: string,
+  userThemeDir?: string,
+  statePath?: string,
+  previewStatePath?: string,
+  originalSnapshotPath?: string,
+): ApplyPackReport {
   clearPreviewState(previewStatePath);
+  captureOriginalSnapshotIfMissing(originalSnapshotPath);
 
   const loaded = findLoadedPack(slug, userThemeDir);
   const scheme = loaded.pack.payloads["windows-terminal"];
@@ -501,6 +529,70 @@ export function previewThemePackToFileTargets(slug: string, userThemeDir?: strin
 export function undoAppliedPack(previewStatePath?: string): readonly PackActionResult[] {
   clearPreviewState(previewStatePath);
   return TARGETS.map((target) => runOnInstalledTarget(target, "restored", () => undoTarget(target)));
+}
+
+/**
+ * `target`'s own reload, run after restoreOriginal has written that target's
+ * raw file(s) back — the same "a restored config nothing re-reads is a gap"
+ * reasoning undoTarget already follows, applied to CHM-71's own restore path
+ * instead of the per-apply backup one.
+ */
+function reloadAfterOriginalRestore(target: Target): string | undefined {
+  if (target === "windows-terminal") return createWindowsTerminalAdapter().reload();
+  if (target === "oh-my-posh") return createDefaultOhMyPoshAdapter().reload();
+  if (target === "claude-code") return createClaudeCodeAdapter().reload();
+  return createHerdrAdapter().reload();
+}
+
+/**
+ * Restores `target` from `snapshot` — see restoreWindowsTerminalFromSnapshot
+ * and its three siblings in adapters/original-snapshot.ts — and reloads it
+ * the same way every other apply/undo path does. "skipped" (never "failed")
+ * when the snapshot itself has nothing recorded for `target`: a target
+ * installed after Chameleon's first apply was never Chameleon's to restore,
+ * the same "absent is skipped, never a failure" rule every other target
+ * check in this file already follows.
+ */
+function restoreOneTargetFromSnapshot(target: Target, snapshot: OriginalSnapshot): boolean {
+  if (target === "windows-terminal") return restoreWindowsTerminalFromSnapshot(snapshot);
+  if (target === "oh-my-posh") return restoreOhMyPoshFromSnapshot(snapshot);
+  if (target === "claude-code") return restoreClaudeCodeFromSnapshot(snapshot);
+  return restoreHerdrFromSnapshot(snapshot);
+}
+
+function restoreTargetFromSnapshot(target: Target, snapshot: OriginalSnapshot): PackActionResult {
+  try {
+    const wasRestored = restoreOneTargetFromSnapshot(target, snapshot);
+    if (!wasRestored) {
+      return { target, status: "skipped", detail: "nothing was recorded — not configured before Chameleon's first apply" };
+    }
+    return { target, status: "restored", detail: reloadAfterOriginalRestore(target) };
+  } catch (error) {
+    return { target, status: "failed", detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * `chm original` — restores every surface to exactly what it was before
+ * Chameleon's first apply ever touched it (see
+ * adapters/original-snapshot.ts), the safety property CHM-71 exists to add:
+ * "any time, the user can go back to the snapshot." Throws when no snapshot
+ * has ever been captured — nothing has been applied yet, so there is nothing
+ * to go back to — rather than silently doing nothing. Also clears CHM-55's
+ * own preview-in-flight marker, for the same reason applyThemePack and
+ * undoAppliedPack both do: this is as authoritative a word on target state as
+ * either of them. `previewStatePath` and `snapshotPath` are only ever
+ * overridden by tests.
+ */
+export function restoreOriginal(previewStatePath?: string, snapshotPath?: string): readonly PackActionResult[] {
+  clearPreviewState(previewStatePath);
+
+  const snapshot = readOriginalSnapshot(snapshotPath);
+  if (!snapshot) {
+    throw new Error("no original snapshot recorded yet — it is captured on Chameleon's first apply, so apply a theme first");
+  }
+
+  return TARGETS.map((target) => restoreTargetFromSnapshot(target, snapshot));
 }
 
 // --- CHM-55: a preview marker, so an interrupted preview is never mistaken

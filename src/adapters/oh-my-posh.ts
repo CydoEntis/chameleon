@@ -994,6 +994,22 @@ function migrateAwayFromBundledPromptLayout(ownedConfigPath: string): void {
  * prompt before this seeding check ever runs — see that function's own doc
  * comment.
  */
+/**
+ * The config Chameleon would seed its owned copy from right now, and its raw
+ * text — undefined when none is discoverable yet (see resolveConfigPath).
+ * Exists for adapters/original-snapshot.ts (CHM-71): the one-time snapshot
+ * taken before Chameleon's very first apply must capture this file exactly
+ * as the user had it, before ensureOhMyPoshOwnedConfigSeeded ever copies it
+ * into Chameleon's own owned path — after that copy, the discovered config
+ * and the owned one are two independent files with two different futures,
+ * and only this, the pre-copy original, is what `chm original` restores.
+ */
+export function discoverPreOwnedOhMyPoshConfig(profilePath: string, shell: Shell): { path: string; text: string } | undefined {
+  const discoveredConfigPath = resolveConfigPath(defaultConfigPath(), profilePath, shell);
+  if (!discoveredConfigPath || !existsSync(discoveredConfigPath)) return undefined;
+  return { path: discoveredConfigPath, text: readFileSync(discoveredConfigPath, "utf8") };
+}
+
 export function ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath: string, profilePath: string, shell: Shell): string {
   migrateAwayFromBundledPromptLayout(ownedConfigPath);
   if (existsSync(ownedConfigPath)) return ownedConfigPath;
