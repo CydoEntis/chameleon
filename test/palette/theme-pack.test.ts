@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_MAX_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_MAX_CHROMA, SELECTION_MIN_RESOLVED_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { ANSI_SLOT_NAMES } from "../../src/palette/ansi.js";
 import { chromaOf, contrastRatio, fromHsl, hueDistanceDegrees, toHsl } from "../../src/palette/color.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
@@ -7,15 +7,19 @@ import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 /**
- * The only two of the 29 bundled packs whose own authored
- * `selectionBackground` already clears both of resolveSelectionAndBody's
- * floors untouched — chooseSelectionHue never runs for either, so neither
- * CHM-70's chroma nor its hue-distance guarantee applies to them (verified
- * against the packs' own raw vendored scheme, not asserted from vibes: see
- * scripts-scratch/check-repaired.ts's run in this ticket's own dev notes).
- * gruvbox-dark is CHM-38's own named exception; monokai-dark is CHM-70's.
+ * The only one of the 29 bundled packs whose own authored
+ * `selectionBackground` already clears every one of resolveSelectionAndBody's
+ * floors — contrast and chroma alike — untouched: chooseSelectionHue never
+ * runs for it, so neither CHM-70's chroma nor its hue-distance guarantee
+ * applies (verified against the pack's own raw vendored scheme, not asserted
+ * from vibes). gruvbox-dark and monokai-dark used to sit in this set too
+ * (CHM-38's and CHM-70's own named exceptions): both clear the two contrast
+ * floors as authored, but at a chroma of 0.071 and 0.035 — grey-on-grey to
+ * the eye. CHM-76 adds the chroma floor that catches them, so both are
+ * retinted like any other repair now; jellybeans is the one pack left where
+ * "clears the floors" and "carries real colour" already agreed.
  */
-const PACKS_KEPT_AS_AUTHORED = new Set(["gruvbox-dark", "monokai-dark"]);
+const PACKS_KEPT_AS_AUTHORED = new Set(["jellybeans"]);
 
 const ATTRIBUTION = {
   source: "mbadolato/iTerm2-Color-Schemes",
@@ -96,11 +100,53 @@ describe("buildThemePack", () => {
     }
   });
 
+  it("clears SELECTION_MIN_RESOLVED_CHROMA for every bundled pack's resolved selection, whether or not a repair fired (CHM-76)", () => {
+    // Unlike the chroma test below, this loop is *not* filtered by
+    // PACKS_KEPT_AS_AUTHORED — that is the whole point. Before CHM-76,
+    // gruvbox-dark and monokai-dark shipped their own authored
+    // selectionBackground untouched (chroma 0.071 and 0.035) because
+    // CHM-70's tint only ran once a contrast repair had already fired; this
+    // asserts the floor now holds on every one of the 29, including the one
+    // pack (jellybeans) still kept exactly as authored.
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      expect(chromaOf(pack.payloads.herdr.selection_bg), pack.manifest.slug).toBeGreaterThanOrEqual(SELECTION_MIN_RESOLVED_CHROMA);
+    }
+  });
+
+  // The two packs this ticket names by hand: both clear resolveSelectionAndBody's
+  // two contrast floors as authored, yet both shipped a highlight
+  // indistinguishable by eye from their own background before this fix.
+  const CHROMA_FLOOR_FIXTURES = [
+    { slug: "monokai-dark", authoredChroma: 0.035, resolvedChroma: 0.584 },
+    { slug: "gruvbox-dark", authoredChroma: 0.071, resolvedChroma: 0.424 },
+  ];
+
+  it.each(CHROMA_FLOOR_FIXTURES)(
+    "retints $slug's selection past SELECTION_MIN_RESOLVED_CHROMA, up from its authored $authoredChroma (CHM-76)",
+    ({ slug, authoredChroma, resolvedChroma }) => {
+      const packs = loadCuratedThemePacks();
+      const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+      if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+      const { ground: groundHex, body: bodyHex, selection_bg: selectionHex } = pack.payloads.herdr;
+      expect(authoredChroma).toBeLessThan(SELECTION_MIN_RESOLVED_CHROMA);
+      expect(chromaOf(selectionHex)).toBeCloseTo(resolvedChroma, 2);
+      expect(chromaOf(selectionHex)).toBeGreaterThanOrEqual(SELECTION_MIN_RESOLVED_CHROMA);
+      // Still clears CHM-30's own two floors — this fix adds a third,
+      // never trades either of the first two away for it.
+      expect(contrastRatio(selectionHex, groundHex)).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
+      expect(contrastRatio(bodyHex, selectionHex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    },
+  );
+
   it("gives every repaired pack a selection with chroma well above CHM-38's old clamp, not just a hue-free grey (CHM-38, raised by CHM-70)", () => {
-    // The real 29 committed under themes/, minus the two exceptions whose
-    // own authored candidate was kept untouched — see PACKS_KEPT_AS_AUTHORED.
+    // The real 29 committed under themes/, minus the one exception whose own
+    // authored candidate was kept untouched — see PACKS_KEPT_AS_AUTHORED.
     const packs = loadCuratedThemePacks().filter((pack) => !PACKS_KEPT_AS_AUTHORED.has(pack.manifest.slug));
-    expect(packs.length).toBe(27);
+    expect(packs.length).toBe(28);
 
     for (const pack of packs) {
       expect(chromaOf(pack.payloads.herdr.selection_bg), pack.manifest.slug).toBeGreaterThan(SELECTION_MAX_CHROMA);
@@ -108,7 +154,7 @@ describe("buildThemePack", () => {
   });
 
   it("keeps a repaired selection's hue distinct from ground's own by at least SELECTION_HUE_MIN_DISTANCE_DEGREES, whenever it used accent's own hue rather than the fallback (CHM-70)", () => {
-    // Same 27, same exemption as the chroma test above. A shipped selection
+    // Same 28, same exemption as the chroma test above. A shipped selection
     // hue within a degree of accent's own means chooseSelectionHue used
     // accent directly (see hueTintedAtLuminance, which preserves hue exactly
     // — only luminance and chroma move); anything else means the fallback to
@@ -116,7 +162,7 @@ describe("buildThemePack", () => {
     // not to itself clear the same distance.
     const HUE_ROUNDING_TOLERANCE_DEGREES = 1;
     const packs = loadCuratedThemePacks().filter((pack) => !PACKS_KEPT_AS_AUTHORED.has(pack.manifest.slug));
-    expect(packs.length).toBe(27);
+    expect(packs.length).toBe(28);
 
     for (const pack of packs) {
       const groundHue = toHsl(pack.payloads.herdr.ground).hue;
