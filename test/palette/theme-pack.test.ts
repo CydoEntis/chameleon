@@ -1,10 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_MIN_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_MAX_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { ANSI_SLOT_NAMES } from "../../src/palette/ansi.js";
-import { chromaOf, contrastRatio, fromHsl } from "../../src/palette/color.js";
+import { chromaOf, contrastRatio, fromHsl, hueDistanceDegrees, toHsl } from "../../src/palette/color.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src/palette/theme-pack.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
+
+/**
+ * The only two of the 29 bundled packs whose own authored
+ * `selectionBackground` already clears both of resolveSelectionAndBody's
+ * floors untouched — chooseSelectionHue never runs for either, so neither
+ * CHM-70's chroma nor its hue-distance guarantee applies to them (verified
+ * against the packs' own raw vendored scheme, not asserted from vibes: see
+ * scripts-scratch/check-repaired.ts's run in this ticket's own dev notes).
+ * gruvbox-dark is CHM-38's own named exception; monokai-dark is CHM-70's.
+ */
+const PACKS_KEPT_AS_AUTHORED = new Set(["gruvbox-dark", "monokai-dark"]);
 
 const ATTRIBUTION = {
   source: "mbadolato/iTerm2-Color-Schemes",
@@ -85,21 +96,84 @@ describe("buildThemePack", () => {
     }
   });
 
-  it("gives every pack whose ground carries meaningful chroma a selection that keeps some too, rather than collapsing to a hue-free grey (CHM-38)", () => {
-    // The real 29 committed under themes/ — 25 of the original 26 shipped a selection
-    // with essentially zero chroma before this fix, gruvbox-dark's own
-    // untouched candidate being the one exception.
-    const packs = loadCuratedThemePacks();
-    expect(packs.length).toBeGreaterThan(0);
+  it("gives every repaired pack a selection with chroma well above CHM-38's old clamp, not just a hue-free grey (CHM-38, raised by CHM-70)", () => {
+    // The real 29 committed under themes/, minus the two exceptions whose
+    // own authored candidate was kept untouched — see PACKS_KEPT_AS_AUTHORED.
+    const packs = loadCuratedThemePacks().filter((pack) => !PACKS_KEPT_AS_AUTHORED.has(pack.manifest.slug));
+    expect(packs.length).toBe(27);
 
     for (const pack of packs) {
-      const groundHex = pack.payloads.herdr.ground;
-      const selectionHex = pack.payloads.herdr.selection_bg;
-      if (chromaOf(groundHex) > SELECTION_MIN_CHROMA) {
-        expect(chromaOf(selectionHex)).toBeGreaterThan(SELECTION_MIN_CHROMA);
+      expect(chromaOf(pack.payloads.herdr.selection_bg), pack.manifest.slug).toBeGreaterThan(SELECTION_MAX_CHROMA);
+    }
+  });
+
+  it("keeps a repaired selection's hue distinct from ground's own by at least SELECTION_HUE_MIN_DISTANCE_DEGREES, whenever it used accent's own hue rather than the fallback (CHM-70)", () => {
+    // Same 27, same exemption as the chroma test above. A shipped selection
+    // hue within a degree of accent's own means chooseSelectionHue used
+    // accent directly (see hueTintedAtLuminance, which preserves hue exactly
+    // — only luminance and chroma move); anything else means the fallback to
+    // success/error fired, which this ticket only requires to be *reported*,
+    // not to itself clear the same distance.
+    const HUE_ROUNDING_TOLERANCE_DEGREES = 1;
+    const packs = loadCuratedThemePacks().filter((pack) => !PACKS_KEPT_AS_AUTHORED.has(pack.manifest.slug));
+    expect(packs.length).toBe(27);
+
+    for (const pack of packs) {
+      const groundHue = toHsl(pack.payloads.herdr.ground).hue;
+      const accentHue = toHsl(pack.payloads.herdr.accent).hue;
+      const selectionHue = toHsl(pack.payloads.herdr.selection_bg).hue;
+      const usedAccentHueDirectly = hueDistanceDegrees(selectionHue, accentHue) < HUE_ROUNDING_TOLERANCE_DEGREES;
+
+      if (usedAccentHueDirectly) {
+        // kanagawa-dark's own accent sits exactly 20.0° from ground, but the
+        // *shipped* selection hex — a different chroma and lightness than
+        // accent's own, rounded to its nearest 8-bit RGB triple — measures a
+        // hair under that (19.91°) purely from where that rounding lands;
+        // the same HUE_ROUNDING_TOLERANCE_DEGREES chooseSelectionHue's own
+        // 8-bit output is never exempt from elsewhere in this file.
+        expect(hueDistanceDegrees(selectionHue, groundHue), pack.manifest.slug).toBeGreaterThan(
+          SELECTION_HUE_MIN_DISTANCE_DEGREES - HUE_ROUNDING_TOLERANCE_DEGREES,
+        );
       }
     }
   });
+
+  // The three packs this ticket names by hand: dark, desaturated grounds,
+  // where a merely-lighter-shade-of-grey selection is least visible against
+  // its own background — nord-dark and catppuccin-dark use accent's own hue
+  // directly, one-half-dark's accent (13.0° from ground) is too close to use
+  // and demonstrates the fallback to error's hue (135.4° from ground)
+  // instead. Achieved numbers are this fix's own output, not invented,
+  // confirmed against each pack's own raw vendored scheme (accent's hue is
+  // untouched by repair — see roles.ts's assignRolesByContrast).
+  const HUE_AND_CHROMA_FIXTURES = [
+    { slug: "nord-dark", chroma: 0.522, hueDistance: 26.5, usedFallbackHue: false },
+    { slug: "catppuccin-dark", chroma: 0.4, hueDistance: 70, usedFallbackHue: false },
+    { slug: "one-half-dark", chroma: 0.761, hueDistance: 135.4, usedFallbackHue: true },
+  ];
+
+  it.each(HUE_AND_CHROMA_FIXTURES)(
+    "resolves $slug's selection with the named chroma and hue distance from ground (fallback fired: $usedFallbackHue)",
+    ({ slug, chroma, hueDistance, usedFallbackHue }) => {
+      const packs = loadCuratedThemePacks();
+      const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+      if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+      const { ground: groundHex, body: bodyHex, accent: accentHex, selection_bg: selectionHex } = pack.payloads.herdr;
+      const groundHue = toHsl(groundHex).hue;
+      const selectionHue = toHsl(selectionHex).hue;
+      const accentHue = toHsl(accentHex).hue;
+      const usedAccentHueDirectly = hueDistanceDegrees(selectionHue, accentHue) < 1;
+
+      expect(usedAccentHueDirectly).toBe(!usedFallbackHue);
+      expect(chromaOf(selectionHex)).toBeCloseTo(chroma, 2);
+      expect(hueDistanceDegrees(selectionHue, groundHue)).toBeCloseTo(hueDistance, 0);
+      // Still clears CHM-50's own floors — this fix changes hue and chroma,
+      // never the two contrast guarantees CHM-30/CHM-50 already established.
+      expect(contrastRatio(selectionHex, groundHex)).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
+      expect(contrastRatio(bodyHex, selectionHex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    },
+  );
 
   it("never ships a pure black or pure white selection (CHM-38 fixture: Solarized Dark shipped #000000)", () => {
     const packs = loadCuratedThemePacks();
@@ -181,10 +255,16 @@ describe("Windows Terminal's own foreground clears body-on-selection (CHM-33)", 
   // fails with its own slug and achieved ratio rather than a generic
   // "some pack failed" message. Achieved ratios are this fix's own output
   // (see tools/build-theme-packs.ts's describeBodyNudge), not invented.
+  // tokyo-night-light's own ratio moved slightly (4.70 -> 4.76) under
+  // CHM-70: `foreground` is unchanged, but `selectionBackground` now carries
+  // real chroma instead of a hue-free grey, and an RGB triple rounds to its
+  // nearest 8-bit byte slightly differently than a single repeated grey
+  // byte does at the same target luminance — see selection.ts's own doc
+  // comment on maxChromaClearingFloors.
   const NAMED_FIXTURES = [
     { slug: "solarized-light", achievedRatio: 4.73 },
-    { slug: "everforest-light", achievedRatio: 4.74 },
-    { slug: "tokyo-night-light", achievedRatio: 4.70 },
+    { slug: "everforest-light", achievedRatio: 4.75 },
+    { slug: "tokyo-night-light", achievedRatio: 4.76 },
   ];
 
   it.each(NAMED_FIXTURES)(

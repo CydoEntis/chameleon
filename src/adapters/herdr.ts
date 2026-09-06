@@ -696,7 +696,13 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
   const originalText = readFileSync(resolvedConfigPath, "utf8");
   const eol = detectLineEnding(originalText);
   const resolvedRoleHexes = resolveRoleHexes(scheme);
-  const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedRoleHexes.ground, resolvedRoleHexes.body);
+  const { selection, body } = resolveSelectionAndBody(
+    scheme.selectionBackground,
+    resolvedRoleHexes.ground,
+    resolvedRoleHexes.body,
+    resolvedRoleHexes.accent,
+    [resolvedRoleHexes.success, resolvedRoleHexes.error],
+  );
   // panel_bg is not passed as an "other" surface here: it is definitionally
   // ground (see structuralTokenValues), so checking against ground already
   // covers it.

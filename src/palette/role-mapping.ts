@@ -16,7 +16,7 @@
  */
 
 import { MIN_REPAIRED_CHROMA, type Role } from "../constants.js";
-import { chromaOf, fromHueChromaMatch, relativeLuminance, toHsl } from "./color.js";
+import { chromaOf, fromHueChromaMatch, hueDistanceDegrees, relativeLuminance, toHsl } from "./color.js";
 import { matchValueForLuminance, poleWithMoreHeadroom } from "./repair.js";
 import { BASE_COLOR_SLOTS } from "./roles.js";
 import type { Scheme } from "./scheme.js";
@@ -38,17 +38,6 @@ function roleImpliedByName(name: string): Extract<Role, "error" | "success"> | u
   if (ERROR_NAME_PATTERN.test(name)) return "error";
   if (SUCCESS_NAME_PATTERN.test(name)) return "success";
   return undefined;
-}
-
-/**
- * Circular distance, in degrees, between two hues on the 360° colour wheel —
- * 0 for identical hues, at most 180 for two sitting directly opposite each
- * other. Plain subtraction is wrong here because hue wraps: 350° and 10° are
- * 20° apart, not 340°.
- */
-function hueDistanceDegrees(hueA: number, hueB: number): number {
-  const rawDistance = Math.abs(hueA - hueB);
-  return Math.min(rawDistance, 360 - rawDistance);
 }
 
 /**

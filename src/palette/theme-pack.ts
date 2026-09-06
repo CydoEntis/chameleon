@@ -212,7 +212,13 @@ export function buildThemePack(
   // paints behind — can never disagree about what it is. See CHM-30's
   // resolveSelectionAndBody for the rule and ThemePackPayloads for why this
   // is the one case herdr's own role table can differ from oh-my-posh's.
-  const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, resolvedPalette.ground.hex, resolvedPalette.body.hex);
+  const { selection, body } = resolveSelectionAndBody(
+    scheme.selectionBackground,
+    resolvedPalette.ground.hex,
+    resolvedPalette.body.hex,
+    resolvedPalette.accent.hex,
+    [resolvedPalette.success.hex, resolvedPalette.error.hex],
+  );
   assertSelectionReadableUnderBody(selection.hex, body.hex, scheme.name);
 
   // Herdr's selected-row background and its text tokens, resolved together
