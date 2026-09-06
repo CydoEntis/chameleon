@@ -17,6 +17,7 @@ import {
   packSlugAtRow,
   previewThemePackToFileTargets,
   prevPackSlug,
+  restoreOriginal,
   resyncInterruptedPreview,
   undoAppliedPack,
 } from "../src/index.js";
@@ -73,6 +74,28 @@ vi.mock("../src/adapters/claude-code.js", () => ({
   claudeCodeMatchesAppearance: (...args: unknown[]) => claudeCodeMatchesAppearanceMock(...args),
   undoClaudeCode: () => undoClaudeCodeMock(),
 }));
+// CHM-71: this file is about applyThemePack/undoAppliedPack/preview's own
+// orchestration across the four target adapters, already mocked above —
+// never about the one-time original snapshot, which has its own dedicated
+// test file (test/adapters/original-snapshot.test.ts). Mocked out here so
+// applyThemePack's own call to captureOriginalSnapshotIfMissing never
+// touches a real machine path, and never calls the mocked adapters' own
+// `detect` an extra, uncounted time behind a test's back.
+const captureOriginalSnapshotIfMissingMock = vi.fn();
+const readOriginalSnapshotMock = vi.fn();
+const restoreWindowsTerminalFromSnapshotMock = vi.fn();
+const restoreOhMyPoshFromSnapshotMock = vi.fn();
+const restoreHerdrFromSnapshotMock = vi.fn();
+const restoreClaudeCodeFromSnapshotMock = vi.fn();
+vi.mock("../src/adapters/original-snapshot.js", () => ({
+  captureOriginalSnapshotIfMissing: (...args: unknown[]) => captureOriginalSnapshotIfMissingMock(...args),
+  readOriginalSnapshot: (...args: unknown[]) => readOriginalSnapshotMock(...args),
+  restoreWindowsTerminalFromSnapshot: (...args: unknown[]) => restoreWindowsTerminalFromSnapshotMock(...args),
+  restoreOhMyPoshFromSnapshot: (...args: unknown[]) => restoreOhMyPoshFromSnapshotMock(...args),
+  restoreHerdrFromSnapshot: (...args: unknown[]) => restoreHerdrFromSnapshotMock(...args),
+  restoreClaudeCodeFromSnapshot: (...args: unknown[]) => restoreClaudeCodeFromSnapshotMock(...args),
+  defaultOriginalSnapshotPath: () => "unused",
+}));
 
 let userThemeDir: string;
 let statePath: string;
@@ -108,6 +131,12 @@ beforeEach(() => {
   ohMyPoshMatchesRoleHexesMock.mockReset().mockReturnValue(true);
   herdrMatchesRoleHexesMock.mockReset().mockReturnValue(true);
   claudeCodeMatchesAppearanceMock.mockReset().mockReturnValue(true);
+  captureOriginalSnapshotIfMissingMock.mockReset();
+  readOriginalSnapshotMock.mockReset();
+  restoreWindowsTerminalFromSnapshotMock.mockReset().mockReturnValue(true);
+  restoreOhMyPoshFromSnapshotMock.mockReset().mockReturnValue(true);
+  restoreHerdrFromSnapshotMock.mockReset().mockReturnValue(true);
+  restoreClaudeCodeFromSnapshotMock.mockReset().mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -822,5 +851,69 @@ describe("findFamilySibling", () => {
 
   it("throws when nothing has been applied yet — there is no active pack to find a sibling of", () => {
     expect(() => findFamilySibling("dark", userThemeDir, statePath)).toThrow(/no pack has been applied yet/);
+  });
+});
+
+// CHM-71: `chm original` — restoring every surface from the one-time
+// snapshot. The snapshot's own capture/restore mechanics are covered by
+// test/adapters/original-snapshot.test.ts against real files; this is only
+// about restoreOriginal's own orchestration across the four targets, the
+// same split applyThemePack/undoAppliedPack already have with their own
+// adapters.
+describe("restoreOriginal", () => {
+  const fakeSnapshot = { capturedAtMs: 0 };
+
+  it("throws naming that nothing has ever been applied, when no snapshot has ever been captured", () => {
+    readOriginalSnapshotMock.mockReturnValue(undefined);
+
+    expect(() => restoreOriginal(previewStatePath)).toThrow(/apply a theme first/);
+  });
+
+  it("restores and reloads every target the snapshot has a section for", () => {
+    readOriginalSnapshotMock.mockReturnValue(fakeSnapshot);
+
+    const results = restoreOriginal(previewStatePath);
+
+    expect(results).toEqual([
+      { target: "windows-terminal", status: "restored", detail: undefined },
+      { target: "oh-my-posh", status: "restored", detail: undefined },
+      { target: "herdr", status: "restored", detail: undefined },
+      { target: "claude-code", status: "restored", detail: undefined },
+    ]);
+    expect(restoreWindowsTerminalFromSnapshotMock).toHaveBeenCalledWith(fakeSnapshot);
+    expect(windowsTerminalAdapter.reload).toHaveBeenCalledTimes(1);
+    expect(claudeCodeAdapter.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a target as skipped, never failed, when the snapshot has nothing recorded for it", () => {
+    readOriginalSnapshotMock.mockReturnValue(fakeSnapshot);
+    restoreHerdrFromSnapshotMock.mockReturnValue(false);
+
+    const results = restoreOriginal(previewStatePath);
+
+    expect(results).toContainEqual({ target: "herdr", status: "skipped", detail: "nothing was recorded — not configured before Chameleon's first apply" });
+    expect(herdrAdapter.reload).not.toHaveBeenCalled();
+  });
+
+  it("reports a target's own restore failure by name, without stopping the targets after it", () => {
+    readOriginalSnapshotMock.mockReturnValue(fakeSnapshot);
+    restoreOhMyPoshFromSnapshotMock.mockImplementation(() => {
+      throw new Error("disk full");
+    });
+
+    const results = restoreOriginal(previewStatePath);
+
+    expect(results).toContainEqual({ target: "oh-my-posh", status: "failed", detail: "disk full" });
+    expect(results).toContainEqual({ target: "claude-code", status: "restored", detail: undefined });
+  });
+
+  it("clears CHM-55's preview-in-flight marker, the same authoritative-command contract applyThemePack and undoAppliedPack both follow", () => {
+    readOriginalSnapshotMock.mockReturnValue(fakeSnapshot);
+    beginThemePreview("catppuccin-dark", previewStatePath);
+    expect(isPreviewInFlight(previewStatePath)).toBe(true);
+
+    restoreOriginal(previewStatePath);
+
+    expect(isPreviewInFlight(previewStatePath)).toBe(false);
   });
 });
