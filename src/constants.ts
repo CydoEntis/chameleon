@@ -37,6 +37,11 @@ export function isKnownRole(candidateRole: string): candidateRole is Role {
  * Minimum contrast, against ground, that body text and the accent colour
  * must clear to be legible. Reused for success and error, which are also
  * rendered as text. WCAG 2.x AA for normal-size text.
+ *
+ * Also the target muted reaches for — not against ground, but against
+ * Herdr's selected row — once CHM-75 established that a de-emphasised
+ * colour is the thing being read there, not skimmed past. See
+ * palette/surfaces.ts's resolveActiveRowAndText.
  */
 export const TEXT_MIN_RATIO = 4.5;
 
@@ -45,6 +50,10 @@ export const TEXT_MIN_RATIO = 4.5;
  * TEXT_MIN_RATIO because muted text is deliberately de-emphasised — but it
  * must also stay below body's ratio (see repairFailingRoles), or it reads
  * as more prominent than the text it is meant to recede behind.
+ *
+ * This is still the floor muted owes every surface it renders on — Herdr's
+ * selected row included, never regressed below it — even where CHM-75 asks
+ * for more (see TEXT_MIN_RATIO's own doc comment above).
  */
 export const MUTED_MIN_RATIO = 3.0;
 
@@ -156,7 +165,10 @@ export const SELECTION_HUE_MIN_DISTANCE_DEGREES = 20;
  * resolved first and never traded away for readability; see
  * palette/surfaces.ts's resolveActiveRowAndText, which repairs the text
  * tokens themselves against whatever this settles on, rather than pulling
- * the row back toward invisibility to make them fit.
+ * the row back toward invisibility to make them fit. CHM-75 adds a second
+ * move in the other direction — the row's own fraction can fall back toward
+ * ground, never below this same floor, so muted reads against it without
+ * needing to move further from ground itself.
  */
 export const ACTIVE_ROW_MIN_VISIBLE_RATIO = 2.0;
 
