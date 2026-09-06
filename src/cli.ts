@@ -774,13 +774,15 @@ function runCurrent(args: readonly string[]): number {
   return 0;
 }
 
-/** One picker row: enough to paint the row in its own pack's ground and body (CHM-64), filter it by slug or name, apply it, and preview it live. CHM-66 dropped the accent swatch, so the accent hex itself is no longer carried here — see renderPickerRow. */
+/** One picker row: enough to paint its four chromatic-role dots (CHM-69), filter it by slug or name, apply it, and preview it live. Ground and body are no longer carried here — CHM-69 dropped the row's full-background paint they were for, in favour of the four dots below, which is where bundled packs actually differ. */
 export interface PickerEntry {
   readonly slug: string;
   readonly name: string;
   readonly origin: string;
-  readonly groundHex: string;
-  readonly bodyHex: string;
+  readonly accentHex: string;
+  readonly successHex: string;
+  readonly errorHex: string;
+  readonly mutedHex: string;
   /**
    * The full scheme this entry's live preview paints with escape codes
    * (CHM-52), instantly, in the pane the picker itself is running in. CHM-55:
@@ -799,8 +801,10 @@ export function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
     slug: loaded.pack.manifest.slug,
     name: loaded.pack.manifest.name,
     origin: loaded.origin,
-    groundHex: roleHexes.ground,
-    bodyHex: roleHexes.body,
+    accentHex: roleHexes.accent,
+    successHex: roleHexes.success,
+    errorHex: roleHexes.error,
+    mutedHex: roleHexes.muted,
     scheme: loaded.pack.payloads["windows-terminal"],
   };
 }
@@ -984,18 +988,72 @@ function matchesPickerFilter(entry: PickerEntry, filterText: string): boolean {
   return entry.slug.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle);
 }
 
-/** SGR 7 — reverse video, swapping whatever foreground and background are already active. This is the highlight mechanism CHM-64 asks for: it stands out on every pack without ever reading that pack's own colours, so it cannot vanish the way a fixed highlight background could on a pack that happens to share it. */
-const SGR_REVERSE_VIDEO = "\x1b[7m";
+/**
+ * SGR 1 — bold. CHM-64/66 marked the highlighted row with reverse video,
+ * because the row's own ground-and-body paint meant a fixed highlight colour
+ * could vanish into a pack that happened to share it. CHM-69 drops that paint
+ * entirely — the name renders in the terminal's own foreground, like any
+ * other list — so nothing is left for a highlight colour to collide with,
+ * and bold reads as clearly without the side effect reverse video would have
+ * on the row's own coloured dots (swapping a dot's foreground into the
+ * background it sits on).
+ */
+const SGR_BOLD = "\x1b[1m";
 
 /**
- * The background-then-foreground SGR prefix a picker row is painted with:
- * that pack's own ground behind its own body (CHM-64). Highlighted adds
- * reverse video on top of the same two codes — see SGR_REVERSE_VIDEO for why
- * that, and not a tint, is what marks the highlighted row.
+ * SGR 39 — default foreground, resetting only the colour a dot was painted
+ * with rather than every active attribute the way SGR_RESET would. Used
+ * between one dot and the next (and before the name) so a highlighted row's
+ * bold survives past the first dot, and so one dot's colour never bleeds
+ * into the next.
  */
-function sgrRowPaint(groundHex: string, bodyHex: string, isHighlighted: boolean): string {
-  const reverseVideo = isHighlighted ? SGR_REVERSE_VIDEO : "";
-  return `${reverseVideo}${sgrColor(SGR_BACKGROUND_BASE, groundHex)}${sgrColor(SGR_FOREGROUND_BASE, bodyHex)}`;
+const SGR_FOREGROUND_RESET = "\x1b[39m";
+
+/**
+ * U+25CF FILLED CIRCLE — the coloured dot each of a pack's four chromatic
+ * roles gets on its picker row (CHM-69), replacing the CHM-64/66 full-row
+ * background: "with the bg color all the themes look the same imo and you
+ * don't see a difference until you hover over one." Ordinary Unicode from
+ * the Geometric Shapes block — not a Nerd Font glyph, not an emoji — and
+ * confirmed rendering in Windows Terminal, Herdr's own terminal panel and a
+ * bare console before shipping, per CLAUDE.md's "Terminal output must read
+ * without a Nerd Font installed." A coloured space is the documented
+ * fallback if a console is ever found where it does not render.
+ */
+const PICKER_DOT_GLYPH = "●";
+
+/**
+ * One dot (PICKER_DOT_GLYPH) painted in `hex`, resetting only its own
+ * foreground afterward (SGR_FOREGROUND_RESET) — a plain space, uncoloured,
+ * for a hex parseHexChannels cannot read, the same degrade-rather-than-crash
+ * behaviour sgrColor and swatch already use.
+ */
+function dot(hex: string): string {
+  const channels = parseHexChannels(hex);
+  if (!channels) return " ";
+  return `${sgrColor(SGR_FOREGROUND_BASE, hex)}${PICKER_DOT_GLYPH}${SGR_FOREGROUND_RESET}`;
+}
+
+/**
+ * The four chromatic roles a picker row's dots show, in display order — the
+ * roles CLAUDE.md's ticket names as the ones that actually differ between
+ * packs, as against ground and body, which are the ones that do not.
+ */
+function pickerRowDotHexes(entry: PickerEntry): readonly [accent: string, success: string, error: string, muted: string] {
+  return [entry.accentHex, entry.successHex, entry.errorHex, entry.mutedHex];
+}
+
+/** The number of chromatic-role dots every picker row shows — see pickerRowDotHexes. */
+const PICKER_DOT_COUNT = 4;
+
+/** Four plain, uncoloured dots — the placeholder computePickerRowLayout and renderPickerRow's own padding measure against, so a coloured dot's escape codes are never mistaken for display width. */
+function plainPickerRowDots(): string {
+  return Array(PICKER_DOT_COUNT).fill(PICKER_DOT_GLYPH).join(" ");
+}
+
+/** The same four dots as plainPickerRowDots, each painted in `entry`'s own accent/success/error/muted hex — the only colour a picker row carries (CHM-69). */
+function paintedPickerRowDots(entry: PickerEntry): string {
+  return pickerRowDotHexes(entry).map(dot).join(" ");
 }
 
 /**
@@ -1029,15 +1087,17 @@ function formatPickerRowNumber(displayNumber: number, gutterDigits: number): str
 }
 
 /**
- * Two leading spaces, the row's number, two more spaces, then the name and
- * its user marker — the part of a picker row that gets painted in the
- * pack's own colours and padded to `PickerRowLayout.contentWidth` (CHM-66).
- * Shared by renderPickerRow and computePickerRowLayout, so measuring a row
- * and painting it can never disagree.
+ * Two leading spaces, the row's number, two more spaces, the four
+ * chromatic-role dots, two more spaces, then the name and its user marker —
+ * the part of a picker row padded to `PickerRowLayout.contentWidth` (CHM-66).
+ * `dotsText` is either plainPickerRowDots' uncoloured placeholder, for
+ * measuring, or paintedPickerRowDots' own coloured rendering — both the same
+ * display width, so renderPickerRow and computePickerRowLayout share this
+ * one template and can never disagree about where the name column starts.
  */
-function pickerRowContent(entry: PickerEntry, displayNumber: number, gutterDigits: number): string {
+function pickerRowContent(entry: PickerEntry, displayNumber: number, gutterDigits: number, dotsText: string): string {
   const userMarker = entry.origin === "user" ? "  (user)" : "";
-  return `  ${formatPickerRowNumber(displayNumber, gutterDigits)}  ${entry.name}${userMarker}`;
+  return `  ${formatPickerRowNumber(displayNumber, gutterDigits)}  ${dotsText}  ${entry.name}${userMarker}`;
 }
 
 /**
@@ -1054,10 +1114,10 @@ interface PickerRowPosition {
 
 /**
  * The gutter width and total content width every row in one frame shares —
- * CHM-66's "every row the same width", so the painted background forms a
- * clean block rather than a ragged edge at each name's end. Computed once
- * per frame by computePickerRowLayout, never per row, so two rows can never
- * disagree about where the name column starts.
+ * CHM-66's "every row the same width", so the four dots and the name column
+ * both line up cleanly down the whole list. Computed once per frame by
+ * computePickerRowLayout, never per row, so two rows can never disagree
+ * about where the name column starts.
  */
 interface PickerRowLayout {
   readonly gutterDigits: number;
@@ -1068,32 +1128,42 @@ interface PickerRowLayout {
  * Sizes one frame's gutter and row width from every entry in the current
  * filter, not just the ones inside the visible scroll window — so the
  * layout does not shift as the highlight scrolls the window past names of
- * different lengths.
+ * different lengths. Measured against plainPickerRowDots' uncoloured
+ * placeholder, never a painted one, so a dot's escape codes are never
+ * mistaken for display width.
  */
 function computePickerRowLayout(entries: readonly PickerEntry[]): PickerRowLayout {
   const gutterDigits = Math.max(1, String(entries.length).length);
+  const plainDots = plainPickerRowDots();
   const contentWidth = entries.reduce(
-    (widestSoFar, entry, index) => Math.max(widestSoFar, pickerRowContent(entry, index + 1, gutterDigits).length),
+    (widestSoFar, entry, index) => Math.max(widestSoFar, pickerRowContent(entry, index + 1, gutterDigits, plainDots).length),
     0,
   );
   return { gutterDigits, contentWidth };
 }
 
 /**
- * One picker row, painted end to end in that pack's own colours — its own
- * ground behind its own body, the way tint's picker reads at a glance
- * (CHM-64) — with tint's own marker and number gutter in front of it
- * (CHM-66): a plain, unpainted one-character marker, then the row's number
- * and name padded to `layout.contentWidth` so the painted block lines up
- * into a clean rectangle down the whole list. No accent swatch — the row's
- * own background already carries the theme. The slug stays typeable for the
- * filter, but is never shown.
+ * One picker row: a plain, unpainted one-character marker, the row's number,
+ * four dots painted in that pack's own accent/success/error/muted (CHM-69 —
+ * "the four dots are the only colour in a row"), then the name in the
+ * terminal's own foreground, like any other list. CHM-64/66's full-row
+ * background is gone: with most bundled packs' grounds within a shade of
+ * each other, painting the row in its own ground made nearly every row look
+ * the same — the chromatic roles are where packs actually differ. Padded to
+ * `layout.contentWidth` off the plain (uncoloured) rendering, so a coloured
+ * dot's escape codes are never counted as display width; the highlighted row
+ * adds bold (SGR_BOLD) rather than CHM-64's reverse video, which would have
+ * swapped each dot's own foreground into its background instead of just
+ * standing the row out. The slug stays typeable for the filter, but is
+ * never shown.
  */
 export function renderPickerRow(entry: PickerEntry, position: PickerRowPosition, layout: PickerRowLayout): string {
   const marker = pickerRowMarker(position.isHighlighted, position.isApplied);
-  const rowPaint = sgrRowPaint(entry.groundHex, entry.bodyHex, position.isHighlighted);
-  const content = pickerRowContent(entry, position.displayNumber, layout.gutterDigits).padEnd(layout.contentWidth, " ");
-  return `${marker}${rowPaint}${content}${SGR_RESET}`;
+  const plainContent = pickerRowContent(entry, position.displayNumber, layout.gutterDigits, plainPickerRowDots());
+  const paddingWidth = layout.contentWidth - plainContent.length;
+  const paintedContent = pickerRowContent(entry, position.displayNumber, layout.gutterDigits, paintedPickerRowDots(entry));
+  const highlightOn = position.isHighlighted ? SGR_BOLD : "";
+  return `${marker}${highlightOn}${paintedContent}${" ".repeat(paddingWidth)}${SGR_RESET}`;
 }
 
 /**
