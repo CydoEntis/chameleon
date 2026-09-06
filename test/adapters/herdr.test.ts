@@ -788,10 +788,17 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", 
   // resolveActiveRowAndText avoids colliding with the selection hex (see
   // surfaces.ts), and that hex itself moved from a hue-free grey to a real
   // tint of accent's own hue, shifting where subtext0 lands to stay clear of
-  // it — rowVsSidebar and textOnRow are unaffected.
+  // it — rowVsSidebar and textOnRow are unaffected. monokai-dark's own
+  // subtextOnRow moved again (3.1629 -> 3.3256) under CHM-76: its authored
+  // selectionBackground cleared both of resolveSelectionAndBody's contrast
+  // floors but carried almost no chroma (0.035), so CHM-70's tint never ran
+  // for it; CHM-76 retints it too, the same shift in where subtext0 lands to
+  // stay clear of the selection hex that night-owl-dark's own move above
+  // already demonstrates — rowVsSidebar and textOnRow are unaffected here as
+  // well.
   const NAMED_FIXTURES = [
     { slug: "dracula-dark", rowVsSidebar: 2.8351, textOnRow: 4.712, subtextOnRow: 3.1596 },
-    { slug: "monokai-dark", rowVsSidebar: 2.956, textOnRow: 4.9684, subtextOnRow: 3.1629 },
+    { slug: "monokai-dark", rowVsSidebar: 2.956, textOnRow: 4.9684, subtextOnRow: 3.3256 },
     { slug: "night-owl-dark", rowVsSidebar: 2.5358, textOnRow: 5.3393, subtextOnRow: 3.5262 },
     { slug: "nord-dark", rowVsSidebar: 2.4, textOnRow: 4.7218, subtextOnRow: 3.175 },
   ];

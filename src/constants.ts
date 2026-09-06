@@ -99,6 +99,34 @@ export const SELECTION_MIN_CHROMA = 0.05;
 export const SELECTION_MAX_CHROMA = 0.08;
 
 /**
+ * The lowest chroma a *resolved* selection is allowed to ship at, whether or
+ * not a repair fired to get there (CHM-76). CHM-70's tint only ran on the
+ * repair branch: resolveSelectionAndBody's early return handed back an
+ * authored selectionBackground untouched the moment it cleared its two
+ * contrast floors, never checking what it looked like. Contrast floors are a
+ * function of luminance alone, so a candidate can clear both while carrying
+ * almost no colour at all — monokai-dark's authored selection measures 2.06
+ * against ground (clears SELECTION_MIN_VISIBLE_RATIO) and 7.12 against body
+ * (clears TEXT_MIN_RATIO) yet its chroma is 0.035, grey-on-grey to the eye;
+ * gruvbox-dark's is 0.071, the same failure.
+ *
+ * Set above both of those, but below ayu-light's own 0.165 — the tightest
+ * ceiling maxChromaClearingFloors finds on any of the 29 bundled packs'
+ * repair path, where the ground/body pair leaves little room to move at all
+ * (ayu-light's own selection-vs-ground caps at 1.29, short of
+ * SELECTION_IDEAL_RATIO). A floor above that would be unreachable for a pack
+ * already spending its whole budget on the two contrast floors, which this
+ * ticket does not touch. Below jellybeans's own native 0.290, too, so a pack
+ * whose authored candidate already carries ample chroma is kept rather than
+ * retinted for no reason (CHM-76 is a floor on invisible highlights, not a
+ * mandate to retint every pack). A candidate below this is retinted toward
+ * the pack's own accent hue exactly like a contrast repair (see
+ * palette/selection.ts's chooseSelectionHue) rather than shipped as
+ * whatever chroma the upstream theme happened to author.
+ */
+export const SELECTION_MIN_RESOLVED_CHROMA = 0.15;
+
+/**
  * The lowest hue distance, in degrees, from ground's own hue that still
  * reads as a genuinely different colour rather than a tinted shade of the
  * background — the bar CHM-70's selection hue must clear. Reuses

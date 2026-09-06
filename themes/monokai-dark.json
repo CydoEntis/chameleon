@@ -33,7 +33,7 @@
       "background": "#272822",
       "foreground": "#fdfff1",
       "cursorColor": "#c0c1b5",
-      "selectionBackground": "#57584f"
+      "selectionBackground": "#007d95"
     },
     "oh-my-posh": {
       "ground": "#272822",
@@ -47,10 +47,10 @@
       "ground": "#272822",
       "body": "#fdfff1",
       "accent": "#66d9ef",
-      "muted": "#cdcdcd",
+      "muted": "#d2d2d2",
       "success": "#a6e22e",
       "error": "#e6db74",
-      "selection_bg": "#57584f"
+      "selection_bg": "#007d95"
     }
   }
 }

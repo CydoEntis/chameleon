@@ -33,9 +33,20 @@
  * when accent itself is too close to tell apart from it, and holds as much
  * chroma as the two floors actually leave room for (see
  * maxChromaClearingFloors) instead of a fixed low ceiling.
+ *
+ * CHM-70's tint only ran when a repair fired: resolveSelectionAgainstBody's
+ * early return handed back an authored selectionBackground the moment it
+ * cleared both contrast floors, without ever looking at what it looked
+ * like. monokai-dark and gruvbox-dark both clear those floors while carrying
+ * essentially no colour (chroma 0.035 and 0.071) — grey-on-grey, invisible
+ * as a highlight despite passing every check built on luminance alone. CHM-76
+ * adds a chroma floor (SELECTION_MIN_RESOLVED_CHROMA) to that same early
+ * return, so a candidate this washed-out gets retinted toward accent's hue
+ * exactly like a contrast repair, while a pack whose authored selection
+ * already carries ample chroma (jellybeans' 0.290) keeps it untouched.
  */
 
-import { RATIO_CLEARANCE_MARGIN, SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_IDEAL_RATIO, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET } from "../constants.js";
+import { RATIO_CLEARANCE_MARGIN, SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_IDEAL_RATIO, SELECTION_MIN_RESOLVED_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET } from "../constants.js";
 import { chromaOf, contrastRatio, fromHueChromaMatch, hueDistanceDegrees, relativeLuminance, toHsl } from "./color.js";
 import { matchValueForLuminance } from "./repair.js";
 
@@ -354,7 +365,15 @@ function resolveSelectionAgainstBody(
 
   const candidateGroundRatio = contrastRatio(candidateHex, groundHex);
   const candidateClearsBodyFloor = contrastRatio(bodyHex, candidateHex) >= TEXT_MIN_RATIO;
-  if (candidateClearsBodyFloor && candidateGroundRatio >= targetRatio) {
+  // CHM-76: a candidate clearing both contrast floors can still be
+  // grey-on-grey — contrast is a function of luminance alone and has no
+  // notion of colour. monokai-dark's authored selection clears both floors
+  // (2.06 vs ground, 7.12 vs body) at a chroma of 0.035, indistinguishable
+  // from the background it sits on. Checked here, not folded into the
+  // floors above, because it gates the same early return rather than
+  // widening what counts as "clearing" a contrast ratio.
+  const candidateClearsChromaFloor = chromaOf(candidateHex) >= SELECTION_MIN_RESOLVED_CHROMA;
+  if (candidateClearsBodyFloor && candidateGroundRatio >= targetRatio && candidateClearsChromaFloor) {
     return { hex: candidateHex, selectionVsGroundRatio: candidateGroundRatio, wasRepaired: false, usedFallbackHue: false };
   }
 
