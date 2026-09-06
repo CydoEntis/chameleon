@@ -7,6 +7,7 @@ import {
   buildTerminalPreviewSequence,
   buildTerminalResetSequence,
   createSettledFileTargetPreview,
+  formatClaudeCodeRestartNote,
   formatDriftLine,
   formatLockHeldMessage,
   formatPreviewInProgressLine,
@@ -97,6 +98,22 @@ describe("formatDriftLine", () => {
     expect(formatDriftLine({ slug: "catppuccin-dark", name: "Some Pack", driftedTargets: [], previewInFlight: true })).toBe(
       'drift: none — every detected target matches "catppuccin-dark"',
     );
+  });
+});
+
+// CHM-65: doctor is what someone runs when a theme looks wrong, and a stale
+// Claude Code session is the single most common reason for that — the row
+// must name the restart whenever Claude Code is installed, and never invent
+// one for a target that is not there to restart.
+describe("formatClaudeCodeRestartNote", () => {
+  it("names the restart when Claude Code is installed", () => {
+    expect(formatClaudeCodeRestartNote(true)).toBe(
+      "  restart Claude Code to pick up a theme change — it reads its theme once, at startup",
+    );
+  });
+
+  it("says nothing when Claude Code is not installed", () => {
+    expect(formatClaudeCodeRestartNote(false)).toBeUndefined();
   });
 });
 
