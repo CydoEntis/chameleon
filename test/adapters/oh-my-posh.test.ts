@@ -20,17 +20,13 @@ import {
   removeSegment,
   reorderSegment,
   undoOhMyPosh,
-  withActiveLayoutRespected,
   writeOhMyPoshLayout,
   type Layout,
   type LayoutSegment,
 } from "../../src/adapters/oh-my-posh.js";
 import { isWindows, resetPlatformProbeCache } from "../../src/adapters/platform.js";
-import { writePromptState } from "../../src/adapters/prompt-state.js";
 import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
-import { loadBundledPromptPacks } from "../../src/palette/prompt-pack-library.js";
-import { resolvePromptLayoutRoleReferences } from "../../src/palette/prompt-pack.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
@@ -1026,97 +1022,80 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
   });
 });
 
-// CHM-57's own reproduction: `ch prompt half-life` switches a bundled layout
-// in; a plain createOhMyPoshAdapter().apply() (what every theme apply used to
-// call unconditionally) has no idea that happened and recolours a plain
-// palette table into Chameleon's owned config, silently reverting the layout
-// while prompt-state.json still claims it is active. withActiveLayoutRespected
-// is the fix: it wraps an ordinary adapter's own `apply` and, whenever
-// prompt-state.json names an active layout, re-resolves that layout into the
-// owned config instead of running the palette recolor. Under CHM-59 there is
-// only ever the one owned config file — a layout switch and a theme recolor
-// both write it, so there is no separate bundled file or pointer left to
-// name here.
-describe("withActiveLayoutRespected — a theme apply must not clobber an active bundled layout (CHM-57)", () => {
+// CHM-63: deletes prompt-layout switching outright — `chm prompt <name>`,
+// `chm prompt mine` and prompt-state.json are all gone. A machine that ran
+// `chm prompt <name>` before this ticket is left with the owned config still
+// holding that layout's own JSON, and prompt-state.json underneath it still
+// naming the real, untouched config that layout replaced. The very next
+// apply must land back on the user's own prompt, correctly coloured for the
+// active theme — not stay stuck rendering a layout nothing can select
+// anymore — and must leave no orphan file behind in the state directory.
+describe("migrating off a deleted bundled prompt layout (CHM-63)", () => {
   let stateDir: string;
   let ownedConfigPath: string;
   let profilePath: string;
-  let promptStatePath: string;
-
-  function buildAdapter() {
-    const baseAdapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
-    return withActiveLayoutRespected(baseAdapter, ownedConfigPath, profilePath, "pwsh", promptStatePath);
-  }
+  let originalUserConfigPath: string;
+  let legacyPromptStatePath: string;
 
   beforeEach(() => {
-    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm57-"));
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-migrate-"));
     ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
     profilePath = path.join(stateDir, "Microsoft.PowerShell_profile.ps1");
-    promptStatePath = path.join(stateDir, "prompt-state.json");
-    writeFileSync(ownedConfigPath, JSON.stringify({ palette: { accent: "#ffffff" }, blocks: [] }, null, 2), "utf8");
+    originalUserConfigPath = path.join(stateDir, "my-prompt.omp.json");
+    legacyPromptStatePath = path.join(stateDir, "prompt-state.json");
+    writeFileSync(originalUserConfigPath, LF_CONFIG_FIXTURE, "utf8");
+    // Simulates `chm prompt half-life` having replaced the owned config with
+    // a bundled layout's own JSON, with prompt-state.json still naming the
+    // real config it was switched away from — the state CHM-63 deletes.
+    writeFileSync(ownedConfigPath, JSON.stringify({ blocks: [{ segments: [{ foreground: "#ff0000" }] }] }), "utf8");
+    writeFileSync(
+      legacyPromptStatePath,
+      JSON.stringify({ originalConfigPath: originalUserConfigPath, activeSlug: "half-life", updatedAtMs: 1 }),
+      "utf8",
+    );
   });
 
   afterEach(() => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("reproduces the ticket's own sequence: apply a layout, then a theme — the owned config still renders the layout, never a plain palette recolor", () => {
-    // Simulates `ch prompt half-life` having already run: prompt-state.json
-    // records it active.
-    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
+  it("puts the owned config back onto the user's own prompt, coloured for the new theme, on the next apply", () => {
+    createOhMyPoshAdapter(ownedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
 
-    buildAdapter().apply(ZEROX96F_SCHEME); // `ch nord-dark`, in the ticket's own words
-
-    const written: unknown = JSON.parse(readFileSync(ownedConfigPath, "utf8"));
-    // The layout replaced the owned config wholesale — it no longer carries
-    // the plain palette table the fixture started with.
-    expect(written).not.toHaveProperty("palette");
-  });
-
-  it("recolours the active layout's own p:<role> references to the new theme, not just leaves the config as-is", () => {
-    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: "half-life", updatedAtMs: 1 }, promptStatePath);
-
-    buildAdapter().apply(ZEROX96F_SCHEME);
-
-    const written: unknown = JSON.parse(readFileSync(ownedConfigPath, "utf8"));
-    const halfLife = loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === "half-life")!;
-    const expected = resolvePromptLayoutRoleReferences(halfLife.layout, resolveRoleHexes(ZEROX96F_SCHEME));
-    expect(written).toEqual(expected);
-    expect(JSON.stringify(written)).not.toContain("p:");
-  });
-
-  it("recolours the active layout for every one of the 29 bundled themes, leaving it active every time", () => {
-    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: "spaceship", updatedAtMs: 1 }, promptStatePath);
-    const adapter = buildAdapter();
-    const curatedPacks = loadCuratedThemePacks();
-    expect(curatedPacks.length).toBe(29);
-
-    for (const pack of curatedPacks) {
-      adapter.apply(pack.payloads["windows-terminal"]);
-
-      const written = JSON.stringify(JSON.parse(readFileSync(ownedConfigPath, "utf8")));
-      expect(written).not.toContain("p:");
+    const resultText = readFileSync(ownedConfigPath, "utf8");
+    // The bundled layout's own single segment is gone — this is the user's
+    // own fixture config, recoloured, not the layout JSON that was there
+    // before.
+    expect(everyOriginalLineSurvivesInOrder(configLinesUnrelatedToChameleonEdits(LF_CONFIG_FIXTURE, LF), resultText)).toBe(true);
+    const parsed = parseWritten(resultText) as { palette: Record<string, string> };
+    for (const role of ROLES) {
+      expect(parsed.palette[role]).toMatch(/^#[0-9a-f]{6}$/i);
     }
   });
 
-  it("falls back to the ordinary config-swap path once no layout is active — 'mine' is untouched by this fix", () => {
-    // A real init line already names ownedConfigPath, so the very first
-    // seeding call finds it rather than needing to discover anything else.
-    writeFileSync(profilePath, `oh-my-posh init pwsh --config '${ownedConfigPath}' | Invoke-Expression\n`, "utf8");
+  it("deletes prompt-state.json — no orphan file left in the state directory", () => {
+    createOhMyPoshAdapter(ownedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
 
-    buildAdapter().apply(ZEROX96F_SCHEME);
-
-    const parsed = parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> };
-    expect(parsed.palette["accent"]).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(existsSync(legacyPromptStatePath)).toBe(false);
   });
 
-  it("falls back to the ordinary config-swap path once `ch prompt mine` cleared the active slug", () => {
-    writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: undefined, updatedAtMs: 1 }, promptStatePath);
+  it("never opens the user's own original config for writing", () => {
+    createOhMyPoshAdapter(ownedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
 
-    buildAdapter().apply(ZEROX96F_SCHEME);
+    expect(readFileSync(originalUserConfigPath, "utf8")).toBe(LF_CONFIG_FIXTURE);
+  });
 
-    const parsed = parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> };
-    expect(parsed.palette["accent"]).toMatch(/^#[0-9a-f]{6}$/i);
+  it("is a no-op on a second apply — nothing left to migrate", () => {
+    createOhMyPoshAdapter(ownedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
+    const afterFirstMigration = readFileSync(ownedConfigPath, "utf8");
+
+    createOhMyPoshAdapter(ownedConfigPath, profilePath).apply(AARDVARK_BLUE_SCHEME);
+
+    // Recoloured for the new theme, but still the user's own structure — not
+    // re-seeded from the (now-deleted) legacy state a second time.
+    const resultBlocks = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { blocks: unknown }).blocks;
+    const originalBlocks = (parseWritten(afterFirstMigration) as { blocks: unknown }).blocks;
+    expect(resultBlocks).toEqual(originalBlocks);
   });
 });
 
@@ -1398,13 +1377,12 @@ describe("oh my posh adapter — edge cases", () => {
     // depends on the host machine having no usable Oh My Posh profile,
     // which makes it environment-dependent." This one does not. Discovery
     // now lives in ensureOhMyPoshOwnedConfigSeeded, the seeding step every
-    // real apply runs before the very first theme or layout switch.
+    // real apply runs before the very first theme switch.
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, "Set-Alias ll Get-ChildItem\n", "utf8");
     const ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
-    const promptStatePath = path.join(stateDir, "prompt-state.json");
 
-    const seed = () => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+    const seed = () => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
     expect(seed).toThrow(/POSH_CONFIG/);
     expect(seed).toThrow(/POSH_THEME/);
     expect(seed).toThrow(profilePath);
@@ -1566,19 +1544,17 @@ describe("profile-creation notice (CHM-39)", () => {
 // normal shell that simply has not run `oh-my-posh init` yet this session —
 // the state every freshly opened, genuinely configured shell starts in —
 // has neither set at all. This is the fallback that makes the very first
-// theme or layout switch still find the user's own config then: parsing the
-// profile's own init line for the --config argument it already carries, the
-// same path Oh My Posh itself would read. Under CHM-59 this discovery runs
-// once, inside ensureOhMyPoshOwnedConfigSeeded, rather than on every apply.
+// theme switch still find the user's own config then: parsing the profile's
+// own init line for the --config argument it already carries, the same path
+// Oh My Posh itself would read. Under CHM-59 this discovery runs once,
+// inside ensureOhMyPoshOwnedConfigSeeded, rather than on every apply.
 describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is set (CHM-36)", () => {
   let stateDir: string;
   let ownedConfigPath: string;
-  let promptStatePath: string;
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-fallback-"));
     ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
-    promptStatePath = path.join(stateDir, "prompt-state.json");
     vi.stubEnv("POSH_CONFIG", "");
     vi.stubEnv("POSH_THEME", "");
   });
@@ -1613,7 +1589,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
       "utf8",
     );
 
-    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
 
     expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
     expect(readFileSync(ownedConfigPath, "utf8")).toBe(LF_CONFIG_FIXTURE);
@@ -1625,7 +1601,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, `oh-my-posh init pwsh --config '${targetConfigPath}' | Invoke-Expression\n`, "utf8");
 
-    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
 
     expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
   });
@@ -1642,7 +1618,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     // capture during review.
     writeFileSync(profilePath, 'eval "$(oh-my-posh init bash --config $HOME/.poshthemes/theme.omp.json)"\n', "utf8");
 
-    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "bash", promptStatePath);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "bash");
 
     expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
   });
@@ -1659,7 +1635,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     const profilePath = path.join(stateDir, ".zshrc");
     writeFileSync(profilePath, 'eval "$(oh-my-posh init zsh --config ~/.cache/oh-my-posh/theme.omp.json)"\n', "utf8");
 
-    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "zsh", promptStatePath);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "zsh");
 
     expect(path.normalize(discovered)).toBe(path.normalize(targetConfigPath));
   });
@@ -1673,7 +1649,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     writeFileSync(profilePath, `oh-my-posh init pwsh --config '${profileConfigPath}' | Invoke-Expression\n`, "utf8");
     vi.stubEnv("POSH_CONFIG", envConfigPath);
 
-    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
 
     expect(discovered).toBe(envConfigPath);
     expect(readFileSync(profileConfigPath, "utf8")).toBe(LF_CONFIG_FIXTURE);
@@ -1683,7 +1659,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(profilePath, `oh-my-posh init pwsh --config '${path.join(stateDir, "theme.omp.json")}' | Invoke-Expression\n`, "utf8");
 
-    expect(() => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "bash", promptStatePath)).toThrow(/POSH_CONFIG/);
+    expect(() => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "bash")).toThrow(/POSH_CONFIG/);
   });
 
   // CHM-39: Chameleon's own reload hook used to contain the literal text
@@ -1707,7 +1683,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     // A later run with neither POSH_CONFIG nor POSH_THEME set (a fresh
     // shell) must fall back to parsing the same profile, and must find
     // nothing — Chameleon's own marker-scoped line is excluded.
-    expect(() => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath)).toThrow(/POSH_CONFIG/);
+    expect(() => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh")).toThrow(/POSH_CONFIG/);
   });
 
   it("still resolves a real user init line that sits outside Chameleon's own marker block", () => {
@@ -1722,7 +1698,7 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     // the profile now carries two lines that could plausibly match.
     createOhMyPoshAdapter(firstAppliedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
 
-    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh", promptStatePath);
+    const discovered = ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
 
     expect(discovered).toBe(realConfigPath);
   });
