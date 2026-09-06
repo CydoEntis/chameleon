@@ -84,3 +84,19 @@ export function repairAnsiSlots(scheme: Scheme): AnsiRepairReport {
 
   return { slots: Object.freeze(slots), repairedSlots: Object.freeze(repairedSlots) };
 }
+
+/**
+ * Repairs the cursor colour against `groundHex`, reusing the exact
+ * hue/chroma-preserving search repairAnsiSlots uses for the 16 ANSI slots
+ * (repairTowardFloor) — the cursor is the same kind of pair as those (CHM-79:
+ * "distinguishable from the background it is drawn on", never a text
+ * legibility guarantee), it just is not one of the 16 numbered slots a Scheme
+ * carries. ayu-light's own authored cursor measures 1.80 against its
+ * background and nord-light's 1.90 — both under ANSI_MIN_RATIO before this
+ * repair, and neither is caught anywhere else: cursorColor is never part of
+ * ANSI_SLOT_NAMES, and nothing previously checked it at all.
+ */
+export function repairCursorColor(cursorHex: string, groundHex: string): string {
+  const candidate = { hex: cursorHex, slot: "cursorColor" as const, contrastRatio: contrastRatio(cursorHex, groundHex) };
+  return repairTowardFloor(candidate, groundHex, ANSI_MIN_RATIO, new Set<string>()).hex;
+}

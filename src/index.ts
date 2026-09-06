@@ -6,6 +6,7 @@
 
 import { claudeCodeMatchesAppearance, createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
 import type { Role } from "./constants.js";
+import { checkLiveContrastInventory, type DoctorContrastReport } from "./doctor.js";
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
 import { currentGitBranch } from "./adapters/git.js";
 import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters/herdr.js";
@@ -180,6 +181,8 @@ export interface DoctorReport {
   readonly claudeCodeTheme: string | undefined;
   /** Which config Chameleon owns for Oh My Posh, and which config it was seeded from — undefined before the very first seed. See CHM-74. */
   readonly ohMyPoshOwnedConfig: OhMyPoshOwnedConfigStatus | undefined;
+  /** CHM-79's own gate, run against this machine's real config files rather than a bundled pack — see doctor.ts's checkLiveContrastInventory. */
+  readonly contrast: DoctorContrastReport;
 }
 
 /**
@@ -292,6 +295,7 @@ export function runDoctorChecks(userThemeDir?: string, statePath?: string, previ
     drift: currentPack(userThemeDir, statePath, previewStatePath),
     claudeCodeTheme: currentClaudeCodeTheme(),
     ohMyPoshOwnedConfig: ohMyPoshOwnedConfigStatus(),
+    contrast: checkLiveContrastInventory(),
   };
 }
 
