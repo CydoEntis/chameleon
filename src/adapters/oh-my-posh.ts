@@ -863,10 +863,11 @@ function isCommentLine(line: string): boolean {
 
 /**
  * The span of `text`'s own pre-existing, user-written `oh-my-posh init` line
- * — CHM-73's own missing half. Only ever called when `text` carries no
- * Chameleon marker block of its own yet (see upsertProfileBlock), so there is
- * no owned init line of Chameleon's own to exclude here — every match this
- * finds is necessarily the user's.
+ * — CHM-73's own missing half. `text` must never still carry Chameleon's own
+ * marker block when this is called (see upsertProfileBlock, which always
+ * strips it first via `textWithoutOwnBlock` when one exists — CHM-77) —
+ * Chameleon's own init line matches this same pattern just as well as a
+ * real one, and would otherwise be read back as the user's.
  *
  * Uses the same initConfigArgumentPattern configPathFromProfile already
  * searches with, so a line whose binary is a variable rather than the
@@ -896,51 +897,18 @@ function neutralizedInitLine(line: string): string {
 }
 
 /**
- * Upserts `ownedContent` between `markerBegin`/`markerEnd`, replacing an
- * earlier Chameleon block in place when one exists. This is also what
- * migrates a profile still carrying the old `Set-PoshContext`/`PROMPT_COMMAND`
- * reload hook (CHM-39, CHM-47): that hook lived inside these same markers, so
- * the very next apply replaces its whole body with the new single init line
- * — see CHM-59's "an existing profile carrying the old hook is cleaned up on
- * the next apply, not left with both."
- *
- * When no Chameleon block exists yet, a profile that already carries its own
- * user-written `oh-my-posh init` line (see findPreexistingInitLineSpan) has
- * that line neutralised in place — commented out, never deleted — and
- * Chameleon's own block is written immediately after it, at the exact
- * position the live line held. CHM-73: appending Chameleon's block at the
- * end left the user's own line still running too, both setting POSH_CONFIG,
- * with whichever ran last actually winning. Position matters as much as
- * count: anything defined further down the profile that deliberately
- * overrides what `init` itself defines (the reporter's own `Set-PoshContext`,
- * built to override oh-my-posh's stub) still runs after this same single
- * init line, exactly as it did before Chameleon ever touched the file,
- * because the line never moved.
- *
- * A profile with no init line of its own falls back to appending a fresh
- * block at the end, same as always.
- *
- * `markerBegin`/`markerEnd` are parameters, not the module's own constants,
- * because Clink's hook is Lua, whose comment syntax (`--`) differs from the
- * `#` every shell profile in this file shares — see LUA_MARKER_BEGIN/END.
+ * Splices `block` into `text` at `initLineSpan`'s own position, with that
+ * span's line neutralised (see neutralizedInitLine) immediately ahead of it
+ * — or appended at the end of `text` when `initLineSpan` is undefined,
+ * meaning no live user-written init line was found to take over. This is
+ * the placement half both branches of upsertProfileBlock that can take over
+ * a stray init line share — a first apply and, since CHM-77, an upgrading
+ * profile that already carries its own Chameleon block too — differing only
+ * in what text they searched to find `initLineSpan`.
  */
-function upsertProfileBlock(text: string, ownedContent: string, eol: string, markerBegin: string, markerEnd: string, shell: Shell): string {
-  const beginIndex = text.indexOf(markerBegin);
-  const block = `${markerBegin}${eol}${ownedContent}${eol}${markerEnd}${eol}`;
-
-  if (beginIndex !== -1) {
-    const endIndex = text.indexOf(markerEnd, beginIndex);
-    if (endIndex === -1) {
-      throw new Error("the profile has a ch:begin marker with no matching ch:end — refusing to guess where Chameleon's block ends");
-    }
-    const afterEnd = endIndex + markerEnd.length;
-    const afterEndOwn = text.startsWith(eol, afterEnd) ? afterEnd + eol.length : afterEnd;
-    return text.slice(0, beginIndex) + block + text.slice(afterEndOwn);
-  }
-
-  const preexistingInitLineSpan = findPreexistingInitLineSpan(text, shell, eol);
-  if (preexistingInitLineSpan !== undefined) {
-    const { start, end } = preexistingInitLineSpan;
+function withBlockPlacedAt(text: string, block: string, eol: string, initLineSpan: LineSpan | undefined): string {
+  if (initLineSpan !== undefined) {
+    const { start, end } = initLineSpan;
     const neutralized = neutralizedInitLine(text.slice(start, end));
     const afterLine = text.startsWith(eol, end) ? end + eol.length : end;
     return text.slice(0, start) + neutralized + eol + block + text.slice(afterLine);
@@ -949,6 +917,68 @@ function upsertProfileBlock(text: string, ownedContent: string, eol: string, mar
   if (text.length === 0) return block;
   const separator = text.endsWith(eol) ? eol : eol + eol;
   return `${text}${separator}${block}`;
+}
+
+/**
+ * Upserts `ownedContent` between `markerBegin`/`markerEnd`, replacing an
+ * earlier Chameleon block in place when one exists. This is also what
+ * migrates a profile still carrying the old `Set-PoshContext`/`PROMPT_COMMAND`
+ * reload hook (CHM-39, CHM-47): that hook lived inside these same markers, so
+ * the very next apply replaces its whole body with the new single init line
+ * — see CHM-59's "an existing profile carrying the old hook is cleaned up on
+ * the next apply, not left with both."
+ *
+ * A profile that already carries its own user-written `oh-my-posh init` line
+ * (see findPreexistingInitLineSpan) has that line neutralised in place —
+ * commented out, never deleted — and Chameleon's own block is written
+ * immediately after it, at the exact position the live line held. CHM-73:
+ * appending Chameleon's block at the end left the user's own line still
+ * running too, both setting POSH_CONFIG, with whichever ran last actually
+ * winning. Position matters as much as count: anything defined further down
+ * the profile that deliberately overrides what `init` itself defines (the
+ * reporter's own `Set-PoshContext`, built to override oh-my-posh's stub)
+ * still runs after this same single init line, exactly as it did before
+ * Chameleon ever touched the file, because the line never moved.
+ *
+ * This takeover runs whether or not a Chameleon block exists yet — CHM-77:
+ * CHM-73's own version only ever searched for a stray init line when
+ * `beginIndex` was -1, so it reached that code exactly once per machine, on
+ * a first-ever apply. Every profile Chameleon had already applied to before
+ * CHM-73 shipped carries both its own block and the user's still-live line,
+ * and would otherwise keep it live forever, no matter how many times it was
+ * applied again. The search here runs against the text with Chameleon's own
+ * block already removed (`textWithoutOwnBlock`), never the raw text, so
+ * Chameleon's own init line — which matches this same pattern — is never
+ * mistaken for the user's; see withoutOwnedMarkerBlocks for the same
+ * concern elsewhere in this file. When that search finds nothing (the
+ * common case on every apply after the one that took the stray line over),
+ * the block is simply replaced in place, unmoved.
+ *
+ * `markerBegin`/`markerEnd` are parameters, not the module's own constants,
+ * because Clink's hook is Lua, whose comment syntax (`--`) differs from the
+ * `#` every shell profile in this file shares — see LUA_MARKER_BEGIN/END.
+ */
+function upsertProfileBlock(text: string, ownedContent: string, eol: string, markerBegin: string, markerEnd: string, shell: Shell): string {
+  const block = `${markerBegin}${eol}${ownedContent}${eol}${markerEnd}${eol}`;
+  const beginIndex = text.indexOf(markerBegin);
+
+  if (beginIndex === -1) {
+    return withBlockPlacedAt(text, block, eol, findPreexistingInitLineSpan(text, shell, eol));
+  }
+
+  const endIndex = text.indexOf(markerEnd, beginIndex);
+  if (endIndex === -1) {
+    throw new Error("the profile has a ch:begin marker with no matching ch:end — refusing to guess where Chameleon's block ends");
+  }
+  const afterEnd = endIndex + markerEnd.length;
+  const afterEndOwn = text.startsWith(eol, afterEnd) ? afterEnd + eol.length : afterEnd;
+  const textWithoutOwnBlock = text.slice(0, beginIndex) + text.slice(afterEndOwn);
+
+  const preexistingInitLineSpan = findPreexistingInitLineSpan(textWithoutOwnBlock, shell, eol);
+  if (preexistingInitLineSpan === undefined) {
+    return text.slice(0, beginIndex) + block + text.slice(afterEndOwn);
+  }
+  return withBlockPlacedAt(textWithoutOwnBlock, block, eol, preexistingInitLineSpan);
 }
 
 /** Reads `targetPath`, defaulting to an empty file when it does not exist yet — the common case for a PowerShell profile before anything has ever written to it. */
