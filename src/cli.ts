@@ -1,15 +1,19 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import path from "node:path";
 import { emitKeypressEvents, type Key } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import {
   acquireLock,
+  activePackRoleHexes,
   addSegment,
   ANSI_SLOT_NAMES,
   applyThemePack,
   beginThemePreview,
   buildLayoutSegment,
   createDefaultOhMyPoshAdapter,
+  currentGitBranch,
   currentLockHolder,
   currentPack,
   didAnyTargetFail,
@@ -216,6 +220,139 @@ function runDoctor(): number {
 
   process.stdout.write(`${formatDriftLine(report.drift)}\n`);
   return hasDrift(report.drift) ? 1 : 0;
+}
+
+// --- `chm statusline` (CHM-68) -----------------------------------------
+//
+// The command Claude Code's own settings.json points `statusLine` at (see
+// adapters/claude-code.ts's ensureStatusLineConfigured). Reads the session
+// JSON Claude Code hands it on stdin, and prints exactly one line — nothing
+// to stderr, ever, since Claude Code renders this command's stdout verbatim
+// and a stray warning would land directly in its UI.
+
+/**
+ * The slice of Claude Code's own statusline payload this command reads —
+ * see CLAUDE.md's "confirm the payload's real shape... do not assume field
+ * names": every field below is exactly as documented at
+ * https://docs.claude.com/en/docs/claude-code/statusline, and everything
+ * else Claude Code sends is passed through unvalidated, never inspected.
+ * Every field is optional — this command must still print a usable line
+ * when the payload is missing pieces, not just when it is missing outright
+ * (see buildStatuslineText).
+ */
+const StatuslinePayloadSchema = z
+  .object({
+    cwd: z.string().optional(),
+    model: z.object({ display_name: z.string().optional() }).catchall(z.unknown()).optional(),
+    workspace: z.object({ current_dir: z.string().optional() }).catchall(z.unknown()).optional(),
+    context_window: z.object({ used_percentage: z.number().nullable().optional() }).catchall(z.unknown()).optional(),
+  })
+  .catchall(z.unknown());
+
+export type StatuslinePayload = z.infer<typeof StatuslinePayloadSchema>;
+
+/**
+ * Parses Claude Code's own stdin payload, or undefined for anything that is
+ * not the JSON object this command expects — malformed JSON, or valid JSON
+ * that is not even an object. Never throws: an unreadable payload is exactly
+ * the case CLAUDE.md's "fail to a plain, uncoloured line ... and exit 0"
+ * exists for, not a reason to crash.
+ */
+export function parseStatuslinePayload(rawStdin: string): StatuslinePayload | undefined {
+  try {
+    const parsedJson: unknown = JSON.parse(rawStdin);
+    const validated = StatuslinePayloadSchema.safeParse(parsedJson);
+    return validated.success ? validated.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The directory Claude Code's own payload names. `workspace.current_dir` and
+ * `cwd` always carry the same value (see the docs above); `workspace.current_dir`
+ * is read first only for consistency with `workspace.project_dir`, which
+ * this command does not use. Falls back to this process's own working
+ * directory — which Claude Code itself launched this command inside — when
+ * the payload could not be read at all.
+ */
+function statuslineDirectory(payload: StatuslinePayload | undefined): string {
+  return payload?.workspace?.current_dir ?? payload?.cwd ?? process.cwd();
+}
+
+/** Whole-percentage context-window usage, or undefined when the payload never got there — `context_window.used_percentage` is `null` before the first API response of a session (see the docs above), not merely absent. */
+function statuslineContextPercent(payload: StatuslinePayload | undefined): number | undefined {
+  const usedPercentage = payload?.context_window?.used_percentage;
+  return typeof usedPercentage === "number" ? Math.round(usedPercentage) : undefined;
+}
+
+/** Joins every present segment with a plain, Nerd-Font-free separator — see CLAUDE.md's "no emoji, no box drawing." */
+const STATUSLINE_SEGMENT_SEPARATOR = "  ·  ";
+
+/**
+ * Paints `text` in `hex` and resets immediately after, reusing the same SGR
+ * 24-bit escape this file's own picker already paints rows with (sgrColor,
+ * SGR_RESET) — one pure formatter for "a hex colour around some text",
+ * rather than a second one just for this command. `hex` undefined — no pack
+ * recorded as active, or it could not be loaded — prints `text` with no
+ * colour at all rather than guess at one.
+ */
+function paintStatuslineSegment(hex: string | undefined, text: string): string {
+  return hex === undefined ? text : `${sgrColor(SGR_FOREGROUND_BASE, hex)}${text}${SGR_RESET}`;
+}
+
+/**
+ * `chm statusline`'s own one-line output: the model name, the working
+ * directory's own name, the git branch (when `cwd` is inside a repository),
+ * and whole-percentage context usage — Claude Code's own payload fields
+ * that are always present or safely defaultable, per CLAUDE.md's "One line,
+ * fields that are always present." Coloured from the active pack's own
+ * accent/body/success/muted roles (`roleHexes`) so the line can never show a
+ * colour the terminal itself is not also showing (CHM-68) — plain text, no
+ * escape codes at all, when `roleHexes` is undefined: no pack has ever been
+ * applied, or the recorded one could not be loaded. `gitBranch` is the
+ * caller's own best-effort read (see adapters/git.ts's currentGitBranch),
+ * passed in rather than read here so this stays a pure formatter, testable
+ * without a real git repository.
+ */
+export function buildStatuslineText(
+  payload: StatuslinePayload | undefined,
+  roleHexes: Readonly<Record<Role, string>> | undefined,
+  gitBranch: string | undefined,
+): string {
+  const modelName = payload?.model?.display_name ?? "Claude Code";
+  const directoryName = path.basename(statuslineDirectory(payload));
+  const contextPercent = statuslineContextPercent(payload);
+
+  const segments = [paintStatuslineSegment(roleHexes?.accent, modelName), paintStatuslineSegment(roleHexes?.body, directoryName)];
+  if (gitBranch !== undefined) segments.push(paintStatuslineSegment(roleHexes?.success, gitBranch));
+  if (contextPercent !== undefined) segments.push(paintStatuslineSegment(roleHexes?.muted, `${contextPercent}% context`));
+
+  return segments.join(STATUSLINE_SEGMENT_SEPARATOR);
+}
+
+/** Reads Claude Code's own stdin payload in one shot — small, and always closed before this process could do anything else with it, the same one-shot read every documented example script uses. */
+function readStatuslineStdin(): string {
+  return readFileSync(0, "utf8");
+}
+
+/**
+ * `chm statusline` — see the section comment above. Every failure this can
+ * hit — unreadable stdin, a corrupted pack, git not installed or not even on
+ * PATH — falls back to the plainest line this process's own working
+ * directory can still make, rather than ever throwing or writing to stderr:
+ * see CLAUDE.md's "fail to a plain, uncoloured line ... and exit 0."
+ */
+function runStatusline(): number {
+  try {
+    const payload = parseStatuslinePayload(readStatuslineStdin());
+    const roleHexes = activePackRoleHexes();
+    const gitBranch = currentGitBranch(statuslineDirectory(payload));
+    process.stdout.write(`${buildStatuslineText(payload, roleHexes, gitBranch)}\n`);
+  } catch {
+    process.stdout.write(`${path.basename(process.cwd())}\n`);
+  }
+  return 0;
 }
 
 /** The value following `flagName` in `args` — `chm edit`'s own flag values are always a single token, so this is all the parsing this command needs. */
@@ -1412,6 +1549,7 @@ chm current            print the active theme
 chm undo               put it back
 chm doctor             what is installed
 chm edit ...           edit the Oh My Posh prompt layout
+chm statusline         print one themed line for Claude Code's own status bar
 
 run \`chm themes\` to browse what you can apply
 `;
@@ -1439,6 +1577,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "themes" || command === "pick") return runThemes(rest);
   if (command === "doctor") return runDoctor();
   if (command === "edit") return runEdit(rest);
+  if (command === "statusline") return runStatusline();
   if (command === "current") return runCurrent(rest);
   if (command === "undo") return runUndo();
   if (command === "next") return runNext();
