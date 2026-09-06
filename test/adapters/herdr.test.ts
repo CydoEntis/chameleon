@@ -25,7 +25,13 @@ import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
  */
 function expectedHerdrRoleHexes(scheme: Scheme): Record<Role, string> {
   const roleHexes = resolveRoleHexes(scheme);
-  const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, roleHexes.ground, roleHexes.body);
+  const { selection, body } = resolveSelectionAndBody(
+    scheme.selectionBackground,
+    roleHexes.ground,
+    roleHexes.body,
+    roleHexes.accent,
+    [roleHexes.success, roleHexes.error],
+  );
   const rowAndText = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
   return { ...roleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
 }
@@ -778,10 +784,15 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", 
   // The four packs this ticket names by hand, with the exact ratios each one
   // achieves — pinned so a future change that narrows coverage back down
   // shows up as a specific number moving, not just a boolean flipping.
+  // night-owl-dark's own subtextOnRow moved (3.1564 -> 3.5262) under CHM-70:
+  // resolveActiveRowAndText avoids colliding with the selection hex (see
+  // surfaces.ts), and that hex itself moved from a hue-free grey to a real
+  // tint of accent's own hue, shifting where subtext0 lands to stay clear of
+  // it — rowVsSidebar and textOnRow are unaffected.
   const NAMED_FIXTURES = [
     { slug: "dracula-dark", rowVsSidebar: 2.8351, textOnRow: 4.712, subtextOnRow: 3.1596 },
     { slug: "monokai-dark", rowVsSidebar: 2.956, textOnRow: 4.9684, subtextOnRow: 3.1629 },
-    { slug: "night-owl-dark", rowVsSidebar: 2.5358, textOnRow: 5.3393, subtextOnRow: 3.1564 },
+    { slug: "night-owl-dark", rowVsSidebar: 2.5358, textOnRow: 5.3393, subtextOnRow: 3.5262 },
     { slug: "nord-dark", rowVsSidebar: 2.4, textOnRow: 4.7218, subtextOnRow: 3.175 },
   ];
 
@@ -815,7 +826,13 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", 
     for (const pack of packs) {
       const scheme = pack.payloads["windows-terminal"];
       const roleHexes = resolveRoleHexes(scheme);
-      const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, roleHexes.ground, roleHexes.body);
+      const { selection, body } = resolveSelectionAndBody(
+        scheme.selectionBackground,
+        roleHexes.ground,
+        roleHexes.body,
+        roleHexes.accent,
+        [roleHexes.success, roleHexes.error],
+      );
       const rowAndText = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
       expect(rowAndText.wasVisibilityTraded, pack.manifest.slug).toBe(false);
     }
