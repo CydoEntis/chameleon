@@ -456,6 +456,131 @@ describe.each([
     });
   });
 
+  describe("taking over a pre-existing init line (CHM-73)", () => {
+    // The reporter's own shape: the binary routed through a variable rather
+    // than named literally (see CHM-36), and a Set-PoshContext defined AFTER
+    // the init line specifically to override oh-my-posh's own stub of it —
+    // the ticket's own "position is the second, worse half."
+    const ORIGINAL_INIT_LINE = String.raw`& $ohMyPoshExe init pwsh --config "$HOME\zash.omp.json" | Invoke-Expression`;
+
+    function preexistingInitProfile(): string {
+      return [
+        "# my own profile — please don't nuke my comments",
+        "",
+        String.raw`$ohMyPoshExe = "$env:LOCALAPPDATA\Programs\oh-my-posh\bin\oh-my-posh.exe"`,
+        ORIGINAL_INIT_LINE,
+        "",
+        "function Set-PoshContext {",
+        "    # deliberately overrides oh-my-posh's own stub so it can switch GitHub accounts per directory",
+        "    $env:GITHUB_TOKEN = Get-TokenFor (Get-Location)",
+        "}",
+        "",
+      ].join(eol);
+    }
+
+    /** Every line of `text`, without the ones this file's own writes should never turn into live init invocations — a comment line, by definition, never runs. */
+    function liveInitLines(text: string): string[] {
+      return text
+        .split(eol)
+        .filter((line) => !line.trimStart().startsWith("#"))
+        .filter((line) => /\binit\s+pwsh\b[^\r\n]*--config/.test(line));
+    }
+
+    it("leaves exactly one live init line in the file", () => {
+      writeFileSync(profilePath, preexistingInitProfile(), "utf8");
+
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+      const resultText = readFileSync(profilePath, "utf8");
+      const stillLive = liveInitLines(resultText);
+      expect(stillLive).toHaveLength(1);
+      expect(stillLive[0]).toContain(configPath);
+    });
+
+    it("neutralises the pre-existing line in place — commented out, not deleted — keeping the rest of the file byte for byte", () => {
+      const original = preexistingInitProfile();
+      writeFileSync(profilePath, original, "utf8");
+
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+      const resultText = readFileSync(profilePath, "utf8");
+      expect(resultText).toContain(ORIGINAL_INIT_LINE);
+      const lineCarryingIt = resultText.split(eol).find((line) => line.includes(ORIGINAL_INIT_LINE));
+      expect(lineCarryingIt?.trimStart().startsWith("#")).toBe(true);
+
+      // Every other line — the header comment, the variable assignment, the
+      // blank lines, Set-PoshContext's own body — survives untouched. Only
+      // the one line this ticket is about is allowed to differ.
+      const originalLinesMinusInitLine = original
+        .split(eol)
+        .filter((line) => line !== ORIGINAL_INIT_LINE)
+        .join(eol);
+      expect(everyOriginalLineSurvivesInOrder(originalLinesMinusInitLine, resultText)).toBe(true);
+    });
+
+    it("writes Chameleon's block at the position the pre-existing line held, not appended at the end of the file", () => {
+      writeFileSync(profilePath, preexistingInitProfile(), "utf8");
+
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+      const lines = readFileSync(profilePath, "utf8").split(eol);
+      const neutralizedIndex = lines.findIndex((line) => line.includes("zash.omp.json"));
+      const chBeginIndex = lines.findIndex((line) => line.includes("# ch:begin"));
+      const setPoshContextIndex = lines.findIndex((line) => line.includes("function Set-PoshContext"));
+
+      expect(neutralizedIndex).toBeGreaterThanOrEqual(0);
+      expect(chBeginIndex).toBe(neutralizedIndex + 1);
+      expect(chBeginIndex).toBeLessThan(setPoshContextIndex);
+    });
+
+    it("leaves a Set-PoshContext defined after the original init line still in effect — it still runs after the same single init line", () => {
+      writeFileSync(profilePath, preexistingInitProfile(), "utf8");
+
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+      const resultText = readFileSync(profilePath, "utf8");
+      expect(resultText).toContain("function Set-PoshContext {");
+      expect(resultText).toContain("deliberately overrides oh-my-posh's own stub");
+      const lines = resultText.split(eol);
+      const chEndIndex = lines.findIndex((line) => line.includes("# ch:end"));
+      const setPoshContextIndex = lines.findIndex((line) => line.includes("function Set-PoshContext"));
+      expect(setPoshContextIndex).toBeGreaterThan(chEndIndex);
+    });
+
+    it("detects an init line whose binary is a variable rather than the literal name, matching configPathFromProfile's own behaviour (CHM-36)", () => {
+      writeFileSync(profilePath, preexistingInitProfile(), "utf8");
+
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+
+      const resultText = readFileSync(profilePath, "utf8");
+      expect(liveInitLines(resultText)).toHaveLength(1);
+      expect(resultText).toContain(String.raw`& $ohMyPoshExe init pwsh`);
+    });
+
+    it("applying twice in a row produces a byte-identical profile", () => {
+      writeFileSync(profilePath, preexistingInitProfile(), "utf8");
+      const adapter = createOhMyPoshAdapter(configPath, profilePath);
+
+      adapter.apply(ZEROX96F_SCHEME);
+      const afterFirstApply = readFileSync(profilePath, "utf8");
+      adapter.apply(ZEROX96F_SCHEME);
+      const afterSecondApply = readFileSync(profilePath, "utf8");
+
+      expect(afterSecondApply).toBe(afterFirstApply);
+      expect(countOccurrences(afterSecondApply, "# ch:begin")).toBe(1);
+    });
+
+    it("undoOhMyPosh restores a profile that had a pre-existing init line to its original bytes", () => {
+      const original = preexistingInitProfile();
+      writeFileSync(profilePath, original, "utf8");
+
+      createOhMyPoshAdapter(configPath, profilePath).apply(ZEROX96F_SCHEME);
+      undoOhMyPosh(configPath, profilePath);
+
+      expect(readFileSync(profilePath, "utf8")).toBe(original);
+    });
+  });
+
   describe("layout — ch edit's segment editor", () => {
     it("reads the fixture's existing left block, and no right block yet", () => {
       const layout = readOhMyPoshLayout(configPath);
