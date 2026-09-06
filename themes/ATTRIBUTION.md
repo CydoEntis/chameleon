@@ -18,11 +18,13 @@ fails its contrast floor".
 - Everforest
 - GitHub
 - Gruvbox
+- Jellybeans
 - Kanagawa
 - Monokai
 - Night Owl
 - Nord
 - One Half
 - Rosé Pine
+- Shades Of Purple
 - Solarized
 - Tokyo Night

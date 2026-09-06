@@ -216,8 +216,8 @@ describe("renderPickerRow", () => {
     const darkestEntry = byGroundLuminance[0]!;
     const lightestEntry = byGroundLuminance[byGroundLuminance.length - 1]!;
 
-    it("covers all 26 bundled packs, the darkest and lightest included", () => {
-      expect(allEntries.length).toBe(26);
+    it("covers all 29 bundled packs, the darkest and lightest included", () => {
+      expect(allEntries.length).toBe(29);
     });
 
     it("is present on the darkest pack's ground", () => {
@@ -505,12 +505,12 @@ describe("createSettledFileTargetPreview", () => {
   });
 
   // The acceptance criterion, directly: holding an arrow key through every
-  // one of the 26 bundled packs, with no pause between rows, must perform a
-  // small, bounded number of file applies — not one per row. Scheduling 26
+  // one of the 29 bundled packs, with no pause between rows, must perform a
+  // small, bounded number of file applies — not one per row. Scheduling 29
   // times in a row with no time advance between them, then settling once,
   // proves it is bounded to exactly one, superseding every row passed
   // through rather than queuing behind them.
-  it("holding an arrow key through 26 rows with no pause performs exactly one file apply, for the last row reached", () => {
+  it("holding an arrow key through 29 rows with no pause performs exactly one file apply, for the last row reached", () => {
     const applyToFileTargets = vi.fn();
     const scheduler = createSettledFileTargetPreview(applyToFileTargets, 150);
     const slugs = BUNDLED_PACKS.map((loaded) => loaded.pack.manifest.slug);
