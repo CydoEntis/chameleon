@@ -99,7 +99,7 @@ export interface WindowsTerminalAdapter {
  * cleanly instead of throwing on a LOCALAPPDATA read that would never
  * resolve to anything real. See CHM-25.
  */
-function defaultSettingsPath(): string | undefined {
+export function defaultWindowsTerminalSettingsPath(): string | undefined {
   if (!isWindows()) return undefined;
   const localAppData = process.env["LOCALAPPDATA"];
   if (!localAppData) {
@@ -311,7 +311,7 @@ function reloadWindowsTerminal(): string | undefined {
  * which point it at a fixture copy so nothing here touches a real
  * settings.json.
  */
-export function createWindowsTerminalAdapter(settingsPath: string | undefined = defaultSettingsPath()): WindowsTerminalAdapter {
+export function createWindowsTerminalAdapter(settingsPath: string | undefined = defaultWindowsTerminalSettingsPath()): WindowsTerminalAdapter {
   return {
     detect: () => detectWindowsTerminal(settingsPath),
     read: () => readWindowsTerminalSettings(requireSettingsPath(settingsPath)),
@@ -328,7 +328,7 @@ export function createWindowsTerminalAdapter(settingsPath: string | undefined = 
  * — but it lives beside the adapter because settings.json's shape is this
  * file's business.
  */
-export function selectWindowsTerminalFont(fontFace: string, settingsPath: string | undefined = defaultSettingsPath()): void {
+export function selectWindowsTerminalFont(fontFace: string, settingsPath: string | undefined = defaultWindowsTerminalSettingsPath()): void {
   const resolvedSettingsPath = requireSettingsPath(settingsPath);
   if (!existsSync(resolvedSettingsPath)) {
     throw new Error(`no Windows Terminal settings.json found at ${resolvedSettingsPath}`);
@@ -348,7 +348,7 @@ export function selectWindowsTerminalFont(fontFace: string, settingsPath: string
  * a step in the theming pipeline — but it lives beside the adapter because
  * the backup file's location and format are this file's business.
  */
-export function undoWindowsTerminal(settingsPath: string | undefined = defaultSettingsPath()): void {
+export function undoWindowsTerminal(settingsPath: string | undefined = defaultWindowsTerminalSettingsPath()): void {
   const resolvedSettingsPath = requireSettingsPath(settingsPath);
   const backupPath = backupPathFor(resolvedSettingsPath);
   if (!existsSync(backupPath)) {

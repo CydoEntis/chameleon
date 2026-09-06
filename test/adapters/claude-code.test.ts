@@ -31,12 +31,43 @@ function everyOriginalLineSurvivesInOrder(original: string, result: string): boo
   return originalIndex === originalLines.length;
 }
 
-/** The fixture's lines minus the one Chameleon is this ticket's job to *replace* — the pre-existing top-level "theme". Everything else — permissions, hooks, statusLine and both of the user's own comments included — must round-trip untouched. */
+/**
+ * Removes the line naming `key` as a top-level JSON property, together with
+ * every line up to and including that value's own closing line — brace/
+ * bracket depth counting is all a fixed, known-shape fixture needs, without
+ * dragging in a real JSON-aware diff just for this test. Used to drop the
+ * fixture's own multi-line "statusLine" object wholesale, since CHM-71 means
+ * every one of its lines gets replaced, not just a single scalar value the
+ * way "theme" is.
+ */
+function withoutTopLevelJsonBlock(lines: readonly string[], key: string): string[] {
+  const startIndex = lines.findIndex((line) => new RegExp(`^\\s*"${key}":`).test(line));
+  if (startIndex === -1) return [...lines];
+
+  const startLine = lines[startIndex] ?? "";
+  if (!startLine.includes("{") && !startLine.includes("[")) {
+    return [...lines.slice(0, startIndex), ...lines.slice(startIndex + 1)];
+  }
+
+  let depth = 0;
+  let endIndex = startIndex;
+  for (let index = startIndex; index < lines.length; index += 1) {
+    for (const character of lines[index] ?? "") {
+      if (character === "{" || character === "[") depth += 1;
+      if (character === "}" || character === "]") depth -= 1;
+    }
+    if (depth === 0) {
+      endIndex = index;
+      break;
+    }
+  }
+  return [...lines.slice(0, startIndex), ...lines.slice(endIndex + 1)];
+}
+
+/** The fixture's lines minus the two Chameleon is this ticket's job to *replace* — the pre-existing top-level "theme" and, since CHM-71, "statusLine" too. Everything else — permissions, hooks and both of the user's own comments included — must round-trip untouched. */
 function linesUnrelatedToChameleonEdits(text: string, eol: string): string {
-  return text
-    .split(eol)
-    .filter((line) => !/^\s*"theme":/.test(line))
-    .join(eol);
+  const withoutTheme = text.split(eol).filter((line) => !/^\s*"theme":/.test(line));
+  return withoutTopLevelJsonBlock(withoutTheme, "statusLine").join(eol);
 }
 
 function countOccurrences(text: string, needle: string): number {
@@ -97,19 +128,19 @@ describe.each([
     expect(usesOnlyLineEnding(resultText, eol)).toBe(true);
   });
 
-  it("preserves permissions, hooks, statusLine and the user's own comments byte for byte", () => {
+  it("preserves permissions, hooks and the user's own comments byte for byte, and sets statusLine to chm statusline (CHM-71)", () => {
     createClaudeCodeAdapter(settingsPath).apply("dark");
 
     const resultText = readFileSync(settingsPath, "utf8");
     expect(resultText).toContain("// hooks I rely on for session setup, do not remove");
-    expect(resultText).toContain('"command": "node ~/.claude/statusline.js"');
+    expect(resultText).toContain('"command": "chm statusline"');
     expect(resultText).toContain('"Bash(npm run test:*)"');
     expect(resultText).toContain('"../shared-lib"');
 
     const parsed = parseWritten(resultText) as Record<string, unknown>;
     expect(parsed["permissions"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["permissions"]);
     expect(parsed["hooks"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["hooks"]);
-    expect(parsed["statusLine"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["statusLine"]);
+    expect(parsed["statusLine"]).toEqual({ type: "command", command: "chm statusline" });
     expect(parsed["enabledPlugins"]).toEqual((parseWritten(fixture) as Record<string, unknown>)["enabledPlugins"]);
   });
 
@@ -289,10 +320,13 @@ describe("claude code adapter — edge cases", () => {
   });
 });
 
-// CHM-68: applying a theme also sets up `chm statusline` as Claude Code's
-// own statusLine — but only when the key was never there at all, and never
-// overwriting a script a user wrote themselves.
-describe("claude code adapter — statusLine (CHM-68)", () => {
+// CHM-68 first added `chm statusline` as Claude Code's own statusLine, but
+// only when the key was never there at all. CHM-71 supersedes that: the
+// user's own original statusLine is now protected by the one-time snapshot
+// (adapters/original-snapshot.ts, restorable via `chm original`) rather than
+// by Chameleon refusing to touch the key, so every apply sets it, the same
+// as "theme" always has.
+describe("claude code adapter — statusLine is set on every apply (CHM-71)", () => {
   let settingsDir: string;
   let settingsPath: string;
 
@@ -313,7 +347,7 @@ describe("claude code adapter — statusLine (CHM-68)", () => {
     expect(createClaudeCodeAdapter(settingsPath).read().statusLine).toEqual({ type: "command", command: "chm statusline" });
   });
 
-  it("says nothing on the apply that sets statusLine for the first time — that already just works", () => {
+  it("returns no notice — CHM-71 leaves nothing left to say about statusLine on an apply", () => {
     writeFileSync(settingsPath, JSON.stringify({ theme: "light" }, null, 2), "utf8");
 
     const notice = createClaudeCodeAdapter(settingsPath).apply("dark");
@@ -321,36 +355,23 @@ describe("claude code adapter — statusLine (CHM-68)", () => {
     expect(notice).toBeUndefined();
   });
 
-  it("never overwrites a statusLine the user already had", () => {
+  it("overwrites a statusLine the user already had — CHM-71 supersedes CHM-68's own 'never overwrite' rule, now that the original is snapshotted before any apply ever runs", () => {
     writeFileSync(settingsPath, JSON.stringify({ theme: "light", statusLine: { type: "command", command: "node ~/.claude/statusline.js" } }, null, 2), "utf8");
 
     createClaudeCodeAdapter(settingsPath).apply("dark");
 
-    expect(createClaudeCodeAdapter(settingsPath).read().statusLine).toEqual({ type: "command", command: "node ~/.claude/statusline.js" });
+    expect(createClaudeCodeAdapter(settingsPath).read().statusLine).toEqual({ type: "command", command: "chm statusline" });
   });
 
-  it("says so, once, the first time it notices a pre-existing statusLine", () => {
-    writeFileSync(settingsPath, JSON.stringify({ theme: "light", statusLine: { type: "command", command: "node ~/.claude/statusline.js" } }, null, 2), "utf8");
-
-    const notice = createClaudeCodeAdapter(settingsPath).apply("dark");
-
-    expect(notice).toContain("statusLine is already set");
-  });
-
-  // CHM-68's own acceptance criterion: "says so at most once rather than on
-  // every apply" — a second, third, fourth apply against the same
-  // settings.json must all stay silent about it.
-  it("never repeats the pre-existing-statusLine notice on a later apply", () => {
+  it("keeps setting statusLine on every later apply, not just the first", () => {
     writeFileSync(settingsPath, JSON.stringify({ theme: "light", statusLine: { type: "command", command: "node ~/.claude/statusline.js" } }, null, 2), "utf8");
     const adapter = createClaudeCodeAdapter(settingsPath);
 
-    const firstNotice = adapter.apply("dark");
-    const secondNotice = adapter.apply("light");
-    const thirdNotice = adapter.apply("dark");
+    adapter.apply("dark");
+    adapter.apply("light");
+    adapter.apply("dark");
 
-    expect(firstNotice).toContain("statusLine is already set");
-    expect(secondNotice).toBeUndefined();
-    expect(thirdNotice).toBeUndefined();
+    expect(adapter.read().statusLine).toEqual({ type: "command", command: "chm statusline" });
   });
 
   it("leaves every other key byte-identical when it sets statusLine for the first time", () => {

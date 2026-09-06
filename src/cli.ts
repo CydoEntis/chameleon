@@ -29,6 +29,7 @@ import {
   readOhMyPoshLayout,
   removeSegment,
   reorderSegment,
+  restoreOriginal,
   resyncInterruptedPreview,
   ROLES,
   runDoctorChecks,
@@ -632,6 +633,19 @@ function runApply(slug: string): number {
 }
 
 /**
+ * `headline`, then whatever formatNoteworthyResultLines found worth saying
+ * about `results` — the shared tail `chm undo` and `chm original` both end
+ * on, since restoring a target either way is "silence means success" (CHM-67)
+ * with no slug of its own to report, unlike `runApply`'s own "applied
+ * <slug>". Non-zero exactly when some target that *is* installed failed.
+ */
+function reportRestoreResults(headline: string, results: readonly PackActionResult[]): number {
+  process.stdout.write(`${headline}\n`);
+  printNoteworthyResults(results);
+  return didAnyTargetFail(results) ? 1 : 0;
+}
+
+/**
  * `chm undo` — restores every detected target from the backup its own
  * adapter's most recent apply wrote. CHM-55: when a preview is recorded as
  * in flight — a picker still running in another pane, or one that was killed
@@ -656,19 +670,28 @@ function runUndo(): number {
         return resync.report.isFullyApplied ? 0 : 1;
       }
       if (resync.status === "resynced-to-undo") {
-        process.stdout.write("chm undo: a theme preview was in progress — restoring your original configuration\n");
-        printNoteworthyResults(resync.results);
-        return didAnyTargetFail(resync.results) ? 1 : 0;
+        return reportRestoreResults("chm undo: a theme preview was in progress — restoring your original configuration", resync.results);
       }
 
-      const results = undoAppliedPack();
-      // CHM-67: the same one-line headline runApply's own "applied <slug>"
-      // is — undo just has no slug of its own to name, since each target is
-      // restored from its own independent backup rather than a pack applied
-      // as one unit.
-      process.stdout.write("chm undo: restored\n");
-      printNoteworthyResults(results);
-      return didAnyTargetFail(results) ? 1 : 0;
+      return reportRestoreResults("chm undo: restored", undoAppliedPack());
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  });
+}
+
+/**
+ * `chm original` — CHM-71: restores every surface to exactly what it was
+ * before Chameleon's very first apply ever touched it, undoing not just the
+ * most recent theme (that is `chm undo`) but every theme ever applied since.
+ * Naming no snapshot at all — nothing has ever been applied on this machine —
+ * is reported by message rather than treated as a partial success.
+ */
+function runOriginal(): number {
+  return runWithWriteLock("chm original", () => {
+    try {
+      return reportRestoreResults("chm original: restored", restoreOriginal());
     } catch (error) {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       return 1;
@@ -1616,7 +1639,8 @@ chm <theme>            apply a theme, by slug or by name
 chm dark / chm light   flip mode, same family
 chm next / chm prev    cycle either way
 chm current            print the active theme
-chm undo               put it back
+chm undo               put back the most recently applied theme
+chm original           put back everything, exactly as it was before Chameleon's first apply
 chm doctor             what is installed
 chm edit ...           edit the Oh My Posh prompt layout
 chm statusline         print one themed line for Claude Code's own status bar
@@ -1650,6 +1674,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "statusline") return runStatusline();
   if (command === "current") return runCurrent(rest);
   if (command === "undo") return runUndo();
+  if (command === "original") return runOriginal();
   if (command === "next") return runNext();
   if (command === "prev") return runPrev();
   if (command === "dark") return runFamilySwitch("dark");
