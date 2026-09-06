@@ -1,0 +1,56 @@
+{
+  "manifest": {
+    "slug": "shades-of-purple",
+    "name": "Shades Of Purple",
+    "family": "Shades Of Purple",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Shades Of Purple",
+      "black": "#535353",
+      "red": "#d90429",
+      "green": "#3ad900",
+      "yellow": "#ffe700",
+      "blue": "#6943ff",
+      "purple": "#ff2c70",
+      "cyan": "#00c5c7",
+      "white": "#c7c7c7",
+      "brightBlack": "#686868",
+      "brightRed": "#f92a1c",
+      "brightGreen": "#43d426",
+      "brightYellow": "#f1d000",
+      "brightBlue": "#6871ff",
+      "brightPurple": "#ff77ff",
+      "brightCyan": "#79e8fb",
+      "brightWhite": "#ffffff",
+      "background": "#1e1d40",
+      "foreground": "#ffffff",
+      "cursorColor": "#fad000",
+      "selectionBackground": "#4f4e63"
+    },
+    "oh-my-posh": {
+      "ground": "#1e1d40",
+      "body": "#ffffff",
+      "accent": "#00c5c7",
+      "muted": "#6d6d6d",
+      "success": "#3ad900",
+      "error": "#ff4062"
+    },
+    "herdr": {
+      "ground": "#1e1d40",
+      "body": "#ffffff",
+      "accent": "#00c5c7",
+      "muted": "#c6c6c6",
+      "success": "#3ad900",
+      "error": "#ff4062",
+      "selection_bg": "#4f4e63"
+    }
+  }
+}
