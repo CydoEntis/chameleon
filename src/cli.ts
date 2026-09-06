@@ -275,14 +275,28 @@ function runDoctor(): number {
 // and a stray warning would land directly in its UI.
 
 /**
+ * One rate-limit window's own shape — `five_hour` and `seven_day` are
+ * structurally identical, so both fields below share this schema rather than
+ * each declaring it inline. `used_percentage` runs 0-100 per the docs, but is
+ * still `.nullable()` for the same reason `context_window.used_percentage`
+ * is: a field this command has confirmed can be `null` elsewhere in the same
+ * payload is not worth trusting to never be `null` here too.
+ */
+const RateLimitWindowSchema = z.object({ used_percentage: z.number().nullable().optional() }).catchall(z.unknown());
+
+/**
  * The slice of Claude Code's own statusline payload this command reads —
  * see CLAUDE.md's "confirm the payload's real shape... do not assume field
  * names": every field below is exactly as documented at
- * https://docs.claude.com/en/docs/claude-code/statusline, and everything
- * else Claude Code sends is passed through unvalidated, never inspected.
- * Every field is optional — this command must still print a usable line
- * when the payload is missing pieces, not just when it is missing outright
- * (see buildStatuslineText).
+ * https://docs.claude.com/en/docs/claude-code/statusline (confirmed against
+ * that page for CHM-83, including the two `rate_limits` fields), and
+ * everything else Claude Code sends is passed through unvalidated, never
+ * inspected. Every field is optional — this command must still print a
+ * usable line when the payload is missing pieces, not just when it is
+ * missing outright (see buildStatuslineText). `rate_limits` itself, and each
+ * window inside it, is independently absent on a plan with no rate limits
+ * and before the first API response of a session — see
+ * statuslineRateLimitPercent.
  */
 const StatuslinePayloadSchema = z
   .object({
@@ -290,6 +304,10 @@ const StatuslinePayloadSchema = z
     model: z.object({ display_name: z.string().optional() }).catchall(z.unknown()).optional(),
     workspace: z.object({ current_dir: z.string().optional() }).catchall(z.unknown()).optional(),
     context_window: z.object({ used_percentage: z.number().nullable().optional() }).catchall(z.unknown()).optional(),
+    rate_limits: z
+      .object({ five_hour: RateLimitWindowSchema.optional(), seven_day: RateLimitWindowSchema.optional() })
+      .catchall(z.unknown())
+      .optional(),
   })
   .catchall(z.unknown());
 
@@ -330,6 +348,22 @@ function statuslineContextPercent(payload: StatuslinePayload | undefined): numbe
   return typeof usedPercentage === "number" ? Math.round(usedPercentage) : undefined;
 }
 
+/** The two rate-limit windows `chm statusline` renders a meter for — see statuslineRateLimitPercent. */
+type RateLimitWindow = "five_hour" | "seven_day";
+
+/**
+ * Whole-percentage usage of `window`, or undefined when that window is
+ * absent from the payload — a plan with no rate limits at all, or before the
+ * first API response of a session drops both windows in, or a window
+ * Claude Code has since dropped once its own reset time passed (see the docs
+ * above). Undefined here is what tells buildStatuslineText to omit the
+ * meter entirely rather than render one reading a false 0% (CHM-83).
+ */
+function statuslineRateLimitPercent(payload: StatuslinePayload | undefined, window: RateLimitWindow): number | undefined {
+  const usedPercentage = payload?.rate_limits?.[window]?.used_percentage;
+  return typeof usedPercentage === "number" ? Math.round(usedPercentage) : undefined;
+}
+
 /** Joins every present segment with a plain, Nerd-Font-free separator — see CLAUDE.md's "no emoji, no box drawing." */
 const STATUSLINE_SEGMENT_SEPARATOR = "  ·  ";
 
@@ -345,19 +379,69 @@ function paintStatuslineSegment(hex: string | undefined, text: string): string {
   return hex === undefined ? text : `${sgrColor(SGR_FOREGROUND_BASE, hex)}${text}${SGR_RESET}`;
 }
 
+// --- CHM-83's meters -----------------------------------------------------
+//
+// The reporter's own ~/.claude/statusline.js renders three meters — context,
+// 5-hour and 7-day — each a filled bar, a percentage and a label, with the
+// absolute token counts the reporter does not want dropped. This is that,
+// retinted from the active pack's own roles instead of the reporter's
+// hardcoded Solarized Light.
+
+/** How many bar characters buildMeterBar renders — wide enough to read at a glance, narrow enough that three meters plus the model/directory/branch segments still fit one line. */
+const METER_BAR_WIDTH = 10;
+
+/**
+ * U+2588 FULL BLOCK and U+2591 LIGHT SHADE — the meter's own filled/empty bar
+ * characters. Both sit in Unicode's Block Elements block (U+2580-U+259F),
+ * not the Box Drawing block (U+2500-U+257F) CLAUDE.md's "no box drawing"
+ * rule means — and unlike a Nerd Font's own private-use-area icons, Block
+ * Elements are part of the standard font tables every monospace font ships,
+ * Nerd Font or not (see CLAUDE.md's "Terminal output must read without a
+ * Nerd Font installed" — the bar must render before a font is even set up).
+ * The reporter's own script already used exactly these two glyphs.
+ */
+const METER_FILLED_GLYPH = "█";
+const METER_EMPTY_GLYPH = "░";
+
+/** A `METER_BAR_WIDTH`-character bar, `wholePercent` full — rounded rather than floored, so a meter reading e.g. 95% shows as fuller than one reading 91%, both above the warning threshold, instead of the two rounding to the same bar. */
+function buildMeterBar(wholePercent: number): string {
+  const clampedPercent = Math.min(100, Math.max(0, wholePercent));
+  const filledCount = Math.round((clampedPercent / 100) * METER_BAR_WIDTH);
+  return METER_FILLED_GLYPH.repeat(filledCount) + METER_EMPTY_GLYPH.repeat(METER_BAR_WIDTH - filledCount);
+}
+
+/** A meter at or above this percentage switches from muted to the pack's own error role — a nearly exhausted window must read as urgent rather than blend into the rest of the row (CHM-83, kept from the reporter's own script). */
+const METER_WARNING_THRESHOLD_PERCENT = 90;
+
+/**
+ * One statusline meter — `label`, a filled/empty bar and the whole
+ * percentage, deliberately never an absolute token count (CHM-83's own
+ * reporter explicitly does not want those). Coloured from the active pack's
+ * own muted role, the same de-emphasised colour the old plain percentage
+ * segment used, except at or above METER_WARNING_THRESHOLD_PERCENT, where it
+ * switches to the pack's own error role — the role Chameleon already reaches
+ * for elsewhere on this codebase to flag something urgent (see
+ * toPickerEntry's own errorHex), rather than a role invented just for this.
+ */
+function buildMeterSegment(roleHexes: Readonly<Record<Role, string>> | undefined, label: string, wholePercent: number): string {
+  const isAtWarningThreshold = wholePercent >= METER_WARNING_THRESHOLD_PERCENT;
+  const hex = isAtWarningThreshold ? roleHexes?.error : roleHexes?.muted;
+  return paintStatuslineSegment(hex, `${label} ${buildMeterBar(wholePercent)} ${wholePercent}%`);
+}
+
 /**
  * `chm statusline`'s own one-line output: the model name, the working
  * directory's own name, the git branch (when `cwd` is inside a repository),
- * and whole-percentage context usage — Claude Code's own payload fields
- * that are always present or safely defaultable, per CLAUDE.md's "One line,
- * fields that are always present." Coloured from the active pack's own
- * accent/body/success/muted roles (`roleHexes`) so the line can never show a
- * colour the terminal itself is not also showing (CHM-68) — plain text, no
- * escape codes at all, when `roleHexes` is undefined: no pack has ever been
- * applied, or the recorded one could not be loaded. `gitBranch` is the
- * caller's own best-effort read (see adapters/git.ts's currentGitBranch),
- * passed in rather than read here so this stays a pure formatter, testable
- * without a real git repository.
+ * and a meter each for context-window, 5-hour and 7-day usage (CHM-83) —
+ * every one of them omitted, never rendered at a false 0%, when the payload
+ * does not carry it (see statuslineContextPercent/statuslineRateLimitPercent).
+ * Coloured from the active pack's own accent/body/success/muted/error roles
+ * (`roleHexes`) so the line can never show a colour the terminal itself is
+ * not also showing (CHM-68) — plain text, no escape codes at all, when
+ * `roleHexes` is undefined: no pack has ever been applied, or the recorded
+ * one could not be loaded. `gitBranch` is the caller's own best-effort read
+ * (see adapters/git.ts's currentGitBranch), passed in rather than read here
+ * so this stays a pure formatter, testable without a real git repository.
  */
 export function buildStatuslineText(
   payload: StatuslinePayload | undefined,
@@ -366,11 +450,18 @@ export function buildStatuslineText(
 ): string {
   const modelName = payload?.model?.display_name ?? "Claude Code";
   const directoryName = path.basename(statuslineDirectory(payload));
-  const contextPercent = statuslineContextPercent(payload);
 
   const segments = [paintStatuslineSegment(roleHexes?.accent, modelName), paintStatuslineSegment(roleHexes?.body, directoryName)];
   if (gitBranch !== undefined) segments.push(paintStatuslineSegment(roleHexes?.success, gitBranch));
-  if (contextPercent !== undefined) segments.push(paintStatuslineSegment(roleHexes?.muted, `${contextPercent}% context`));
+
+  const contextPercent = statuslineContextPercent(payload);
+  if (contextPercent !== undefined) segments.push(buildMeterSegment(roleHexes, "context", contextPercent));
+
+  const fiveHourPercent = statuslineRateLimitPercent(payload, "five_hour");
+  if (fiveHourPercent !== undefined) segments.push(buildMeterSegment(roleHexes, "5h", fiveHourPercent));
+
+  const sevenDayPercent = statuslineRateLimitPercent(payload, "seven_day");
+  if (sevenDayPercent !== undefined) segments.push(buildMeterSegment(roleHexes, "7d", sevenDayPercent));
 
   return segments.join(STATUSLINE_SEGMENT_SEPARATOR);
 }
@@ -382,8 +473,8 @@ function readStatuslineStdin(): string {
 
 /**
  * `chm statusline` — see the section comment above. Every failure this can
- * hit — unreadable stdin, a corrupted pack, git not installed or not even on
- * PATH — falls back to the plainest line this process's own working
+ * hit — unreadable stdin, a corrupted pack, a `.git` this process cannot
+ * read — falls back to the plainest line this process's own working
  * directory can still make, rather than ever throwing or writing to stderr:
  * see CLAUDE.md's "fail to a plain, uncoloured line ... and exit 0."
  */
