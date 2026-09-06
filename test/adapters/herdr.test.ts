@@ -744,11 +744,17 @@ describe("herdr adapter — full custom token vocabulary (CHM-28)", () => {
 
 // CHM-50: CHM-48 fixed the selected row's subtext0 by moving active_row_bg
 // almost onto sidebar_bg — readable, but no longer visibly selected in 17 of
-// the 26 bundled packs (dracula-dark measured 1.00, the same colour). These
-// tests pin the actual fix: row-vs-sidebar visibility, text-on-row and
-// subtext0-on-row are asserted together, per pack, so a fix that only checks
-// one of the three (the way CHM-48 shipped) fails here.
-describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", () => {
+// the 26 bundled packs (dracula-dark measured 1.00, the same colour). CHM-75
+// then found CHM-50's own fix had settled for too little: subtext0-on-row
+// only had to clear MUTED_MIN_RATIO, the floor for text a reader is meant to
+// skim past, while on the selected row subtext0 carries the agent's own
+// title and provider — the thing being read. These tests pin the combined
+// fix: row-vs-sidebar visibility, text-on-row and subtext0-on-row are
+// asserted together, per pack, so a fix that only checks one of the three
+// (the way CHM-48 shipped) fails here, and subtext0-on-row's own floor is
+// MUTED_MIN_RATIO only as a non-regression guarantee — CHM-75's own target,
+// TEXT_MIN_RATIO, is asserted separately below.
+describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CHM-75)", () => {
   function customTokensFor(scheme: Scheme, slug: string): Record<string, string> {
     const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-active-row-"));
     const configPath = path.join(configDir, "config.toml");
@@ -761,19 +767,35 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", 
     }
   }
 
-  it("clears row-vs-sidebar visibility, text-on-row (4.5) and subtext0-on-row (3.0) together, for every bundled pack", () => {
+  interface ActiveRowTokens {
+    readonly sidebarBg: string;
+    readonly activeRowBg: string;
+    readonly text: string;
+    readonly subtext0: string;
+  }
+
+  function activeRowTokensFor(slug: string): ActiveRowTokens {
+    const packs = loadCuratedThemePacks();
+    const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+    if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+    const customTokens = customTokensFor(pack.payloads["windows-terminal"], pack.manifest.slug);
+    const sidebarBg = customTokens["sidebar_bg"];
+    const activeRowBg = customTokens["active_row_bg"];
+    const text = customTokens["text"];
+    const subtext0 = customTokens["subtext0"];
+    if (!sidebarBg || !activeRowBg || !text || !subtext0) {
+      throw new Error(`"${slug}" wrote no sidebar_bg/active_row_bg/text/subtext0 tokens`);
+    }
+    return { sidebarBg, activeRowBg, text, subtext0 };
+  }
+
+  it("clears row-vs-sidebar visibility, text-on-row (4.5) and subtext0-on-row (3.0, never regressing CHM-50) together, for every bundled pack", () => {
     const packs = loadCuratedThemePacks();
     expect(packs.length).toBeGreaterThan(0);
 
     for (const pack of packs) {
-      const customTokens = customTokensFor(pack.payloads["windows-terminal"], pack.manifest.slug);
-      const sidebarBg = customTokens["sidebar_bg"];
-      const activeRowBg = customTokens["active_row_bg"];
-      const text = customTokens["text"];
-      const subtext0 = customTokens["subtext0"];
-      if (!sidebarBg || !activeRowBg || !text || !subtext0) {
-        throw new Error(`"${pack.manifest.slug}" wrote no sidebar_bg/active_row_bg/text/subtext0 tokens`);
-      }
+      const { sidebarBg, activeRowBg, text, subtext0 } = activeRowTokensFor(pack.manifest.slug);
 
       expect(contrastRatio(activeRowBg, sidebarBg), `${pack.manifest.slug}: row-vs-sidebar`).toBeGreaterThanOrEqual(ACTIVE_ROW_MIN_VISIBLE_RATIO);
       expect(contrastRatio(text, activeRowBg), `${pack.manifest.slug}: text-on-row`).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
@@ -781,41 +803,96 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", 
     }
   });
 
-  // The four packs this ticket names by hand, with the exact ratios each one
-  // achieves — pinned so a future change that narrows coverage back down
-  // shows up as a specific number moving, not just a boolean flipping.
-  // night-owl-dark's own subtextOnRow moved (3.1564 -> 3.5262) under CHM-70:
-  // resolveActiveRowAndText avoids colliding with the selection hex (see
-  // surfaces.ts), and that hex itself moved from a hue-free grey to a real
-  // tint of accent's own hue, shifting where subtext0 lands to stay clear of
-  // it — rowVsSidebar and textOnRow are unaffected. monokai-dark's own
-  // subtextOnRow moved again (3.1629 -> 3.3256) under CHM-76: its authored
-  // selectionBackground cleared both of resolveSelectionAndBody's contrast
-  // floors but carried almost no chroma (0.035), so CHM-70's tint never ran
-  // for it; CHM-76 retints it too, the same shift in where subtext0 lands to
-  // stay clear of the selection hex that night-owl-dark's own move above
-  // already demonstrates — rowVsSidebar and textOnRow are unaffected here as
-  // well.
+  // CHM-75's own target: subtext0-on-row reaches all the way to
+  // TEXT_MIN_RATIO, not just MUTED_MIN_RATIO, for every bundled pack except
+  // the four named below — reached for, never demanded, the same shape
+  // SELECTION_IDEAL_RATIO already uses for the selection highlight (see
+  // repairMutedForActiveRow's own doc comment in palette/surfaces.ts).
+  // dracula-dark, everforest-light, solarized-light and tokyo-night-light
+  // are the ones where text itself has too little headroom over its own
+  // TEXT_MIN_RATIO floor to leave subtext0 room to clear TEXT_MIN_RATIO
+  // *and* stay measurably below it at once — each still lands within 0.2 of
+  // the target, and each is a large jump past CHM-50's own ~3.1-3.3
+  // baseline (see the full per-pack table below). Known, bounded shortfalls
+  // are fixtures here, not silently averaged away — see code-standards.md,
+  // "Colour tests use real schemes' real values".
+  const PACKS_BELOW_IDEAL_READABILITY = new Set(["dracula-dark", "everforest-light", "solarized-light", "tokyo-night-light"]);
+
+  it("clears TEXT_MIN_RATIO for subtext0-on-row for every bundled pack outside the named exceptions", () => {
+    const packs = loadCuratedThemePacks();
+    for (const pack of packs) {
+      if (PACKS_BELOW_IDEAL_READABILITY.has(pack.manifest.slug)) continue;
+      const { activeRowBg, subtext0 } = activeRowTokensFor(pack.manifest.slug);
+      expect(contrastRatio(subtext0, activeRowBg), pack.manifest.slug).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    }
+  });
+
+  it("still lands within 0.2 of TEXT_MIN_RATIO for the four named exceptions", () => {
+    for (const slug of PACKS_BELOW_IDEAL_READABILITY) {
+      const { activeRowBg, subtext0 } = activeRowTokensFor(slug);
+      const subtextOnRow = contrastRatio(subtext0, activeRowBg);
+      expect(subtextOnRow, slug).toBeLessThan(TEXT_MIN_RATIO);
+      expect(subtextOnRow, slug).toBeGreaterThan(TEXT_MIN_RATIO - 0.2);
+    }
+  });
+
+  // CHM-75's other own guarantee: subtext0 stays measurably below text
+  // against sidebar_bg, so it still reads as muted everywhere it is not the
+  // one thing being read — for every bundled pack, no named exceptions.
+  // Unlike TEXT_MIN_RATIO-on-row above, this one is never traded away: see
+  // repairMutedForActiveRow's own doc comment for why its cap is measured
+  // against text itself (what Herdr actually paints), not an intermediate
+  // pre-repair value that would understate how much room text really has.
+  it("keeps subtext0 measurably below text against sidebar_bg, for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+    for (const pack of packs) {
+      const { sidebarBg, text, subtext0 } = activeRowTokensFor(pack.manifest.slug);
+      expect(contrastRatio(subtext0, sidebarBg), pack.manifest.slug).toBeLessThan(contrastRatio(text, sidebarBg));
+    }
+  });
+
+  // Every bundled pack's own exact numbers — pinned so a future change that
+  // narrows coverage back down, for any one pack, shows up as a specific
+  // number moving rather than a boolean flipping. Extends CHM-50's own
+  // four-pack spot check (dracula-dark, monokai-dark, night-owl-dark,
+  // nord-dark) to the full set, since CHM-75 changed every one of these
+  // three columns for the large majority of bundled packs.
   const NAMED_FIXTURES = [
-    { slug: "dracula-dark", rowVsSidebar: 2.8351, textOnRow: 4.712, subtextOnRow: 3.1596 },
-    { slug: "monokai-dark", rowVsSidebar: 2.956, textOnRow: 4.9684, subtextOnRow: 3.3256 },
-    { slug: "night-owl-dark", rowVsSidebar: 2.5358, textOnRow: 5.3393, subtextOnRow: 3.5262 },
-    { slug: "nord-dark", rowVsSidebar: 2.4, textOnRow: 4.7218, subtextOnRow: 3.175 },
+    { slug: "ayu-dark-deep", rowVsSidebar: 2.1005, textOnRow: 4.8914, subtextOnRow: 4.687 },
+    { slug: "ayu-dark", rowVsSidebar: 2.1085, textOnRow: 4.765, subtextOnRow: 4.5827 },
+    { slug: "ayu-light", rowVsSidebar: 2.1096, textOnRow: 4.783, subtextOnRow: 4.5904 },
+    { slug: "catppuccin-dark", rowVsSidebar: 2.1, textOnRow: 5.4004, subtextOnRow: 4.7644 },
+    { slug: "catppuccin-light", rowVsSidebar: 2.1116, textOnRow: 4.7826, subtextOnRow: 4.5261 },
+    { slug: "dracula-dark", rowVsSidebar: 2.1005, textOnRow: 6.36, subtextOnRow: 4.3067 },
+    { slug: "everforest-dark", rowVsSidebar: 2.1235, textOnRow: 4.7656, subtextOnRow: 4.5722 },
+    { slug: "everforest-light", rowVsSidebar: 2.1128, textOnRow: 4.7665, subtextOnRow: 4.4877 },
+    { slug: "github-dark", rowVsSidebar: 2.261, textOnRow: 7.0837, subtextOnRow: 4.7488 },
+    { slug: "github-light", rowVsSidebar: 2.1032, textOnRow: 7.5112, subtextOnRow: 4.9286 },
+    { slug: "gruvbox-dark", rowVsSidebar: 2.1073, textOnRow: 5.1, subtextOnRow: 4.7336 },
+    { slug: "gruvbox-light", rowVsSidebar: 2.1012, textOnRow: 4.8637, subtextOnRow: 4.5796 },
+    { slug: "jellybeans", rowVsSidebar: 2.1138, textOnRow: 6.5874, subtextOnRow: 4.7172 },
+    { slug: "kanagawa-dark", rowVsSidebar: 2.1034, textOnRow: 5.3548, subtextOnRow: 4.7722 },
+    { slug: "kanagawa-light", rowVsSidebar: 2.1092, textOnRow: 4.7505, subtextOnRow: 4.5202 },
+    { slug: "monokai-dark", rowVsSidebar: 2.1228, textOnRow: 6.9186, subtextOnRow: 4.631 },
+    { slug: "night-owl-dark", rowVsSidebar: 2.1003, textOnRow: 6.4464, subtextOnRow: 4.7075 },
+    { slug: "night-owl-light", rowVsSidebar: 2.1013, textOnRow: 4.8658, subtextOnRow: 4.5931 },
+    { slug: "nord-dark", rowVsSidebar: 2.1011, textOnRow: 4.7437, subtextOnRow: 4.5228 },
+    { slug: "nord-light", rowVsSidebar: 2.1018, textOnRow: 4.7946, subtextOnRow: 4.5937 },
+    { slug: "one-half-dark", rowVsSidebar: 2.1162, textOnRow: 4.9514, subtextOnRow: 4.7041 },
+    { slug: "one-half-light", rowVsSidebar: 2.1013, textOnRow: 5.1697, subtextOnRow: 4.776 },
+    { slug: "rose-pine-dark", rowVsSidebar: 2.1093, textOnRow: 6.3474, subtextOnRow: 4.7017 },
+    { slug: "rose-pine-light", rowVsSidebar: 2.1166, textOnRow: 4.7087, subtextOnRow: 4.5151 },
+    { slug: "shades-of-purple", rowVsSidebar: 2.2099, textOnRow: 7.2817, subtextOnRow: 4.7685 },
+    { slug: "solarized-dark", rowVsSidebar: 2.1094, textOnRow: 4.6924, subtextOnRow: 4.5085 },
+    { slug: "solarized-light", rowVsSidebar: 2.1017, textOnRow: 4.738, subtextOnRow: 4.4694 },
+    { slug: "tokyo-night-dark", rowVsSidebar: 2.1142, textOnRow: 5.0074, subtextOnRow: 4.7377 },
+    { slug: "tokyo-night-light", rowVsSidebar: 2.1134, textOnRow: 4.7089, subtextOnRow: 4.4223 },
   ];
 
   it.each(NAMED_FIXTURES)(
     "$slug: row-vs-sidebar $rowVsSidebar, text-on-row $textOnRow, subtext0-on-row $subtextOnRow",
     ({ slug, rowVsSidebar, textOnRow, subtextOnRow }) => {
-      const packs = loadCuratedThemePacks();
-      const pack = packs.find((candidate) => candidate.manifest.slug === slug);
-      if (!pack) throw new Error(`fixture pack not found: ${slug}`);
-
-      const customTokens = customTokensFor(pack.payloads["windows-terminal"], pack.manifest.slug);
-      const sidebarBg = customTokens["sidebar_bg"];
-      const activeRowBg = customTokens["active_row_bg"];
-      const text = customTokens["text"];
-      const subtext0 = customTokens["subtext0"];
-      if (!sidebarBg || !activeRowBg || !text || !subtext0) throw new Error(`"${slug}" wrote no sidebar_bg/active_row_bg/text/subtext0 tokens`);
+      const { sidebarBg, activeRowBg, text, subtext0 } = activeRowTokensFor(slug);
 
       expect(contrastRatio(activeRowBg, sidebarBg)).toBeCloseTo(rowVsSidebar, 3);
       expect(contrastRatio(text, activeRowBg)).toBeCloseTo(textOnRow, 3);
@@ -825,7 +902,7 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50)", 
 
   it("never needed to trade row visibility away for readability on any bundled pack — see resolveActiveRowAndText's own retreat fallback", () => {
     // Positive evidence for CHM-33's own warning: rather than asserting an
-    // impossibility band exists somewhere, this confirms none of the real 26
+    // impossibility band exists somewhere, this confirms none of the real 29
     // ever reaches resolveActiveRowAndText's retreat branch — the mechanism
     // exists for a pack this library does not ship, and is exercised
     // directly (with the retreat forced) in palette/surfaces.test.ts instead.

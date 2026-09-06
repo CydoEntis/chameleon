@@ -63,12 +63,23 @@ export function poleWithMoreHeadroom(groundHex: string): boolean {
   return maxRatioGoingLighter >= maxRatioGoingDarker;
 }
 
-/** The relative luminance `targetRatio` against ground demands, clamped to the [0, 1] a luminance can actually take. */
-function targetLuminanceFor(groundHex: string, targetRatio: number, isLighterThanGround: boolean): number {
-  const groundLuminance = relativeLuminance(groundHex);
+/**
+ * The relative luminance `targetRatio` against `referenceHex` demands,
+ * clamped to the [0, 1] a luminance can actually take. Despite the
+ * parameter's name, nothing here is specific to a role's own ground — it is
+ * just whichever fixed colour the caller is measuring against.
+ *
+ * Exported for palette/surfaces.ts, which needs the same "what luminance
+ * hits this ratio" question against active_row_bg (not ground) when muted
+ * repairs a second time to clear TEXT_MIN_RATIO on the selected row
+ * (CHM-75), and again against ground itself to find the ceiling that keeps
+ * that second repair short of body's own ratio.
+ */
+export function targetLuminanceFor(referenceHex: string, targetRatio: number, isLighterThanGround: boolean): number {
+  const referenceLuminance = relativeLuminance(referenceHex);
   const rawTargetLuminance = isLighterThanGround
-    ? targetRatio * (groundLuminance + WCAG_CONTRAST_OFFSET) - WCAG_CONTRAST_OFFSET
-    : (groundLuminance + WCAG_CONTRAST_OFFSET) / targetRatio - WCAG_CONTRAST_OFFSET;
+    ? targetRatio * (referenceLuminance + WCAG_CONTRAST_OFFSET) - WCAG_CONTRAST_OFFSET
+    : (referenceLuminance + WCAG_CONTRAST_OFFSET) / targetRatio - WCAG_CONTRAST_OFFSET;
   return Math.min(1, Math.max(0, rawTargetLuminance));
 }
 
