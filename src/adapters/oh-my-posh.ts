@@ -459,6 +459,92 @@ function withSegmentsTransformed(rawBlock: unknown, transformSegment: (segment: 
   };
 }
 
+// --- Lifting a literal-hex foreground into a palette key (CHM-74) ----------
+//
+// A config whose segments write their own foreground as a literal hex,
+// never a "p:" reference, cannot be recoloured by swapping the palette
+// table alone — nothing in it reads that table. The fix is the same
+// operation recoloredHexFor already runs for a foreign palette key: the
+// value is a hex either way, and only where it is written differs. This
+// lifts the hex out to a palette entry of its own and repoints the segment
+// at it, once, so every apply after that recolours it exactly the way it
+// already recolours any other key it does not own.
+
+/** A segment's own plain hex literal foreground, ready to lift into a palette key — never a "p:" reference (already themed) and never a Go template string or an Oh My Posh ANSI colour name ("red", "lightBlue", …), neither of which this lifts — see liftLiteralForegroundsToPalette's own doc comment for why. */
+const LITERAL_HEX_FOREGROUND_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+function isLiftableLiteralForeground(fieldValue: unknown): fieldValue is string {
+  return typeof fieldValue === "string" && LITERAL_HEX_FOREGROUND_PATTERN.test(fieldValue);
+}
+
+/**
+ * The palette key `hex` is lifted into — deterministic in the hex alone, so
+ * two segments sharing one literal colour share one lifted key, and a hex
+ * this has already lifted on an earlier apply (now written as `p:literal-…`,
+ * never a bare hex again) is never lifted a second time under a different
+ * name. That determinism is also what keeps this idempotent across repeated
+ * applies — see CHM-43, whose own failure mode was a "fix" that kept
+ * re-triggering on its own previous output. Never collides with a role name
+ * or a theme author's own semantic key in practice — nothing else in this
+ * file mints a key starting with this prefix.
+ */
+const LITERAL_COLOR_PALETTE_KEY_PREFIX = "literal-";
+
+function literalColorPaletteKeyFor(hex: string): string {
+  return `${LITERAL_COLOR_PALETTE_KEY_PREFIX}${hex.slice(1).toLowerCase()}`;
+}
+
+/** What lifting every segment's own literal-hex foreground into a palette key produced: the blocks with each one repointed at its lifted key, the palette entries those keys need, and the segment type of every segment whose foreground could not be lifted — see liftLiteralForegroundsToPalette. */
+interface ForegroundLiftResult {
+  readonly blocks: readonly unknown[];
+  readonly paletteAdditions: Readonly<Record<string, string>>;
+  readonly unliftableSegmentTypes: readonly string[];
+}
+
+/**
+ * Lifts every segment's own literal hex `foreground` into a palette key,
+ * repointing that segment at a `p:` reference to it, so a config with no
+ * palette reference anywhere — CHM-74's own real example, a five-segment
+ * prompt with every foreground written as a literal hex — can still be
+ * recoloured. A segment already referencing a palette key (its own, or one
+ * this lifted on an earlier apply) is left alone: there is nothing left to
+ * lift.
+ *
+ * A segment whose own foreground is neither a `p:` reference nor a plain
+ * hex — an Oh My Posh ANSI colour name such as "red" or "lightBlue" is the
+ * likely case, and a Go template string is another — is left completely
+ * untouched rather than guessed at: there is no destination-scheme colour
+ * that legitimately stands in for a bare colour name the way a hex does, and
+ * a template can carry a different literal hex per conditional branch, so
+ * picking one to represent the segment as a whole would not be a safe
+ * reading of it either. Its segment type is collected instead (see
+ * unliftableSegmentTypes), so recolorConfigInto can name it rather than
+ * silently leaving it un-themed forever. `foreground_templates` is not
+ * scanned at all, for the same reason a plain non-hex `foreground` is left
+ * alone — see CHM-74's "where that lift is not possible... says so by
+ * name," not "guesses at it."
+ */
+function liftLiteralForegroundsToPalette(rawBlocks: readonly unknown[]): ForegroundLiftResult {
+  const paletteAdditions: Record<string, string> = {};
+  const unliftableSegmentTypes: string[] = [];
+
+  const blocks = rawBlocks.map((rawBlock) =>
+    withSegmentsTransformed(rawBlock, (segment) => {
+      const rawForeground = segment["foreground"];
+      if (rawForeground === undefined || roleReferencedBy(rawForeground) !== undefined) return segment;
+      if (!isLiftableLiteralForeground(rawForeground)) {
+        unliftableSegmentTypes.push(typeof segment["type"] === "string" ? segment["type"] : "unknown");
+        return segment;
+      }
+      const liftedKey = literalColorPaletteKeyFor(rawForeground);
+      paletteAdditions[liftedKey] = rawForeground;
+      return { ...segment, foreground: `${PALETTE_REF_PREFIX}${liftedKey}` };
+    }),
+  );
+
+  return { blocks, paletteAdditions, unliftableSegmentTypes: [...new Set(unliftableSegmentTypes)] };
+}
+
 /** Every hex `segment`'s own `background`/`background_templates` fields could resolve to through `paletteTable` — see paletteReferencesIn. A reference `paletteTable` does not define is skipped here; assertNoDanglingPaletteReferences is what reports that, once, by name. */
 function segmentBackgroundHexes(segment: RawSegment, paletteTable: Readonly<Record<string, string>>): string[] {
   const backgroundTemplates = Array.isArray(segment["background_templates"]) ? segment["background_templates"] : [];
@@ -666,7 +752,6 @@ function withOverridesAppliedToBlock(
 interface SegmentForegroundRepairResult {
   readonly blocks: readonly unknown[];
   readonly additionalPaletteEntries: Readonly<Record<string, string>>;
-  readonly wereBlocksChanged: boolean;
 }
 
 /**
@@ -728,13 +813,7 @@ function repairSegmentForegrounds(rawBlocks: readonly unknown[], paletteTable: R
   const { overrideKeysByForegroundKeyAndSignature, additionalPaletteEntries } = computeForegroundOverrides(signaturesByForegroundKey, paletteTable);
   const blocks = normalizedBlocks.map((rawBlock) => withOverridesAppliedToBlock(rawBlock, paletteTable, overrideKeysByForegroundKeyAndSignature));
 
-  // Compared structurally, not tracked with a mutable flag through both
-  // passes above: a stale generated reference reverting to its source key
-  // (see withGeneratedForegroundReferencesNormalized) is exactly as much a
-  // change here as a fresh override being minted, and this is what those
-  // rejoin into one answer.
-  const wereBlocksChanged = JSON.stringify(blocks) !== JSON.stringify(rawBlocks);
-  return { blocks, additionalPaletteEntries, wereBlocksChanged };
+  return { blocks, additionalPaletteEntries };
 }
 
 /**
@@ -756,36 +835,120 @@ function buildInitLine(shell: "pwsh" | "bash" | "zsh", ownedConfigPath: string):
   return `eval "$(oh-my-posh init ${shell} --config "${escapedPath}")"`;
 }
 
+/** One line of a profile, as a `[start, end)` character span excluding its own trailing `eol` — findPreexistingInitLineSpan's own unit, letting a match be spliced back into the exact same `text` by character offset the same way every other edit in this file already works. */
+interface LineSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+/** Every line of `text`, in order, as a LineSpan — a char-offset equivalent of `text.split(eol)` that keeps the offsets a caller needs to edit one line in place without rebuilding the rest of the file. */
+function lineSpans(text: string, eol: string): LineSpan[] {
+  const spans: LineSpan[] = [];
+  let lineStart = 0;
+  for (;;) {
+    const eolIndex = text.indexOf(eol, lineStart);
+    if (eolIndex === -1) {
+      spans.push({ start: lineStart, end: text.length });
+      return spans;
+    }
+    spans.push({ start: lineStart, end: eolIndex });
+    lineStart = eolIndex + eol.length;
+  }
+}
+
+/** Whether `line`, ignoring leading whitespace, is already a comment — the `#` syntax pwsh, bash and zsh all share (see PROFILE_MARKER_BEGIN's own doc comment). findPreexistingInitLineSpan skips a line like this: either a user's own already-disabled init line, or one neutralizedInitLine already commented out on an earlier apply — either way there is nothing live left to take over, which is what keeps that neutralizing idempotent across repeated applies. */
+function isCommentLine(line: string): boolean {
+  return line.trimStart().startsWith("#");
+}
+
+/**
+ * The span of `text`'s own pre-existing, user-written `oh-my-posh init` line
+ * — CHM-73's own missing half. Only ever called when `text` carries no
+ * Chameleon marker block of its own yet (see upsertProfileBlock), so there is
+ * no owned init line of Chameleon's own to exclude here — every match this
+ * finds is necessarily the user's.
+ *
+ * Uses the same initConfigArgumentPattern configPathFromProfile already
+ * searches with, so a line whose binary is a variable rather than the
+ * literal "oh-my-posh" is found here exactly as it already is there — see
+ * CHM-36. Skips a line that is already a comment (see isCommentLine), so a
+ * line neutralizedInitLine commented out on an earlier apply is never
+ * matched a second time. Undefined when `shell` has no `init` subcommand of
+ * its own at all (cmd — see initShellNamesFor) or no line in `text` matches.
+ */
+function findPreexistingInitLineSpan(text: string, shell: Shell, eol: string): LineSpan | undefined {
+  const shellNames = initShellNamesFor(shell);
+  if (shellNames.length === 0) return undefined;
+
+  const pattern = initConfigArgumentPattern(shellNames);
+  return lineSpans(text, eol).find((span) => {
+    const line = text.slice(span.start, span.end);
+    return !isCommentLine(line) && pattern.test(line);
+  });
+}
+
+/** Comment prefix a pre-existing, user-written init line is rewritten with — CHM-73's "neutralised in place... rather than deleted." The line's own indentation is preserved ahead of it, so a line already indented inside a function or a conditional still reads as one, and everything else on the line — including any trailing comment the user's own invocation carried — survives byte for byte after this prefix. */
+const NEUTRALIZED_INIT_LINE_PREFIX = "# ch: superseded by the block below — ";
+
+function neutralizedInitLine(line: string): string {
+  const leadingWhitespaceLength = line.length - line.trimStart().length;
+  return `${line.slice(0, leadingWhitespaceLength)}${NEUTRALIZED_INIT_LINE_PREFIX}${line.slice(leadingWhitespaceLength)}`;
+}
+
 /**
  * Upserts `ownedContent` between `markerBegin`/`markerEnd`, replacing an
- * earlier Chameleon block in place when one exists, or appending a fresh
- * one at the end of the file when it does not. This is also what migrates a
- * profile still carrying the old `Set-PoshContext`/`PROMPT_COMMAND` reload
- * hook (CHM-39, CHM-47): that hook lived inside these same markers, so the
- * very next apply replaces its whole body with the new single init line —
- * see CHM-59's "an existing profile carrying the old hook is cleaned up on
+ * earlier Chameleon block in place when one exists. This is also what
+ * migrates a profile still carrying the old `Set-PoshContext`/`PROMPT_COMMAND`
+ * reload hook (CHM-39, CHM-47): that hook lived inside these same markers, so
+ * the very next apply replaces its whole body with the new single init line
+ * — see CHM-59's "an existing profile carrying the old hook is cleaned up on
  * the next apply, not left with both."
+ *
+ * When no Chameleon block exists yet, a profile that already carries its own
+ * user-written `oh-my-posh init` line (see findPreexistingInitLineSpan) has
+ * that line neutralised in place — commented out, never deleted — and
+ * Chameleon's own block is written immediately after it, at the exact
+ * position the live line held. CHM-73: appending Chameleon's block at the
+ * end left the user's own line still running too, both setting POSH_CONFIG,
+ * with whichever ran last actually winning. Position matters as much as
+ * count: anything defined further down the profile that deliberately
+ * overrides what `init` itself defines (the reporter's own `Set-PoshContext`,
+ * built to override oh-my-posh's stub) still runs after this same single
+ * init line, exactly as it did before Chameleon ever touched the file,
+ * because the line never moved.
+ *
+ * A profile with no init line of its own falls back to appending a fresh
+ * block at the end, same as always.
+ *
  * `markerBegin`/`markerEnd` are parameters, not the module's own constants,
  * because Clink's hook is Lua, whose comment syntax (`--`) differs from the
  * `#` every shell profile in this file shares — see LUA_MARKER_BEGIN/END.
  */
-function upsertProfileBlock(text: string, ownedContent: string, eol: string, markerBegin: string, markerEnd: string): string {
+function upsertProfileBlock(text: string, ownedContent: string, eol: string, markerBegin: string, markerEnd: string, shell: Shell): string {
   const beginIndex = text.indexOf(markerBegin);
   const block = `${markerBegin}${eol}${ownedContent}${eol}${markerEnd}${eol}`;
 
-  if (beginIndex === -1) {
-    if (text.length === 0) return block;
-    const separator = text.endsWith(eol) ? eol : eol + eol;
-    return `${text}${separator}${block}`;
+  if (beginIndex !== -1) {
+    const endIndex = text.indexOf(markerEnd, beginIndex);
+    if (endIndex === -1) {
+      throw new Error("the profile has a ch:begin marker with no matching ch:end — refusing to guess where Chameleon's block ends");
+    }
+    const afterEnd = endIndex + markerEnd.length;
+    const afterEndOwn = text.startsWith(eol, afterEnd) ? afterEnd + eol.length : afterEnd;
+    return text.slice(0, beginIndex) + block + text.slice(afterEndOwn);
   }
 
-  const endIndex = text.indexOf(markerEnd, beginIndex);
-  if (endIndex === -1) {
-    throw new Error("the profile has a ch:begin marker with no matching ch:end — refusing to guess where Chameleon's block ends");
+  const preexistingInitLineSpan = findPreexistingInitLineSpan(text, shell, eol);
+  if (preexistingInitLineSpan !== undefined) {
+    const { start, end } = preexistingInitLineSpan;
+    const neutralized = neutralizedInitLine(text.slice(start, end));
+    const afterLine = text.startsWith(eol, end) ? end + eol.length : end;
+    return text.slice(0, start) + neutralized + eol + block + text.slice(afterLine);
   }
-  const afterEnd = endIndex + markerEnd.length;
-  const afterEndOwn = text.startsWith(eol, afterEnd) ? afterEnd + eol.length : afterEnd;
-  return text.slice(0, beginIndex) + block + text.slice(afterEndOwn);
+
+  if (text.length === 0) return block;
+  const separator = text.endsWith(eol) ? eol : eol + eol;
+  return `${text}${separator}${block}`;
 }
 
 /** Reads `targetPath`, defaulting to an empty file when it does not exist yet — the common case for a PowerShell profile before anything has ever written to it. */
@@ -894,7 +1057,7 @@ function upsertInitLine(shell: Shell, profilePath: string, ownedConfigPath: stri
   const originalText = readTextOrEmpty(profilePath);
   const eol = detectLineEnding(originalText || "\n");
   const { begin, end } = PROFILE_BLOCK_MARKERS[shell];
-  const updatedText = upsertProfileBlock(originalText, buildProfileOwnedBlock(shell, ownedConfigPath), eol, begin, end);
+  const updatedText = upsertProfileBlock(originalText, buildProfileOwnedBlock(shell, ownedConfigPath), eol, begin, end, shell);
   writeFileSync(profilePath, updatedText, "utf8");
   return didProfileAlreadyExist ? undefined : profileCreationNotice(profilePath, shell);
 }
@@ -940,6 +1103,29 @@ function noConfigDiscoveredMessage(profilePath: string, shell: Shell): string {
   return `no active Oh My Posh config found — checked $POSH_CONFIG, $POSH_THEME, and ${profilePath} for an "oh-my-posh init" line naming --config;${initHint} or pass a config path directly`;
 }
 
+/** `chm`'s own supported way to seed (or re-seed) Chameleon's owned Oh My Posh config from a named file — see reseedOhMyPoshOwnedConfig and noPaletteReferencesMessage. */
+const RESEED_COMMAND_HINT = "chm reseed <path>";
+
+/**
+ * `ensureOhMyPoshOwnedConfigSeeded`'s refusal message when the one config it
+ * found has no "p:" reference anywhere in its own segments — CHM-74: the
+ * `existsSync(ownedConfigPath)` guard above means whatever gets copied in
+ * here is what Chameleon owns forever, so a config like this — real example:
+ * a five-segment prompt with every foreground written as a literal hex,
+ * copied in only because it happened to be what this one shell's profile
+ * named — must not be accepted silently. Its colours genuinely can be
+ * recoloured (liftLiteralForegroundsToPalette, run on every apply once this
+ * file is seeded, lifts each literal hex into a palette key the same way
+ * recoloredHexFor already retints a foreign one), but rewriting every
+ * segment's own foreground field is a bigger change than a plain
+ * palette-table swap, and automatic seeding — the one call site nobody
+ * explicitly asked to run right now — is not the place to make it
+ * unasked. RESEED_COMMAND_HINT is the explicit ask.
+ */
+function noPaletteReferencesMessage(discoveredConfigPath: string): string {
+  return `found ${discoveredConfigPath} to seed Chameleon's owned config from, but stopped short of copying it in: none of its segments reference a palette key, so its colours are all literal hex, and a plain palette-table swap would recolour a table nothing reads. Run \`${RESEED_COMMAND_HINT}\` to seed from it anyway — its segments' own literal colours are lifted into palette keys first, then themed like any other config.`;
+}
+
 /**
  * File name of the state Chameleon's now-deleted prompt-layout switcher
  * recorded — `chm prompts` / `chm prompt <name>` / `chm prompt mine`,
@@ -983,18 +1169,6 @@ function migrateAwayFromBundledPromptLayout(ownedConfigPath: string): void {
 }
 
 /**
- * Seeds `ownedConfigPath` the first time anything is ever applied, by
- * copying whatever config was active before Chameleon existed — discovered
- * via $POSH_CONFIG/$POSH_THEME, or failing that, `profilePath`'s own
- * pre-existing `oh-my-posh init` line (see resolveConfigPath). A no-op once
- * `ownedConfigPath` already exists: every apply after the first just
- * recolours that same file in place, and there is nothing left to
- * (re-)discover. Runs migrateAwayFromBundledPromptLayout first, so a machine
- * still carrying CHM-63's deleted prompt-layout state lands back on its own
- * prompt before this seeding check ever runs — see that function's own doc
- * comment.
- */
-/**
  * The config Chameleon would seed its owned copy from right now, and its raw
  * text — undefined when none is discoverable yet (see resolveConfigPath).
  * Exists for adapters/original-snapshot.ts (CHM-71): the one-time snapshot
@@ -1010,6 +1184,25 @@ export function discoverPreOwnedOhMyPoshConfig(profilePath: string, shell: Shell
   return { path: discoveredConfigPath, text: readFileSync(discoveredConfigPath, "utf8") };
 }
 
+/**
+ * Seeds `ownedConfigPath` the first time anything is ever applied, by
+ * copying whatever config was active before Chameleon existed — discovered
+ * via $POSH_CONFIG/$POSH_THEME, or failing that, `profilePath`'s own
+ * pre-existing `oh-my-posh init` line (see resolveConfigPath). A no-op once
+ * `ownedConfigPath` already exists: every apply after the first just
+ * recolours that same file in place, and there is nothing left to
+ * (re-)discover. Runs migrateAwayFromBundledPromptLayout first, so a machine
+ * still carrying CHM-63's deleted prompt-layout state lands back on its own
+ * prompt before this seeding check ever runs — see that function's own doc
+ * comment.
+ *
+ * Refuses to copy a discovered config in when none of its own segments
+ * reference a palette key at all — see noPaletteReferencesMessage. That
+ * config's colours genuinely can be recoloured (recolorConfigInto lifts a
+ * literal hex into a palette key the same as it would a foreign one, see
+ * CHM-74), but only ever on an explicit `chm reseed`, never on whatever
+ * config an automatic seed happened to land on.
+ */
 export function ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath: string, profilePath: string, shell: Shell): string {
   migrateAwayFromBundledPromptLayout(ownedConfigPath);
   if (existsSync(ownedConfigPath)) return ownedConfigPath;
@@ -1018,13 +1211,111 @@ export function ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath: string, profile
   if (!discoveredConfigPath) {
     throw new Error(noConfigDiscoveredMessage(profilePath, shell));
   }
+  if (palettesReferencedIn(readFileSync(discoveredConfigPath, "utf8")).size === 0) {
+    throw new Error(noPaletteReferencesMessage(discoveredConfigPath));
+  }
   mkdirSync(path.dirname(ownedConfigPath), { recursive: true });
   copyFileSync(discoveredConfigPath, ownedConfigPath);
+  writeOhMyPoshSeedState(ownedConfigPath, discoveredConfigPath);
   return discoveredConfigPath;
 }
 
 /**
- * Recolors `configPath`'s own content for `scheme` — swapping its palette
+ * Re-seeds Chameleon's owned Oh My Posh config from `sourceConfigPath`,
+ * overwriting whatever it owned before — CHM-74's supported answer to "which
+ * config gets seeded when several exist": rather than guessing again from
+ * whichever shell happens to run `chm` next, a person names the file
+ * outright. This is also the only way to accept a config
+ * ensureOhMyPoshOwnedConfigSeeded refused on its own (see
+ * noPaletteReferencesMessage) — an explicit, named call is exactly the "ask"
+ * that refusal exists to require — and the supported alternative to
+ * hand-deleting chameleon.omp.json and hoping the next apply discovers the
+ * right thing on its own. Never themes the freshly seeded file itself: the
+ * next `chm <theme>` (or a plain re-apply of whatever is already active)
+ * does that, the same as any other apply — see recolorConfigInto's own
+ * liftLiteralForegroundsToPalette for what makes that safe even for a config
+ * with no palette reference at all.
+ */
+export function reseedOhMyPoshOwnedConfig(sourceConfigPath: string, ownedConfigPath: string = defaultOwnedConfigPath()): void {
+  if (!existsSync(sourceConfigPath)) {
+    throw new Error(`no Oh My Posh config found at ${sourceConfigPath}`);
+  }
+  mkdirSync(path.dirname(ownedConfigPath), { recursive: true });
+  copyFileSync(sourceConfigPath, ownedConfigPath);
+  writeOhMyPoshSeedState(ownedConfigPath, sourceConfigPath);
+}
+
+/** Suffix for the small JSON file, kept beside the owned config, that records which config it was seeded from — see writeOhMyPoshSeedState. Mirrors BACKUP_FILE_SUFFIX's own "derive the sibling path from the config path" shape, so this needs no state directory or path of its own and stays test-isolated the same way the backup file already is. */
+const SEED_STATE_FILE_SUFFIX = ".chameleon-seed.json";
+
+function seedStatePathFor(ownedConfigPath: string): string {
+  return `${ownedConfigPath}${SEED_STATE_FILE_SUFFIX}`;
+}
+
+const OhMyPoshSeedStateSchema = z.object({
+  seededFromPath: z.string().min(1),
+  seededAtMs: z.number(),
+});
+
+export type OhMyPoshSeedState = z.infer<typeof OhMyPoshSeedStateSchema>;
+
+/** Records which config `ownedConfigPath` was just seeded from, timestamped now — see ohMyPoshOwnedConfigStatus, `chm doctor`'s own read of this. */
+function writeOhMyPoshSeedState(ownedConfigPath: string, seededFromPath: string): void {
+  const state: OhMyPoshSeedState = { seededFromPath, seededAtMs: Date.now() };
+  writeFileSync(seedStatePathFor(ownedConfigPath), JSON.stringify(state, null, 2), "utf8");
+}
+
+/**
+ * Which config `ownedConfigPath` was seeded from, or undefined when it
+ * cannot be read — a config seeded before this file existed (or migrated
+ * from CHM-63's own deleted bundled prompt layout, see
+ * migrateAwayFromBundledPromptLayout) never wrote one, and that must read as
+ * "unknown", never as a guess or a crash.
+ */
+export function readOhMyPoshSeedState(ownedConfigPath: string = defaultOwnedConfigPath()): OhMyPoshSeedState | undefined {
+  const seedStatePath = seedStatePathFor(ownedConfigPath);
+  if (!existsSync(seedStatePath)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(seedStatePath, "utf8"));
+    const validated = OhMyPoshSeedStateSchema.safeParse(parsed);
+    return validated.success ? validated.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `chm doctor`'s own view of the config Chameleon owns outright — CHM-74:
+ * "reports which config Chameleon owns and which config it was seeded
+ * from." Undefined before the very first seed, since there is nothing to
+ * report yet.
+ */
+export interface OhMyPoshOwnedConfigStatus {
+  readonly ownedConfigPath: string;
+  readonly seededFromPath: string | undefined;
+}
+
+export function ohMyPoshOwnedConfigStatus(ownedConfigPath: string = defaultOwnedConfigPath()): OhMyPoshOwnedConfigStatus | undefined {
+  if (!existsSync(ownedConfigPath)) return undefined;
+  return { ownedConfigPath, seededFromPath: readOhMyPoshSeedState(ownedConfigPath)?.seededFromPath };
+}
+
+/** `recolorConfigInto`'s own message naming every segment type whose literal-hex foreground could not be lifted into a palette key — CHM-74's "says so by name rather than writing a palette nothing reads." Undefined when liftLiteralForegroundsToPalette found nothing it had to leave behind. */
+function unliftableForegroundsNotice(unliftableSegmentTypes: readonly string[]): string | undefined {
+  if (unliftableSegmentTypes.length === 0) return undefined;
+  return `could not lift a themeable colour for: ${unliftableSegmentTypes.join(", ")} — its foreground is not a plain hex colour, so it was left exactly as it was`;
+}
+
+/** Joins two details this file's own apply can have to report at once — the profile-creation notice (CHM-39) and CHM-74's own unliftable-foreground notice can now genuinely coincide, the same reason index.ts keeps its own combinedDetail for Claude Code's apply and reload. */
+function combinedNotice(first: string | undefined, second: string | undefined): string | undefined {
+  if (first !== undefined && second !== undefined) return `${first} — ${second}`;
+  return first ?? second;
+}
+
+/**
+ * Recolors `configPath`'s own content for `scheme` — lifting any literal-hex
+ * foreground into a palette key of its own first (see
+ * liftLiteralForegroundsToPalette and CHM-74), then swapping the palette
  * table for `scheme`'s resolved roles and repairing any segment whose own
  * foreground fails TEXT_MIN_RATIO against its own background (see
  * repairSegmentForegrounds and CHM-40) — writing the result back to the same
@@ -1039,26 +1330,34 @@ function recolorConfigInto(configPath: string, profilePath: string, shell: Shell
   backupBeforeEdit(configPath);
   const sourceText = readFileSync(configPath, "utf8");
   const sourceConfig = readOhMyPoshConfig(configPath);
-  const paletteTable = recoloredPaletteTable(sourceConfig.palette, resolveRoleHexes(scheme), scheme);
+  const originalBlocks = sourceConfig.blocks ?? [];
 
-  // Segment repair reads the recoloured table above, never the config's own
-  // original palette — a segment must be checked against the colours it is
-  // about to render, not the ones it used to.
-  const segmentRepair = repairSegmentForegrounds(sourceConfig.blocks ?? [], paletteTable);
+  const foregroundLift = liftLiteralForegroundsToPalette(originalBlocks);
+  const paletteTable = recoloredPaletteTable({ ...sourceConfig.palette, ...foregroundLift.paletteAdditions }, resolveRoleHexes(scheme), scheme);
+
+  // Segment repair reads the lifted blocks and the recoloured table above,
+  // never the config's own original palette or blocks — a segment must be
+  // checked against the colours and the references it is about to render,
+  // not the ones it used to.
+  const segmentRepair = repairSegmentForegrounds(foregroundLift.blocks, paletteTable);
   const finalPaletteTable = { ...paletteTable, ...segmentRepair.additionalPaletteEntries };
+  const finalBlocks = segmentRepair.blocks;
 
   let updatedConfigText = upsertPaletteTable(configPath, sourceText, finalPaletteTable);
   // "blocks" is left completely untouched — not even re-upserted — when
-  // nothing about it changed, so the overwhelming common case still
-  // round-trips byte-identical outside the palette block, same as before
-  // this ticket.
-  if (segmentRepair.wereBlocksChanged) {
-    updatedConfigText = upsertBlocksArray(configPath, updatedConfigText, [...segmentRepair.blocks]);
+  // nothing about it changed (compared against the config's own true
+  // original, not the lifted intermediate above), so the overwhelming common
+  // case still round-trips byte-identical outside the palette block, same as
+  // before this ticket.
+  const wereBlocksChanged = JSON.stringify(finalBlocks) !== JSON.stringify(originalBlocks);
+  if (wereBlocksChanged) {
+    updatedConfigText = upsertBlocksArray(configPath, updatedConfigText, [...finalBlocks]);
   }
   assertNoDanglingPaletteReferences(configPath, updatedConfigText, finalPaletteTable);
   writeFileSync(configPath, updatedConfigText, "utf8");
 
-  return upsertInitLine(shell, profilePath, configPath);
+  const initLineNotice = upsertInitLine(shell, profilePath, configPath);
+  return combinedNotice(initLineNotice, unliftableForegroundsNotice(foregroundLift.unliftableSegmentTypes));
 }
 
 /**
