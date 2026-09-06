@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CurrentPackReport, LoadedThemePack, PromptPackListEntry } from "../src/index.js";
+import type { CurrentPackReport, LoadedThemePack } from "../src/index.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../src/index.js";
 import { relativeLuminance } from "../src/palette/color.js";
 import {
@@ -10,12 +10,10 @@ import {
   formatDriftLine,
   formatLockHeldMessage,
   formatPreviewInProgressLine,
-  formatPromptListLine,
   formatThemeLine,
   hasDrift,
   normalizeThemeQuery,
   renderPickerRow,
-  renderPromptPickerFrame,
   resolveThemeQuery,
   shouldRestoreOriginalSelectionOnExit,
   toPickerEntry,
@@ -252,54 +250,6 @@ describe("the picker's per-row render cost", () => {
     expect(elapsedMs).toBeLessThan(30);
   });
 });
-
-describe("formatPromptListLine", () => {
-  function entry(overrides: Partial<PromptPackListEntry> = {}): PromptPackListEntry {
-    return { slug: "lambda", name: "Lambda", description: "Minimal single-line prompt.", requiresNerdFont: false, nerdFontWarning: false, ...overrides };
-  }
-
-  it("carries no Nerd Font flag at all for a layout that needs none", () => {
-    expect(formatPromptListLine(entry())).toBe("Lambda — Minimal single-line prompt.");
-  });
-
-  it("marks a layout needing a Nerd Font, plainly, when one is selected", () => {
-    const line = formatPromptListLine(entry({ requiresNerdFont: true, nerdFontWarning: false }));
-    expect(line).toContain("Lambda");
-    expect(line).toContain("(Nerd Font)");
-    expect(line).not.toContain("not selected");
-  });
-
-  // CHM-47: still listed, never hidden — just flagged, and the flag says
-  // why it will look wrong.
-  it("flags, rather than hides, a layout needing a Nerd Font when none is selected", () => {
-    const line = formatPromptListLine(entry({ requiresNerdFont: true, nerdFontWarning: true }));
-    expect(line).toContain("Lambda");
-    expect(line).toContain("needs Nerd Font");
-  });
-});
-
-// CHM-57's own "Related" fix: Oh My Posh only paints at prompt-render time,
-// so moving the picker's highlight cannot repaint the prompt the way `chm
-// themes`' own live preview repaints the terminal. The reporter picked a
-// layout and could not tell whether anything had happened — this is what
-// the picker must say instead, so it never implies a preview that cannot
-// exist here.
-describe("renderPromptPickerFrame", () => {
-  function entry(overrides: Partial<PromptPackListEntry> = {}): PromptPackListEntry {
-    return { slug: "lambda", name: "Lambda", description: "Minimal single-line prompt.", requiresNerdFont: false, nerdFontWarning: false, ...overrides };
-  }
-
-  it("states that a layout takes effect on the next prompt, never implying a live preview", () => {
-    const [hintLine] = renderPromptPickerFrame([entry()], 0, "");
-    expect(hintLine).toContain("takes effect on your next prompt");
-  });
-
-  it("shows the filter, not the hint, once the user starts typing", () => {
-    const [filterLine] = renderPromptPickerFrame([entry()], 0, "lam");
-    expect(filterLine).toBe("filter: lam");
-  });
-});
-
 describe("resolveThemeQuery", () => {
   it("resolves an exact slug", () => {
     const result = resolveThemeQuery(BUNDLED_PACKS, ["catppuccin-dark"]);

@@ -11,16 +11,12 @@ import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters
 import {
   createDefaultOhMyPoshAdapter,
   createOhMyPoshAdapter,
-  ensureOhMyPoshOwnedConfigSeededForCurrentShell,
   ohMyPoshMatchesRoleHexes,
   OH_MY_POSH_WINGET_PACKAGE_ID,
-  restoreOriginalPromptForCurrentShell,
   undoOhMyPosh,
-  writeOwnedPromptConfigForCurrentShell,
 } from "./adapters/oh-my-posh.js";
 import { isWindows } from "./adapters/platform.js";
 import { clearPreviewState, readPreviewState, writePreviewState } from "./adapters/preview-state.js";
-import { readPromptState, writePromptState } from "./adapters/prompt-state.js";
 import { readActivePackState, writeActivePackState } from "./adapters/state.js";
 import { loadUserThemePacks } from "./adapters/user-theme-packs.js";
 import {
@@ -31,8 +27,6 @@ import {
   WINDOWS_TERMINAL_WINGET_PACKAGE_ID,
 } from "./adapters/windows-terminal.js";
 import { toPalette, type Appearance } from "./palette/palette.js";
-import { loadBundledPromptPacks, type BundledPromptPack } from "./palette/prompt-pack-library.js";
-import { resolvePromptLayoutRoleReferences } from "./palette/prompt-pack.js";
 import type { Scheme } from "./palette/scheme.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug, type LoadedThemePack } from "./palette/theme-pack-library.js";
 import type { ThemePackPayloads } from "./palette/theme-pack.js";
@@ -105,10 +99,6 @@ export { defaultUserThemePackDir, loadUserThemePacks } from "./adapters/user-the
 
 export type { AcquireLockResult, LockInfo } from "./adapters/lock.js";
 export { acquireLock, currentLockHolder, defaultLockPath } from "./adapters/lock.js";
-
-export type { PromptLayout, PromptPackManifest } from "./palette/prompt-pack.js";
-export type { BundledPromptPack } from "./palette/prompt-pack-library.js";
-export { loadBundledPromptPacks } from "./palette/prompt-pack-library.js";
 
 /**
  * The full set of packs `ch` can offer right now: every bundled pack plus
@@ -751,173 +741,3 @@ export function findFamilySibling(appearance: Appearance, userThemeDir?: string,
   };
 }
 
-// --- Prompt layouts: `ch prompts` picks a layout the way `ch themes` picks a
-// colour theme (CHM-47) -------------------------------------------------------
-//
-// A prompt layout is Oh My Posh's own concern alone — Windows Terminal,
-// Herdr and Claude Code have no segment layout of their own to switch — so
-// unlike applyThemePack this never fans out across TARGETS. The load-bearing
-// rule is CHM-47's own, kept under CHM-59's single owned config: a bundled
-// layout is written into Chameleon's one owned file; the user's own
-// .omp.json, wherever it lives, is never opened, let alone written. See
-// adapters/oh-my-posh.ts's writeOwnedPromptConfig/restoreOriginalPrompt.
-
-/** `ch doctor`'s own "not installed" message plus the one-line winget install command, reused wherever a prompt-layout command needs to explain Oh My Posh's absence rather than fail obscurely on it — see CHM-47's "This is the one moment a person has a concrete reason to install it." Windows-only, like every other winget offer in this file — see checkTarget. */
-export function ohMyPoshMissingMessage(): string {
-  const installHint = isWindows()
-    ? `run \`${wingetInstallCommand(OH_MY_POSH_WINGET_PACKAGE_ID)}\`, then try again`
-    : "install it for your platform (https://ohmyposh.dev/docs/installation), then try again";
-  return `Oh My Posh is not installed — ${installHint}`;
-}
-
-/** One row of `ch prompts`: everything the CLI needs to list or pick a bundled layout, without it having to load the library itself. */
-export interface PromptPackListEntry {
-  readonly slug: string;
-  readonly name: string;
-  readonly description: string;
-  readonly requiresNerdFont: boolean;
-  /** True only when `requiresNerdFont` and no Nerd Font is currently selected — CHM-47's "still listed... but flagged", never hidden. */
-  readonly nerdFontWarning: boolean;
-}
-
-/** Every bundled prompt layout, flagged for CHM-47's Nerd Font warning — never filtered out, since a layout requiring a Nerd Font is still listed even when none is selected, only marked. */
-export function listPromptPacks(): readonly PromptPackListEntry[] {
-  const nerdFontSelected = checkNerdFont().isSelected;
-  return loadBundledPromptPacks().map((bundled) => ({
-    slug: bundled.manifest.slug,
-    name: bundled.manifest.name,
-    description: bundled.manifest.description,
-    requiresNerdFont: bundled.manifest.requiresNerdFont,
-    nerdFontWarning: bundled.manifest.requiresNerdFont && !nerdFontSelected,
-  }));
-}
-
-/** The bundled pack named `slug`, or a message naming `chm prompts` as the way to see what is actually available — mirrors findLoadedPack's own contract for theme packs. */
-function findBundledPromptPack(slug: string): BundledPromptPack {
-  const bundled = loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === slug);
-  if (!bundled) {
-    throw new Error(`no prompt layout named "${slug}" — run \`chm prompts\` to see what's available`);
-  }
-  return bundled;
-}
-
-/** The currently applied theme's own loaded pack — what both a prompt layout's role table and `chm prompt mine`'s own recolor scheme are read from. Throws, naming `chm themes`, when no theme has ever been applied: a layout is authored purely in role references (CHM-46) and has no colour of its own to fall back to, and `chm prompt mine` has nothing to recolor the user's own config with either. */
-function currentLoadedThemePackForPrompts(userThemeDir?: string, statePath?: string): LoadedThemePack {
-  const current = currentPack(userThemeDir, statePath);
-  if (!current || current.name === undefined) {
-    throw new Error("no theme has been applied yet — run `chm themes` first, so Chameleon has colours to paint a prompt layout with");
-  }
-  const { packs } = loadAllThemePacks(userThemeDir);
-  const loaded = packs.find((candidate) => candidate.pack.manifest.slug === current.slug);
-  if (!loaded) {
-    throw new Error(`the active theme "${current.slug}" is no longer available — run \`chm themes\` and pick one`);
-  }
-  return loaded;
-}
-
-/** The oh-my-posh role table a prompt layout should be resolved against — the currently applied theme's own. See currentLoadedThemePackForPrompts. */
-function currentThemeRoleHexesForPrompts(userThemeDir?: string, statePath?: string): Readonly<Record<Role, string>> {
-  return currentLoadedThemePackForPrompts(userThemeDir, statePath).pack.payloads["oh-my-posh"];
-}
-
-/** The currently applied theme's own full scheme — what `chm prompt mine` recolors the user's real config against, since that config can carry foreign palette keys a plain role table cannot repaint (see role-mapping.ts's nearestHueFamilyHue). See currentLoadedThemePackForPrompts. */
-function currentThemeSchemeForPrompts(userThemeDir?: string, statePath?: string): Scheme {
-  return currentLoadedThemePackForPrompts(userThemeDir, statePath).pack.payloads["windows-terminal"];
-}
-
-/** The one-sentence warning `chm prompt <name>` shows for a layout that needs a Nerd Font when none is currently selected — CHM-47's "picking it says what will look wrong and how to fix it." Never blocks the apply: the layout is still written and pointed at, exactly as picked. */
-function nerdFontRequirementWarning(): string {
-  return "this layout uses Nerd Font glyphs, and no Nerd Font is currently selected — its icons will render as boxes or blanks until one is (see `chm doctor`, or run `oh-my-posh font install`)";
-}
-
-export interface PromptPackApplyResult {
-  readonly slug: string;
-  readonly name: string;
-  /** A hook-installation notice (CHM-39's own kind), when applying created the shell's profile from scratch — undefined otherwise. */
-  readonly detail: string | undefined;
-  readonly nerdFontWarning: string | undefined;
-}
-
-/**
- * Applies the bundled prompt layout named `slug`: resolves it against the
- * currently applied theme's own roles (currentThemeRoleHexesForPrompts) and
- * writes the result into Chameleon's single owned config — see
- * adapters/oh-my-posh.ts's writeOwnedPromptConfigForCurrentShell. The user's
- * own config path is discovered and recorded once, the very first time
- * anything is ever applied through Chameleon, and carried forward unchanged
- * on every switch after that — see ensureOhMyPoshOwnedConfigSeededForCurrentShell
- * and this ticket's "so 'mine' is always recoverable even after several
- * changes." `promptStatePath`, like `userThemeDir` and `statePath`, is only
- * ever overridden by tests.
- */
-export function applyPromptPack(
-  slug: string,
-  promptStatePath?: string,
-  userThemeDir?: string,
-  statePath?: string,
-): PromptPackApplyResult {
-  if (!createDefaultOhMyPoshAdapter().detect()) {
-    throw new Error(ohMyPoshMissingMessage());
-  }
-  const bundled = findBundledPromptPack(slug);
-  const roleHexes = currentThemeRoleHexesForPrompts(userThemeDir, statePath);
-  const resolvedConfig = resolvePromptLayoutRoleReferences(bundled.layout, roleHexes);
-
-  const originalConfigPath = ensureOhMyPoshOwnedConfigSeededForCurrentShell(promptStatePath);
-  const detail = writeOwnedPromptConfigForCurrentShell(resolvedConfig);
-  writePromptState({ originalConfigPath, activeSlug: bundled.manifest.slug, updatedAtMs: Date.now() }, promptStatePath);
-
-  return {
-    slug: bundled.manifest.slug,
-    name: bundled.manifest.name,
-    detail,
-    nerdFontWarning: bundled.manifest.requiresNerdFont && !checkNerdFont().isSelected ? nerdFontRequirementWarning() : undefined,
-  };
-}
-
-/**
- * `chm prompt mine` — copies the config path recorded before the first
- * bundled layout was ever applied, fresh, into Chameleon's owned config and
- * recolors it against the currently applied theme (see
- * restoreOriginalPromptForCurrentShell): the recorded path itself is only
- * ever read, never written, so it is exactly the config the user has always
- * had, however it has changed since. Throws when no bundled layout has ever
- * been applied — there is no recorded path to go back to.
- */
-export function restorePromptToMine(promptStatePath?: string, userThemeDir?: string, statePath?: string): void {
-  if (!createDefaultOhMyPoshAdapter().detect()) {
-    throw new Error(ohMyPoshMissingMessage());
-  }
-  const state = readPromptState(promptStatePath);
-  if (!state) {
-    throw new Error("no bundled prompt layout has ever been applied — nothing to restore");
-  }
-  const scheme = currentThemeSchemeForPrompts(userThemeDir, statePath);
-  restoreOriginalPromptForCurrentShell(state.originalConfigPath, scheme);
-  writePromptState({ ...state, activeSlug: undefined, updatedAtMs: Date.now() }, promptStatePath);
-}
-
-export interface CurrentPromptReport {
-  /** Undefined means the user's own config is active ("mine"), not a bundled layout. */
-  readonly slug: string | undefined;
-  /** The bundled layout's display name — undefined when `slug` is undefined, or the recorded slug no longer resolves to a loadable layout. */
-  readonly name: string | undefined;
-}
-
-/**
- * The prompt layout `ch` last switched to, or undefined when no bundled
- * layout has ever been applied — `ch current`'s own prompt row (CHM-47).
- *
- * prompt-state.json's own `activeSlug` is trusted outright here — CHM-59
- * removed the pointer file CHM-57 needed to cross-check it against: every
- * theme or layout apply now writes the same single owned config, through
- * this one module, so there is no longer a second writer that could move
- * $POSH_CONFIG somewhere prompt-state.json does not know about.
- */
-export function currentPromptPack(promptStatePath?: string): CurrentPromptReport | undefined {
-  const state = readPromptState(promptStatePath);
-  if (!state) return undefined;
-  if (state.activeSlug === undefined) return { slug: undefined, name: undefined };
-  const bundled = loadBundledPromptPacks().find((candidate) => candidate.manifest.slug === state.activeSlug);
-  return { slug: state.activeSlug, name: bundled?.manifest.name };
-}
