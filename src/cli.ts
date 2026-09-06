@@ -637,14 +637,13 @@ function runCurrent(args: readonly string[]): number {
   return 0;
 }
 
-/** One picker row: enough to paint the row in its own pack's ground and body (CHM-64), keep its accent visible, filter it by slug or name, apply it, and preview it live. */
+/** One picker row: enough to paint the row in its own pack's ground and body (CHM-64), filter it by slug or name, apply it, and preview it live. CHM-66 dropped the accent swatch, so the accent hex itself is no longer carried here — see renderPickerRow. */
 export interface PickerEntry {
   readonly slug: string;
   readonly name: string;
   readonly origin: string;
   readonly groundHex: string;
   readonly bodyHex: string;
-  readonly accentHex: string;
   /**
    * The full scheme this entry's live preview paints with escape codes
    * (CHM-52), instantly, in the pane the picker itself is running in. CHM-55:
@@ -665,7 +664,6 @@ export function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
     origin: loaded.origin,
     groundHex: roleHexes.ground,
     bodyHex: roleHexes.body,
-    accentHex: roleHexes.accent,
     scheme: loaded.pack.payloads["windows-terminal"],
   };
 }
@@ -864,30 +862,170 @@ function sgrRowPaint(groundHex: string, bodyHex: string, isHighlighted: boolean)
 }
 
 /**
- * One picker row, painted end to end in that pack's own colours — its own
- * ground behind its own body, the way tint's picker reads at a glance,
- * rather than the name in the terminal's own colours beside two small
- * swatches (CHM-64). The accent swatch stays and restores the row's own
- * paint immediately after itself, so the coloured name text either side of
- * it is never left in the swatch's colours. The slug stays typeable for the
- * filter, but is never shown.
+ * The one-character column to the left of every row's number (CHM-66):
+ * blank for an ordinary row, `>` for wherever the cursor is, `*` for the
+ * pack actually applied. Rendered outside any of that row's own paint (see
+ * renderPickerRow), so it stays legible on the lightest and darkest bundled
+ * pack alike rather than depending on colours it is supposed to stand out
+ * from. Highlighted wins when the cursor sits on the applied row — which
+ * key is being pressed is the more useful fact while browsing.
  */
-export function renderPickerRow(entry: PickerEntry, isHighlighted: boolean): string {
-  const cursor = isHighlighted ? ">" : " ";
-  const userMarker = entry.origin === "user" ? "  (user)" : "";
-  const rowPaint = sgrRowPaint(entry.groundHex, entry.bodyHex, isHighlighted);
-  const accentSwatch = `${sgrColor(SGR_BACKGROUND_BASE, entry.accentHex)}  ${rowPaint}`;
-  return `${cursor} ${rowPaint} ${accentSwatch} ${entry.name}${userMarker}${SGR_RESET}`;
+const PICKER_HIGHLIGHTED_MARKER = ">";
+const PICKER_APPLIED_MARKER = "*";
+const PICKER_BLANK_MARKER = " ";
+
+function pickerRowMarker(isHighlighted: boolean, isApplied: boolean): string {
+  if (isHighlighted) return PICKER_HIGHLIGHTED_MARKER;
+  if (isApplied) return PICKER_APPLIED_MARKER;
+  return PICKER_BLANK_MARKER;
 }
 
-const PICKER_HINT_LINE = "up/down move, type to filter, enter apply, esc cancel";
+/**
+ * `displayNumber` right-aligned to `gutterDigits` and period-terminated, so
+ * "1.", "10." and "100." all end at the same column no matter how many
+ * digits the number itself has (CHM-66). `gutterDigits` is sized once per
+ * frame from how many entries are currently showing — see
+ * computePickerRowLayout.
+ */
+function formatPickerRowNumber(displayNumber: number, gutterDigits: number): string {
+  return `${String(displayNumber).padStart(gutterDigits, " ")}.`;
+}
 
-/** Every line of one picker frame: the hint or filter line, then one row per matching entry, or a plain "no matches" line when the filter matches nothing. */
-function renderPickerFrame(entries: readonly PickerEntry[], highlightedIndex: number, filterText: string): string[] {
-  const filterLine = filterText === "" ? PICKER_HINT_LINE : `filter: ${filterText}`;
-  const rowLines =
-    entries.length === 0 ? ["  no matches"] : entries.map((entry, index) => renderPickerRow(entry, index === highlightedIndex));
-  return [filterLine, ...rowLines];
+/**
+ * Two leading spaces, the row's number, two more spaces, then the name and
+ * its user marker — the part of a picker row that gets painted in the
+ * pack's own colours and padded to `PickerRowLayout.contentWidth` (CHM-66).
+ * Shared by renderPickerRow and computePickerRowLayout, so measuring a row
+ * and painting it can never disagree.
+ */
+function pickerRowContent(entry: PickerEntry, displayNumber: number, gutterDigits: number): string {
+  const userMarker = entry.origin === "user" ? "  (user)" : "";
+  return `  ${formatPickerRowNumber(displayNumber, gutterDigits)}  ${entry.name}${userMarker}`;
+}
+
+/**
+ * Where one row sits in the frame currently being drawn: its displayed
+ * position — renumbered every time a filter narrows the list (CHM-66) —
+ * and the two facts that decide its marker, whether the cursor is on it and
+ * whether it is the pack actually applied.
+ */
+interface PickerRowPosition {
+  readonly displayNumber: number;
+  readonly isHighlighted: boolean;
+  readonly isApplied: boolean;
+}
+
+/**
+ * The gutter width and total content width every row in one frame shares —
+ * CHM-66's "every row the same width", so the painted background forms a
+ * clean block rather than a ragged edge at each name's end. Computed once
+ * per frame by computePickerRowLayout, never per row, so two rows can never
+ * disagree about where the name column starts.
+ */
+interface PickerRowLayout {
+  readonly gutterDigits: number;
+  readonly contentWidth: number;
+}
+
+/**
+ * Sizes one frame's gutter and row width from every entry in the current
+ * filter, not just the ones inside the visible scroll window — so the
+ * layout does not shift as the highlight scrolls the window past names of
+ * different lengths.
+ */
+function computePickerRowLayout(entries: readonly PickerEntry[]): PickerRowLayout {
+  const gutterDigits = Math.max(1, String(entries.length).length);
+  const contentWidth = entries.reduce(
+    (widestSoFar, entry, index) => Math.max(widestSoFar, pickerRowContent(entry, index + 1, gutterDigits).length),
+    0,
+  );
+  return { gutterDigits, contentWidth };
+}
+
+/**
+ * One picker row, painted end to end in that pack's own colours — its own
+ * ground behind its own body, the way tint's picker reads at a glance
+ * (CHM-64) — with tint's own marker and number gutter in front of it
+ * (CHM-66): a plain, unpainted one-character marker, then the row's number
+ * and name padded to `layout.contentWidth` so the painted block lines up
+ * into a clean rectangle down the whole list. No accent swatch — the row's
+ * own background already carries the theme. The slug stays typeable for the
+ * filter, but is never shown.
+ */
+export function renderPickerRow(entry: PickerEntry, position: PickerRowPosition, layout: PickerRowLayout): string {
+  const marker = pickerRowMarker(position.isHighlighted, position.isApplied);
+  const rowPaint = sgrRowPaint(entry.groundHex, entry.bodyHex, position.isHighlighted);
+  const content = pickerRowContent(entry, position.displayNumber, layout.gutterDigits).padEnd(layout.contentWidth, " ");
+  return `${marker}${rowPaint}${content}${SGR_RESET}`;
+}
+
+/**
+ * tint's own three-part navigation line, copied exactly (CHM-66): plain
+ * text but for the two arrows, which are ordinary Unicode rather than a
+ * Nerd Font icon, so it reads with no Nerd Font installed (CLAUDE.md).
+ * Shown on every frame, replacing the old hint/filter line that disappeared
+ * the moment someone started typing — the filter now gets its own line
+ * instead, see renderPickerFrame.
+ */
+const PICKER_HEADER_LINE = "↑/↓ Navigate    Enter: Select    Esc: Cancel";
+
+/** The arrow the footer's "N more" line points down with — see renderPickerFrame. */
+const PICKER_FOOTER_ARROW = "↓";
+
+/**
+ * How many rows renderPickerFrame shows at once before it scrolls (CHM-66):
+ * "every rendered row is the same width" and "a footer when the list is
+ * longer than the visible window" both assume a bounded window rather than
+ * every matching entry regardless of list length.
+ */
+const PICKER_VISIBLE_ROW_COUNT = 15;
+
+/**
+ * The first index of the contiguous slice of `totalCount` rows to actually
+ * draw, chosen so `highlightedIndex` always falls inside it: the window
+ * starts at the top of the list until the highlight would run past its far
+ * edge, then follows the highlight down, and never scrolls past the point
+ * where the window's last row is the list's last entry.
+ */
+function pickerWindowStart(totalCount: number, highlightedIndex: number, maxVisibleRows: number): number {
+  if (totalCount <= maxVisibleRows) return 0;
+  return Math.min(Math.max(0, highlightedIndex - maxVisibleRows + 1), totalCount - maxVisibleRows);
+}
+
+/**
+ * Every line of one picker frame: the fixed navigation header, the filter
+ * line once someone has typed anything, one row per visible entry — scrolled
+ * to keep the highlight in view rather than every matching entry regardless
+ * of list length (CHM-66) — and a footer naming how many more entries sit
+ * below the window. `appliedSlug` is the pack actually applied (see
+ * runInteractivePicker's own `originalSlug`), never the one merely
+ * previewed by the highlight, so the `*` marker does not chase the cursor
+ * around the list.
+ */
+export function renderPickerFrame(
+  entries: readonly PickerEntry[],
+  highlightedIndex: number,
+  filterText: string,
+  appliedSlug: string | undefined,
+): string[] {
+  const filterLine = filterText === "" ? [] : [`filter: ${filterText}`];
+  if (entries.length === 0) return [PICKER_HEADER_LINE, ...filterLine, "  no matches"];
+
+  const layout = computePickerRowLayout(entries);
+  const windowStart = pickerWindowStart(entries.length, highlightedIndex, PICKER_VISIBLE_ROW_COUNT);
+  const windowEnd = Math.min(entries.length, windowStart + PICKER_VISIBLE_ROW_COUNT);
+  const rowLines = entries.slice(windowStart, windowEnd).map((entry, windowIndex) => {
+    const index = windowStart + windowIndex;
+    return renderPickerRow(
+      entry,
+      { displayNumber: index + 1, isHighlighted: index === highlightedIndex, isApplied: entry.slug === appliedSlug },
+      layout,
+    );
+  });
+  const hiddenBelowCount = entries.length - windowEnd;
+  const footerLine = hiddenBelowCount > 0 ? [`${PICKER_FOOTER_ARROW} ${hiddenBelowCount} more`] : [];
+
+  return [PICKER_HEADER_LINE, ...filterLine, ...rowLines, ...footerLine];
 }
 
 /** Moves the cursor back up over the previous frame and clears everything from there down, so redrawing never scrolls the screen. */
@@ -911,9 +1049,11 @@ export function shouldRestoreOriginalSelectionOnExit(originalSlug: string | unde
 }
 
 /**
- * Drives the arrow-key picker: renders the filtered list with colour
- * swatches, moves the highlight on the arrow keys, narrows the list as the
- * user types, and previews the highlighted pack immediately on every move —
+ * Drives the arrow-key picker: renders the filtered list with each row
+ * painted in its own pack's colours (CHM-64) behind tint's own header,
+ * numbered gutter and footer (CHM-66), moves the highlight on the arrow
+ * keys, narrows the list as the user types, and previews the highlighted
+ * pack immediately on every move —
  * see CHM-24's "applying as the cursor moves is the feature that makes this
  * tool worth using." CHM-52: that preview is now the terminal's own escape
  * codes (buildTerminalPreviewSequence), instant and file-free, plus a
@@ -978,7 +1118,10 @@ async function runInteractivePicker(
 
     function redraw(): void {
       clearPickerFrame(previousFrameLineCount);
-      const frameLines = renderPickerFrame(visibleEntries, highlightedIndex, filterText);
+      // originalSlug, not currentPack()?.slug: the `*` marker names the pack
+      // this session actually applied, not whatever the highlight is merely
+      // previewing — see renderPickerFrame's own doc comment.
+      const frameLines = renderPickerFrame(visibleEntries, highlightedIndex, filterText, originalSlug);
       process.stdout.write(frameLines.map((line) => `${line}\n`).join(""));
       previousFrameLineCount = frameLines.length;
     }

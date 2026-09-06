@@ -15,6 +15,8 @@ import {
   formatThemeLine,
   hasDrift,
   normalizeThemeQuery,
+  type PickerEntry,
+  renderPickerFrame,
   renderPickerRow,
   resolveThemeQuery,
   shouldRestoreOriginalSelectionOnExit,
@@ -32,6 +34,11 @@ function sgrColorEscape(sgrBase: 38 | 48, hex: string): string {
 }
 
 const SGR_REVERSE_VIDEO = "\x1b[7m";
+
+/** Every SGR escape renderPickerRow/renderPickerFrame can emit, stripped away — CHM-66's own column and width acceptance criteria are stated "measured excluding escape sequences", so every such assertion goes through this rather than counting raw characters. */
+function stripAnsiEscapes(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
 
 // CHM-34: `ch doctor` was reporting "drift: none" — a comparison it never
 // performed — whenever the recorded pack could no longer be loaded (deleted
@@ -254,6 +261,33 @@ function findBundledPack(slug: string): LoadedThemePack {
   return loaded;
 }
 
+/**
+ * `count` picker entries, cycling through the real bundled packs' own
+ * ground/body colours (never invented hex) but with synthetic, fixed-width
+ * names — "Synthetic Theme 001", "010", "100" — so a list this large has no
+ * substring collisions between one entry's name and another's. Only
+ * renderPickerFrame's *layout* is under test here (gutter width, name
+ * column, row width, the footer's count): none of it depends on which real
+ * pack a colour came from, and the 29 bundled packs are not enough entries
+ * to reach the three-digit row numbers CHM-66's alignment rule names.
+ */
+function buildSyntheticEntries(count: number): PickerEntry[] {
+  const templates = BUNDLED_PACKS.map(toPickerEntry);
+  const digits = String(count).length;
+  return Array.from({ length: count }, (_unused, index) => {
+    const template = templates[index % templates.length]!;
+    return { ...template, slug: `synthetic-${index + 1}`, name: `Synthetic Theme ${String(index + 1).padStart(digits, "0")}` };
+  });
+}
+
+/** The rendered rows out of one renderPickerFrame call — the header and, when present, the footer stripped away. Assumes an empty filter, so there is no filter line to also strip. */
+function pickerFrameRowLines(frame: readonly string[]): string[] {
+  const withoutHeader = frame.slice(1);
+  const lastLine = withoutHeader[withoutHeader.length - 1];
+  const hasFooter = lastLine !== undefined && /^↓ \d+ more$/.test(lastLine);
+  return hasFooter ? withoutHeader.slice(0, -1) : withoutHeader;
+}
+
 describe("normalizeThemeQuery", () => {
   it("lowercases and strips separators so a slug, a name and joined words all collapse to the same key", () => {
     expect(normalizeThemeQuery("Catppuccin Mocha")).toBe("catppuccinmocha");
@@ -285,8 +319,10 @@ describe("formatThemeLine", () => {
 
 // CHM-64: the picker paints each row in that pack's own colours — its own
 // ground behind its own body — rather than the name in default text beside
-// two small swatches. Real bundled packs, by name, per CLAUDE.md's "colour
-// tests use real schemes' real values."
+// two small swatches. CHM-66 then dropped the swatches entirely and added
+// tint's own marker column and number gutter in front of that paint. Real
+// bundled packs, by name, per CLAUDE.md's "colour tests use real schemes'
+// real values."
 describe("renderPickerRow", () => {
   // Solarized Dark and Catppuccin Latte are named fixtures elsewhere in this
   // project (CLAUDE.md's known-failure list, code-standards.md) precisely
@@ -294,16 +330,22 @@ describe("renderPickerRow", () => {
   // background and foreground are that pack's own values, not a coincidence.
   const SAMPLE_SLUGS = ["catppuccin-dark", "solarized-dark", "solarized-light", "gruvbox-light"];
 
-  it.each(SAMPLE_SLUGS)("paints %s's row in its own ground and body, and keeps its accent visible", (slug) => {
+  /** Just enough layout for a single row on its own — a one-wide gutter and a content width equal to what that one row actually needs, so padding never enters into it. */
+  function singleRowLayout(entry: PickerEntry): { gutterDigits: number; contentWidth: number } {
+    const userMarker = entry.origin === "user" ? "  (user)" : "";
+    return { gutterDigits: 1, contentWidth: `  1.  ${entry.name}${userMarker}`.length };
+  }
+
+  it.each(SAMPLE_SLUGS)("paints %s's row in its own ground and body, with no accent swatch", (slug) => {
     const loaded = findBundledPack(slug);
     const roleHexes = loaded.pack.payloads["oh-my-posh"];
     const entry = toPickerEntry(loaded);
 
-    const row = renderPickerRow(entry, false);
+    const row = renderPickerRow(entry, { displayNumber: 1, isHighlighted: false, isApplied: false }, singleRowLayout(entry));
 
     expect(row).toContain(sgrColorEscape(48, roleHexes.ground));
     expect(row).toContain(sgrColorEscape(38, roleHexes.body));
-    expect(row).toContain(sgrColorEscape(48, roleHexes.accent));
+    expect(row).not.toContain(sgrColorEscape(48, roleHexes.accent));
     expect(row).toContain(loaded.pack.manifest.name);
   });
 
@@ -311,9 +353,10 @@ describe("renderPickerRow", () => {
     const bundled = findBundledPack("catppuccin-dark");
     const userEntry = toPickerEntry({ ...bundled, origin: "user" });
     const bundledEntry = toPickerEntry(bundled);
+    const position = { displayNumber: 1, isHighlighted: false, isApplied: false };
 
-    expect(renderPickerRow(userEntry, false)).toContain("(user)");
-    expect(renderPickerRow(bundledEntry, false)).not.toContain("(user)");
+    expect(renderPickerRow(userEntry, position, singleRowLayout(userEntry))).toContain("(user)");
+    expect(renderPickerRow(bundledEntry, position, singleRowLayout(bundledEntry))).not.toContain("(user)");
   });
 
   // The acceptance criterion, directly: with every row now painted in its
@@ -338,35 +381,166 @@ describe("renderPickerRow", () => {
     });
 
     it("is present on the darkest pack's ground", () => {
-      expect(renderPickerRow(darkestEntry, true)).toContain(SGR_REVERSE_VIDEO);
+      const row = renderPickerRow(darkestEntry, { displayNumber: 1, isHighlighted: true, isApplied: false }, singleRowLayout(darkestEntry));
+      expect(row).toContain(SGR_REVERSE_VIDEO);
     });
 
     it("is present on the lightest pack's ground", () => {
-      expect(renderPickerRow(lightestEntry, true)).toContain(SGR_REVERSE_VIDEO);
+      const row = renderPickerRow(lightestEntry, { displayNumber: 1, isHighlighted: true, isApplied: false }, singleRowLayout(lightestEntry));
+      expect(row).toContain(SGR_REVERSE_VIDEO);
     });
 
     it.each(allEntries)("marks $name highlighted, and only when highlighted", (entry) => {
-      expect(renderPickerRow(entry, true)).toContain(SGR_REVERSE_VIDEO);
-      expect(renderPickerRow(entry, false)).not.toContain(SGR_REVERSE_VIDEO);
+      const layout = singleRowLayout(entry);
+      expect(renderPickerRow(entry, { displayNumber: 1, isHighlighted: true, isApplied: false }, layout)).toContain(SGR_REVERSE_VIDEO);
+      expect(renderPickerRow(entry, { displayNumber: 1, isHighlighted: false, isApplied: false }, layout)).not.toContain(
+        SGR_REVERSE_VIDEO,
+      );
+    });
+  });
+
+  // CHM-66: the highlighted and applied markers sit outside a row's own SGR
+  // paint entirely (see renderPickerRow), specifically so they read on any
+  // pack's own colours rather than depending on them — proved on the same
+  // darkest/lightest pair the reverse-video highlight is proved against
+  // above, by name.
+  describe("the highlighted and applied markers", () => {
+    const allEntries = BUNDLED_PACKS.map(toPickerEntry);
+    const byGroundLuminance = [...allEntries].sort(
+      (entryA, entryB) => relativeLuminance(entryA.groundHex) - relativeLuminance(entryB.groundHex),
+    );
+    const darkestEntry = byGroundLuminance[0]!;
+    const lightestEntry = byGroundLuminance[byGroundLuminance.length - 1]!;
+    const NAMED_PACKS = [
+      ["darkest", darkestEntry] as const,
+      ["lightest", lightestEntry] as const,
+    ];
+
+    it.each(NAMED_PACKS)("shows '>' for the highlighted row on the %s bundled pack", (_label, entry) => {
+      const row = renderPickerRow(entry, { displayNumber: 1, isHighlighted: true, isApplied: false }, singleRowLayout(entry));
+      expect(stripAnsiEscapes(row).startsWith(">")).toBe(true);
+    });
+
+    it.each(NAMED_PACKS)("shows '*' for the applied row on the %s bundled pack, when it is not also highlighted", (_label, entry) => {
+      const row = renderPickerRow(entry, { displayNumber: 1, isHighlighted: false, isApplied: true }, singleRowLayout(entry));
+      expect(stripAnsiEscapes(row).startsWith("*")).toBe(true);
+    });
+
+    it("leaves the marker blank for a row that is neither highlighted nor applied", () => {
+      const row = renderPickerRow(lightestEntry, { displayNumber: 1, isHighlighted: false, isApplied: false }, singleRowLayout(lightestEntry));
+      expect(stripAnsiEscapes(row).startsWith(" ")).toBe(true);
+    });
+
+    it("prefers the highlighted marker when the cursor sits on the applied row", () => {
+      const row = renderPickerRow(lightestEntry, { displayNumber: 1, isHighlighted: true, isApplied: true }, singleRowLayout(lightestEntry));
+      expect(stripAnsiEscapes(row).startsWith(">")).toBe(true);
     });
   });
 });
 
 // CHM-52 set the bar this ticket must not cross back over: per-row work is
 // string concatenation over values every pack already carries, so it should
-// be free — this asserts that rather than assuming it.
+// be free — this asserts that rather than assuming it. CHM-66 adds a gutter
+// and a fixed-width pad on top, so the same budget is re-asserted here
+// rather than assumed to still hold.
 describe("the picker's per-row render cost", () => {
   it("renders every bundled pack's row, highlighted and not, in well under 30ms total", () => {
     const entries = BUNDLED_PACKS.map(toPickerEntry);
+    const layout = { gutterDigits: 2, contentWidth: 60 };
 
     const startedAtMs = performance.now();
-    for (const entry of entries) {
-      renderPickerRow(entry, false);
-      renderPickerRow(entry, true);
+    for (const [index, entry] of entries.entries()) {
+      renderPickerRow(entry, { displayNumber: index + 1, isHighlighted: false, isApplied: false }, layout);
+      renderPickerRow(entry, { displayNumber: index + 1, isHighlighted: true, isApplied: false }, layout);
     }
     const elapsedMs = performance.now() - startedAtMs;
 
     expect(elapsedMs).toBeLessThan(30);
+  });
+});
+
+// CHM-66: the rest of the restyle — no swatch, the header, the numbered
+// gutter, equal-width rows and the footer — lives in how renderPickerFrame
+// assembles a whole frame's worth of rows, not in any one row on its own.
+describe("renderPickerFrame", () => {
+  it("always shows tint's three-part navigation header, plain text but for the two arrows", () => {
+    const entries = [toPickerEntry(findBundledPack("catppuccin-dark"))];
+
+    const frame = renderPickerFrame(entries, 0, "", undefined);
+
+    expect(frame[0]).toBe("↑/↓ Navigate    Enter: Select    Esc: Cancel");
+  });
+
+  it("shows the filter line only once something has actually been typed", () => {
+    const entries = [toPickerEntry(findBundledPack("catppuccin-dark"))];
+
+    expect(renderPickerFrame(entries, 0, "", undefined).some((line) => line.startsWith("filter:"))).toBe(false);
+    expect(renderPickerFrame(entries, 0, "moc", undefined).some((line) => line.startsWith("filter: moc"))).toBe(true);
+  });
+
+  // The acceptance criterion, directly: "1. and 10. and 100. all end at the
+  // same column" — proved against a list long enough to actually reach
+  // three digits, not just the 29 bundled packs. The gutter is sized from
+  // the whole filtered list, so the name column stays put across every
+  // frame this list ever renders, no matter which rows have scrolled into
+  // view — that is what lets each of these three frames be compared here.
+  it("lines up the name column for single-, double- and triple-digit row numbers", () => {
+    const entries = buildSyntheticEntries(150);
+    const nameColumnFor = (highlightedIndex: number): number => {
+      const frame = renderPickerFrame(entries, highlightedIndex, "", undefined);
+      const targetName = entries[highlightedIndex]!.name;
+      const line = frame.find((frameLine) => frameLine.includes(targetName));
+      if (line === undefined) throw new Error(`test fixture error: row for "${targetName}" was not in the rendered window`);
+      return stripAnsiEscapes(line).indexOf(targetName);
+    };
+
+    const singleDigitColumn = nameColumnFor(0); // row "1."
+    const doubleDigitColumn = nameColumnFor(9); // row "10."
+    const tripleDigitColumn = nameColumnFor(99); // row "100."
+
+    expect(doubleDigitColumn).toBe(singleDigitColumn);
+    expect(tripleDigitColumn).toBe(singleDigitColumn);
+  });
+
+  it("pads every rendered row to the same display width, measured excluding escape sequences", () => {
+    const entries = buildSyntheticEntries(40);
+
+    const frame = renderPickerFrame(entries, 0, "", undefined);
+    const rowWidths = pickerFrameRowLines(frame).map((line) => stripAnsiEscapes(line).length);
+
+    expect(new Set(rowWidths).size).toBe(1);
+  });
+
+  describe("the footer", () => {
+    it("does not appear when every entry already fits in the visible window", () => {
+      const entries = buildSyntheticEntries(5);
+
+      const frame = renderPickerFrame(entries, 0, "", undefined);
+
+      expect(frame.some((line) => line.includes("more"))).toBe(false);
+    });
+
+    it("names exactly how many entries sit below the visible window", () => {
+      const entries = buildSyntheticEntries(40);
+
+      const frame = renderPickerFrame(entries, 0, "", undefined);
+      const shownCount = pickerFrameRowLines(frame).length;
+
+      expect(frame[frame.length - 1]).toBe(`↓ ${entries.length - shownCount} more`);
+    });
+
+    // The acceptance criterion, directly: "the footer's count is correct
+    // when the list is filtered" — a shorter, filtered list must recompute
+    // against its own, smaller total rather than the count from before the
+    // filter narrowed it.
+    it("recomputes against a filtered list's own, smaller total", () => {
+      const filtered = buildSyntheticEntries(40).slice(0, 20);
+
+      const frame = renderPickerFrame(filtered, 0, "", undefined);
+      const shownCount = pickerFrameRowLines(frame).length;
+
+      expect(frame[frame.length - 1]).toBe(`↓ ${filtered.length - shownCount} more`);
+    });
   });
 });
 describe("resolveThemeQuery", () => {
