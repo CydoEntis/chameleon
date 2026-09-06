@@ -11,7 +11,13 @@ import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
-import { ACTIVE_ROW_IDEAL_FRACTION, resolveActiveRowAndText } from "../../src/palette/surfaces.js";
+import {
+  ACTIVE_ROW_IDEAL_FRACTION,
+  checkContrastPairs,
+  herdrContrastPairs,
+  resolveActiveRowAndText,
+  type HerdrTokenSet,
+} from "../../src/palette/surfaces.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 
 /**
@@ -1023,6 +1029,41 @@ describe("herdr adapter — overlay0 vs sidebar and active row (CHM-78)", () => 
       expect(contrastRatio(overlay0, activeRowBg)).toBeCloseTo(overlay0VsRow, 3);
     },
   );
+});
+
+// CHM-79: the declared contrast inventory (see palette/surfaces.ts's
+// herdrContrastPairs), run against what this adapter actually writes to
+// config.toml for every one of the 29 bundled packs — not a re-derivation,
+// the real [theme.custom] table an applied pack leaves behind, the same way
+// overlay0TokensFor above proves CHM-78's own fix against real output rather
+// than a recomputed copy of it.
+describe("herdr adapter — CHM-79's declared contrast inventory, every bundled pack", () => {
+  function allCustomTokensFor(slug: string): HerdrTokenSet {
+    const packs = loadCuratedThemePacks();
+    const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+    if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+    const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-inventory-"));
+    const configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+    try {
+      createHerdrAdapter(configPath).apply(pack.payloads["windows-terminal"], pack.manifest.slug);
+      return createHerdrAdapter(configPath).read().theme.custom as unknown as HerdrTokenSet;
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  }
+
+  it("clears every declared pair for every one of the 29 bundled packs — the gate this ticket adds, run against real written output", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBe(29);
+
+    for (const pack of packs) {
+      const tokens = allCustomTokensFor(pack.manifest.slug);
+      const failures = checkContrastPairs(herdrContrastPairs(tokens));
+      expect(failures, `${pack.manifest.slug}: ${failures.map((failure) => failure.pair.label).join(", ")}`).toEqual([]);
+    }
+  });
 });
 
 // CHM-22: Chameleon's marked block wrote `text` and `subtext0` a second time

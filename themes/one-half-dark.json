@@ -45,9 +45,9 @@
     },
     "herdr": {
       "ground": "#282c34",
-      "body": "#e9ecf1",
+      "body": "#dcdfe4",
       "accent": "#61afef",
-      "muted": "#c3c3c3",
+      "muted": "#d0daed",
       "success": "#98c379",
       "error": "#e6727b",
       "selection_bg": "#c2000f"

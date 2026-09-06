@@ -203,6 +203,24 @@ export function hasDrift(drift: DoctorReport["drift"]): boolean {
 }
 
 /**
+ * `chm doctor`'s own contrast lines (CHM-79): every pair this machine's real
+ * config files fail, one line each, naming the pair and what it measured —
+ * "herdr overlay0 on active_row_bg measures 3.10, below its floor of 4.5",
+ * never a bare pass/fail. A target with nothing to report (not installed, no
+ * config found, or nothing themed yet) prints nothing at all — this is only
+ * ever a list of problems, not a status board.
+ */
+export function formatContrastFailureLines(contrast: DoctorReport["contrast"]): string[] {
+  const herdrLines = (contrast.herdr ?? []).map(
+    (failure) => `${failure.pair.label} measures ${failure.ratio.toFixed(2)}, below its floor of ${failure.pair.minRatio}`,
+  );
+  const windowsTerminalLines = (contrast.windowsTerminal ?? []).map(
+    (failure) => `${failure.pair.label} measures ${failure.ratio.toFixed(2)}, below its floor of ${failure.pair.minRatio}`,
+  );
+  return [...herdrLines, ...windowsTerminalLines, ...(contrast.ohMyPosh ?? [])];
+}
+
+/**
  * Reports what is installed, what is missing, and the one-line command that
  * would install each gap — never runs an installer itself, so there is
  * nothing here that blocks on a prompt stdin cannot answer. See CLAUDE.md,
@@ -239,7 +257,13 @@ function runDoctor(): number {
   }
 
   process.stdout.write(`${formatDriftLine(report.drift)}\n`);
-  return hasDrift(report.drift) ? 1 : 0;
+
+  const contrastFailureLines = formatContrastFailureLines(report.contrast);
+  for (const line of contrastFailureLines) {
+    process.stdout.write(`contrast: ${line}\n`);
+  }
+
+  return hasDrift(report.drift) || contrastFailureLines.length > 0 ? 1 : 0;
 }
 
 // --- `chm statusline` (CHM-68) -----------------------------------------
