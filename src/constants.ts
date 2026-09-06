@@ -76,38 +76,47 @@ export const SELECTION_MIN_VISIBLE_RATIO = 1.25;
 export const RATIO_CLEARANCE_MARGIN = 1.05;
 
 /**
- * Minimum chroma (see chromaOf in palette/color.ts) a repaired selection
- * highlight holds onto, even when ground itself holds less. CHM-38:
- * repairing a selection by searching a hue-free grey satisfies both
- * contrast floors but throws away the theme's own colour identity — 25 of
- * the 26 bundled packs shipped a selection with essentially zero chroma,
- * and Solarized Dark's search landed exactly on pure black. A repaired
- * selection now tints ground's own hue instead (see
- * palette/selection.ts's groundTintedAtLuminance) at a chroma related to
- * ground's own — this floor only bites when ground itself is this neutral
- * or more so, in which case a near-neutral selection is correct, not a bug.
- * Kept low and unrelated to MIN_REPAIRED_CHROMA on purpose: a selection is
- * a background fill sitting behind ordinary body text, not a role that
- * needs to read as strongly coloured, and a value this small still rules
- * out a literal chroma-0 grey.
+ * CHM-38's old floor on a repaired selection's chroma, and the ceiling it
+ * was clamped to below (SELECTION_MAX_CHROMA) — both retained only as the
+ * regression baseline CHM-70's tests assert a repaired selection now clears
+ * by a wide margin, never as a target either constant is searched toward
+ * any more.
+ *
+ * CHM-38 fixed a hue-free grey search (contrast floors satisfied, colour
+ * identity thrown away — 25 of the 26 bundled packs shipped a selection
+ * with essentially zero chroma, Solarized Dark's landing on pure black) by
+ * tinting ground's own hue at a chroma clamped to this narrow band. That
+ * was progress over grey, but ground's hue at a chroma this low is, by
+ * construction, still a slightly different shade of the background — CHM-70
+ * is the report that a selection built this way still reads as "a lighter
+ * grey", not a distinct colour. CHM-70 replaces the clamp outright: hue now
+ * comes from the pack's own accent (see palette/selection.ts's
+ * chooseSelectionHue), and chroma is maximised at whatever luminance the
+ * contrast floors demand (see maxChromaAtLuminance) rather than held down
+ * near this ceiling.
  */
 export const SELECTION_MIN_CHROMA = 0.05;
+export const SELECTION_MAX_CHROMA = 0.08;
 
 /**
- * Ceiling on the chroma a repaired selection tints toward, even when ground
- * itself holds more. Reusing ground's own chroma verbatim can pin the tint
- * back onto ground itself: Solarized Dark's ground (chroma 0.212) already
- * sits at the darkest RGB byte its own hue and chroma allow (one channel is
- * 0), so searching "darker than ground" at that same hue and chroma has
- * nowhere to go and returns ground unchanged — a selection identical to its
- * own background, invisible rather than merely grey. A lower ceiling keeps
- * enough of the reachable-luminance range open on both sides of ground for
- * the search in palette/selection.ts's groundTintedAtLuminance to actually
- * move away from it, while staying comfortably above SELECTION_MIN_CHROMA
- * so the ticket's own floor (chroma above 0.05 whenever ground's is) still
- * clears with rounding room to spare.
+ * The lowest hue distance, in degrees, from ground's own hue that still
+ * reads as a genuinely different colour rather than a tinted shade of the
+ * background — the bar CHM-70's selection hue must clear. Reuses
+ * RED_HUE_MAX_DEGREES's own boundary rather than inventing a second one: a
+ * hue within 20° of another already falls in the same hue-category bucket
+ * roles.ts classifies slots into, so a selection that close to ground would
+ * be that same "barely a different shade" complaint CHM-70 reports, just at
+ * a hue level instead of a luminance one.
+ *
+ * Checked against the 29 bundled packs' own measured accent-to-ground
+ * distances: catppuccin-light's accent sits 0.1° from ground (fallback
+ * fires), one-half-dark's 13.0°, night-owl-dark's 14.0° and solarized-dark's
+ * 16.8° all read as the same hue as their ground in practice (fallback
+ * fires for all four); the next-nearest pack, kanagawa-dark, clears this
+ * floor exactly at 20.0°, and every pack above it is unambiguously a
+ * different colour from its own ground.
  */
-export const SELECTION_MAX_CHROMA = 0.08;
+export const SELECTION_HUE_MIN_DISTANCE_DEGREES = 20;
 
 /**
  * The lowest active-row-background-vs-sidebar-background contrast that

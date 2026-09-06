@@ -91,7 +91,13 @@ describe("resolveActiveRowAndText", () => {
   it("never trades row visibility away for either of this ticket's own named worst cases", () => {
     for (const scheme of [readVendoredScheme("Dracula.json"), readVendoredScheme("Ayu Light.json")]) {
       const roleHexes = resolveRoleHexes(scheme);
-      const { selection, body } = resolveSelectionAndBody(scheme.selectionBackground, roleHexes.ground, roleHexes.body);
+      const { selection, body } = resolveSelectionAndBody(
+        scheme.selectionBackground,
+        roleHexes.ground,
+        roleHexes.body,
+        roleHexes.accent,
+        [roleHexes.success, roleHexes.error],
+      );
       const resolved = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
       expect(resolved.wasVisibilityTraded).toBe(false);
     }
