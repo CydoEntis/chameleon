@@ -754,13 +754,20 @@ describe("herdr adapter — full custom token vocabulary (CHM-28)", () => {
 // then found CHM-50's own fix had settled for too little: subtext0-on-row
 // only had to clear MUTED_MIN_RATIO, the floor for text a reader is meant to
 // skim past, while on the selected row subtext0 carries the agent's own
-// title and provider — the thing being read. These tests pin the combined
-// fix: row-vs-sidebar visibility, text-on-row and subtext0-on-row are
-// asserted together, per pack, so a fix that only checks one of the three
-// (the way CHM-48 shipped) fails here, and subtext0-on-row's own floor is
-// MUTED_MIN_RATIO only as a non-regression guarantee — CHM-75's own target,
-// TEXT_MIN_RATIO, is asserted separately below.
-describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CHM-75)", () => {
+// title and provider — the thing being read. CHM-75's own fix, though, still
+// treated row visibility as the thing to maximise and text as the
+// constraint: monokai-dark's row settled at 2.12 against sidebar (visibility
+// to spare against a 2.0 floor) and subtext0 was dragged to 4.63 on top of
+// it — legal, and the least readable text on screen. CHM-80 inverts that:
+// the row takes the smallest lift that clears its own (lower) visibility
+// floor, and text keeps whatever contrast that leaves, which turns out to be
+// nearly all of it (monokai-dark's subtext0 now reads 7.49). These tests pin
+// the combined fix: row-vs-sidebar visibility, text-on-row and
+// subtext0-on-row are asserted together, per pack, so a fix that only checks
+// one of the three (the way CHM-48 shipped) fails here, and subtext0-on-row's
+// own floor is MUTED_MIN_RATIO only as a non-regression guarantee —
+// CHM-75's own target, TEXT_MIN_RATIO, is asserted separately below.
+describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CHM-75, CHM-80)", () => {
   function customTokensFor(scheme: Scheme, slug: string): Record<string, string> {
     const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-active-row-"));
     const configPath = path.join(configDir, "config.toml");
@@ -811,18 +818,25 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CH
 
   // CHM-75's own target: subtext0-on-row reaches all the way to
   // TEXT_MIN_RATIO, not just MUTED_MIN_RATIO, for every bundled pack except
-  // the four named below — reached for, never demanded, the same shape
+  // the three named below — reached for, never demanded, the same shape
   // SELECTION_IDEAL_RATIO already uses for the selection highlight (see
   // repairMutedForActiveRow's own doc comment in palette/surfaces.ts).
-  // dracula-dark, everforest-light, solarized-light and tokyo-night-light
-  // are the ones where text itself has too little headroom over its own
-  // TEXT_MIN_RATIO floor to leave subtext0 room to clear TEXT_MIN_RATIO
-  // *and* stay measurably below it at once — each still lands within 0.2 of
-  // the target, and each is a large jump past CHM-50's own ~3.1-3.3
-  // baseline (see the full per-pack table below). Known, bounded shortfalls
-  // are fixtures here, not silently averaged away — see code-standards.md,
-  // "Colour tests use real schemes' real values".
-  const PACKS_BELOW_IDEAL_READABILITY = new Set(["dracula-dark", "everforest-light", "solarized-light", "tokyo-night-light"]);
+  // ayu-light, everforest-light and tokyo-night-light are the ones where
+  // body itself has too little headroom over its own TEXT_MIN_RATIO floor
+  // (6.12, 6.13 and 6.11 against ground) to leave subtext0 room to clear
+  // TEXT_MIN_RATIO *and* stay measurably below it at once — CHM-30's own
+  // kind of unreachable case, on this pair instead of selection-vs-ground.
+  // CHM-80's lower row floor moved this set: dracula-dark and solarized-light
+  // (CHM-75's own two named exceptions) now clear TEXT_MIN_RATIO outright
+  // (6.79 and 4.51), and ayu-light newly falls short (4.47) where it used to
+  // clear (4.59) — the row's own smaller lift leaves muted more room in
+  // general, but ayu-light's own body-vs-ground headroom was already the
+  // tightest of the four, so it is the one the trade lands on now. Each of
+  // the three still lands within 0.06 of the target, not the ~0.2 gap
+  // CHM-75 shipped. Known, bounded shortfalls are fixtures here, not
+  // silently averaged away — see code-standards.md, "Colour tests use real
+  // schemes' real values".
+  const PACKS_BELOW_IDEAL_READABILITY = new Set(["ayu-light", "everforest-light", "tokyo-night-light"]);
 
   it("clears TEXT_MIN_RATIO for subtext0-on-row for every bundled pack outside the named exceptions", () => {
     const packs = loadCuratedThemePacks();
@@ -833,12 +847,26 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CH
     }
   });
 
-  it("still lands within 0.2 of TEXT_MIN_RATIO for the four named exceptions", () => {
+  // CHM-80's own regression proof: the shipped monokai-dark value this
+  // ticket exists to fix (4.63) scraped TEXT_MIN_RATIO rather than clearing
+  // it with real margin. Asserted with a comfortable margin above the floor,
+  // not just the floor itself, so a fix that merely nudges the old value
+  // back to "technically legal" fails this test.
+  it("clears TEXT_MIN_RATIO with a comfortable margin for monokai-dark, not by scraping it the way the shipped 4.63 did", () => {
+    const oldShippedValue = 4.63;
+    const comfortableMarginAboveFloor = 1;
+    expect(oldShippedValue).toBeLessThan(TEXT_MIN_RATIO + comfortableMarginAboveFloor);
+
+    const { activeRowBg, subtext0 } = activeRowTokensFor("monokai-dark");
+    expect(contrastRatio(subtext0, activeRowBg)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO + comfortableMarginAboveFloor);
+  });
+
+  it("still lands within 0.06 of TEXT_MIN_RATIO for the three named exceptions", () => {
     for (const slug of PACKS_BELOW_IDEAL_READABILITY) {
       const { activeRowBg, subtext0 } = activeRowTokensFor(slug);
       const subtextOnRow = contrastRatio(subtext0, activeRowBg);
       expect(subtextOnRow, slug).toBeLessThan(TEXT_MIN_RATIO);
-      expect(subtextOnRow, slug).toBeGreaterThan(TEXT_MIN_RATIO - 0.2);
+      expect(subtextOnRow, slug).toBeGreaterThan(TEXT_MIN_RATIO - 0.06);
     }
   });
 
@@ -862,37 +890,40 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CH
   // number moving rather than a boolean flipping. Extends CHM-50's own
   // four-pack spot check (dracula-dark, monokai-dark, night-owl-dark,
   // nord-dark) to the full set, since CHM-75 changed every one of these
-  // three columns for the large majority of bundled packs.
+  // three columns for the large majority of bundled packs — and CHM-80
+  // changes rowVsSidebar and subtextOnRow again, for all 29, by retuning
+  // ACTIVE_ROW_MIN_VISIBLE_RATIO and taking the smallest lift that clears
+  // it rather than the largest subtext0 happened to tolerate.
   const NAMED_FIXTURES = [
-    { slug: "ayu-dark-deep", rowVsSidebar: 2.1005, textOnRow: 4.8914, subtextOnRow: 4.687 },
-    { slug: "ayu-dark", rowVsSidebar: 2.1085, textOnRow: 4.765, subtextOnRow: 4.5827 },
-    { slug: "ayu-light", rowVsSidebar: 2.1096, textOnRow: 4.783, subtextOnRow: 4.5904 },
-    { slug: "catppuccin-dark", rowVsSidebar: 2.1, textOnRow: 5.4004, subtextOnRow: 4.7644 },
-    { slug: "catppuccin-light", rowVsSidebar: 2.1116, textOnRow: 4.7826, subtextOnRow: 4.5261 },
-    { slug: "dracula-dark", rowVsSidebar: 2.1005, textOnRow: 6.36, subtextOnRow: 4.3067 },
-    { slug: "everforest-dark", rowVsSidebar: 2.1235, textOnRow: 4.7656, subtextOnRow: 4.5722 },
-    { slug: "everforest-light", rowVsSidebar: 2.1128, textOnRow: 4.7665, subtextOnRow: 4.4877 },
-    { slug: "github-dark", rowVsSidebar: 2.261, textOnRow: 7.0837, subtextOnRow: 4.7488 },
-    { slug: "github-light", rowVsSidebar: 2.1032, textOnRow: 7.5112, subtextOnRow: 4.9286 },
-    { slug: "gruvbox-dark", rowVsSidebar: 2.1073, textOnRow: 5.1, subtextOnRow: 4.7336 },
-    { slug: "gruvbox-light", rowVsSidebar: 2.1012, textOnRow: 4.8637, subtextOnRow: 4.5796 },
-    { slug: "jellybeans", rowVsSidebar: 2.1138, textOnRow: 6.5874, subtextOnRow: 4.7172 },
-    { slug: "kanagawa-dark", rowVsSidebar: 2.1034, textOnRow: 5.3548, subtextOnRow: 4.7722 },
-    { slug: "kanagawa-light", rowVsSidebar: 2.1092, textOnRow: 4.7505, subtextOnRow: 4.5202 },
-    { slug: "monokai-dark", rowVsSidebar: 2.1228, textOnRow: 6.9186, subtextOnRow: 4.631 },
-    { slug: "night-owl-dark", rowVsSidebar: 2.1003, textOnRow: 6.4464, subtextOnRow: 4.7075 },
-    { slug: "night-owl-light", rowVsSidebar: 2.1013, textOnRow: 4.8658, subtextOnRow: 4.5931 },
-    { slug: "nord-dark", rowVsSidebar: 2.1011, textOnRow: 4.7437, subtextOnRow: 4.5228 },
-    { slug: "nord-light", rowVsSidebar: 2.1018, textOnRow: 4.7946, subtextOnRow: 4.5937 },
-    { slug: "one-half-dark", rowVsSidebar: 2.1162, textOnRow: 4.9514, subtextOnRow: 4.7041 },
-    { slug: "one-half-light", rowVsSidebar: 2.1013, textOnRow: 5.1697, subtextOnRow: 4.776 },
-    { slug: "rose-pine-dark", rowVsSidebar: 2.1093, textOnRow: 6.3474, subtextOnRow: 4.7017 },
-    { slug: "rose-pine-light", rowVsSidebar: 2.1166, textOnRow: 4.7087, subtextOnRow: 4.5151 },
-    { slug: "shades-of-purple", rowVsSidebar: 2.2099, textOnRow: 7.2817, subtextOnRow: 4.7685 },
-    { slug: "solarized-dark", rowVsSidebar: 2.1094, textOnRow: 4.6924, subtextOnRow: 4.5085 },
-    { slug: "solarized-light", rowVsSidebar: 2.1017, textOnRow: 4.738, subtextOnRow: 4.4694 },
-    { slug: "tokyo-night-dark", rowVsSidebar: 2.1142, textOnRow: 5.0074, subtextOnRow: 4.7377 },
-    { slug: "tokyo-night-light", rowVsSidebar: 2.1134, textOnRow: 4.7089, subtextOnRow: 4.4223 },
+    { slug: "ayu-dark-deep", rowVsSidebar: 1.3223, textOnRow: 7.7704, subtextOnRow: 5.1916 },
+    { slug: "ayu-dark", rowVsSidebar: 1.3174, textOnRow: 7.1769, subtextOnRow: 4.8389 },
+    { slug: "ayu-light", rowVsSidebar: 1.3143, textOnRow: 4.6559, subtextOnRow: 4.4703 },
+    { slug: "catppuccin-dark", rowVsSidebar: 1.3181, textOnRow: 8.6044, subtextOnRow: 5.609 },
+    { slug: "catppuccin-light", rowVsSidebar: 1.3206, textOnRow: 5.3475, subtextOnRow: 4.6702 },
+    { slug: "dracula-dark", rowVsSidebar: 1.3186, textOnRow: 10.1316, subtextOnRow: 6.7937 },
+    { slug: "everforest-dark", rowVsSidebar: 1.3196, textOnRow: 6.5306, subtextOnRow: 4.9075 },
+    { slug: "everforest-light", rowVsSidebar: 1.314, textOnRow: 4.6645, subtextOnRow: 4.4495 },
+    { slug: "github-dark", rowVsSidebar: 1.3268, textOnRow: 12.0711, subtextOnRow: 8.0924 },
+    { slug: "github-light", rowVsSidebar: 2.0357, textOnRow: 7.7601, subtextOnRow: 5.0919 },
+    { slug: "gruvbox-dark", rowVsSidebar: 1.3135, textOnRow: 8.1817, subtextOnRow: 5.3725 },
+    { slug: "gruvbox-light", rowVsSidebar: 1.3203, textOnRow: 7.7408, subtextOnRow: 5.0923 },
+    { slug: "jellybeans", rowVsSidebar: 1.3231, textOnRow: 10.5243, subtextOnRow: 7.5364 },
+    { slug: "kanagawa-dark", rowVsSidebar: 1.3186, textOnRow: 8.5417, subtextOnRow: 5.6926 },
+    { slug: "kanagawa-light", rowVsSidebar: 1.3145, textOnRow: 4.7056, subtextOnRow: 4.538 },
+    { slug: "monokai-dark", rowVsSidebar: 1.313, textOnRow: 11.1859, subtextOnRow: 7.4873 },
+    { slug: "night-owl-dark", rowVsSidebar: 1.3134, textOnRow: 10.3088, subtextOnRow: 6.8083 },
+    { slug: "night-owl-light", rowVsSidebar: 1.3138, textOnRow: 7.7823, subtextOnRow: 5.1239 },
+    { slug: "nord-dark", rowVsSidebar: 1.3161, textOnRow: 7.0248, subtextOnRow: 4.7055 },
+    { slug: "nord-light", rowVsSidebar: 1.3211, textOnRow: 5.6938, subtextOnRow: 4.5859 },
+    { slug: "one-half-dark", rowVsSidebar: 1.3235, textOnRow: 7.917, subtextOnRow: 5.2398 },
+    { slug: "one-half-light", rowVsSidebar: 1.3129, textOnRow: 8.2744, subtextOnRow: 5.6736 },
+    { slug: "rose-pine-dark", rowVsSidebar: 1.3129, textOnRow: 10.1983, subtextOnRow: 6.7798 },
+    { slug: "rose-pine-light", rowVsSidebar: 1.3131, textOnRow: 5.0698, subtextOnRow: 4.7706 },
+    { slug: "shades-of-purple", rowVsSidebar: 1.3148, textOnRow: 12.2391, subtextOnRow: 8.0148 },
+    { slug: "solarized-dark", rowVsSidebar: 1.3178, textOnRow: 4.7195, subtextOnRow: 4.5131 },
+    { slug: "solarized-light", rowVsSidebar: 1.3146, textOnRow: 4.7525, subtextOnRow: 4.5214 },
+    { slug: "tokyo-night-dark", rowVsSidebar: 1.3244, textOnRow: 7.9938, subtextOnRow: 5.2486 },
+    { slug: "tokyo-night-light", rowVsSidebar: 1.3198, textOnRow: 4.6331, subtextOnRow: 4.4552 },
   ];
 
   it.each(NAMED_FIXTURES)(
@@ -982,42 +1013,45 @@ describe("herdr adapter — overlay0 vs sidebar and active row (CHM-78)", () => 
   });
 
   // Every bundled pack's own exact numbers — pinned the same way the
-  // CHM-50/CHM-75 suite above pins text-on-row and subtext0-on-row, so a
-  // future change that narrows coverage back down, for any one pack, shows
+  // CHM-50/CHM-75/CHM-80 suite above pins text-on-row and subtext0-on-row, so
+  // a future change that narrows coverage back down, for any one pack, shows
   // up as a specific number moving rather than a boolean flipping. Unlike
   // subtext0-on-row, no bundled pack falls short of TEXT_MIN_RATIO here —
   // overlay0's own repair has ground and body's full distance to work with,
-  // never body's own narrower headroom over TEXT_MIN_RATIO.
+  // never body's own narrower headroom over TEXT_MIN_RATIO. CHM-80 moves
+  // both columns for every pack: overlay0 is repaired against active_row_bg
+  // too (CHM-78), so a lower, closer-to-ground row changes the single
+  // repaired value both pairs below measure.
   const NAMED_FIXTURES = [
-    { slug: "ayu-dark-deep", overlay0VsSidebar: 9.822, overlay0VsRow: 4.676 },
-    { slug: "ayu-dark", overlay0VsSidebar: 9.9247, overlay0VsRow: 4.7069 },
-    { slug: "ayu-light", overlay0VsSidebar: 10.0717, overlay0VsRow: 4.7742 },
-    { slug: "catppuccin-dark", overlay0VsSidebar: 9.9763, overlay0VsRow: 4.7505 },
-    { slug: "catppuccin-light", overlay0VsSidebar: 10.0725, overlay0VsRow: 4.7701 },
-    { slug: "dracula-dark", overlay0VsSidebar: 9.9911, overlay0VsRow: 4.7565 },
-    { slug: "everforest-dark", overlay0VsSidebar: 10.1247, overlay0VsRow: 4.7679 },
-    { slug: "everforest-light", overlay0VsSidebar: 9.8943, overlay0VsRow: 4.6831 },
-    { slug: "github-dark", overlay0VsSidebar: 10.6457, overlay0VsRow: 4.7084 },
-    { slug: "github-light", overlay0VsSidebar: 9.9122, overlay0VsRow: 4.7129 },
-    { slug: "gruvbox-dark", overlay0VsSidebar: 9.9101, overlay0VsRow: 4.7028 },
-    { slug: "gruvbox-light", overlay0VsSidebar: 9.9688, overlay0VsRow: 4.7443 },
-    { slug: "jellybeans", overlay0VsSidebar: 10.079, overlay0VsRow: 4.7681 },
-    { slug: "kanagawa-dark", overlay0VsSidebar: 10.0209, overlay0VsRow: 4.764 },
-    { slug: "kanagawa-light", overlay0VsSidebar: 9.9065, overlay0VsRow: 4.6969 },
-    { slug: "monokai-dark", overlay0VsSidebar: 10.1284, overlay0VsRow: 4.7713 },
-    { slug: "night-owl-dark", overlay0VsSidebar: 9.8313, overlay0VsRow: 4.6809 },
-    { slug: "night-owl-light", overlay0VsSidebar: 9.8552, overlay0VsRow: 4.6901 },
-    { slug: "nord-dark", overlay0VsSidebar: 9.9669, overlay0VsRow: 4.7437 },
-    { slug: "nord-light", overlay0VsSidebar: 9.7955, overlay0VsRow: 4.6606 },
-    { slug: "one-half-dark", overlay0VsSidebar: 9.9957, overlay0VsRow: 4.7233 },
-    { slug: "one-half-light", overlay0VsSidebar: 9.9079, overlay0VsRow: 4.7151 },
-    { slug: "rose-pine-dark", overlay0VsSidebar: 10.0046, overlay0VsRow: 4.743 },
-    { slug: "rose-pine-light", overlay0VsSidebar: 9.9349, overlay0VsRow: 4.6939 },
-    { slug: "shades-of-purple", overlay0VsSidebar: 10.5191, overlay0VsRow: 4.7599 },
-    { slug: "solarized-dark", overlay0VsSidebar: 9.8692, overlay0VsRow: 4.6786 },
-    { slug: "solarized-light", overlay0VsSidebar: 9.8248, overlay0VsRow: 4.6746 },
-    { slug: "tokyo-night-dark", overlay0VsSidebar: 10.0167, overlay0VsRow: 4.7377 },
-    { slug: "tokyo-night-light", overlay0VsSidebar: 10.0621, overlay0VsRow: 4.7611 },
+    { slug: "ayu-dark-deep", overlay0VsSidebar: 6.2704, overlay0VsRow: 4.7422 },
+    { slug: "ayu-dark", overlay0VsSidebar: 6.1991, overlay0VsRow: 4.7057 },
+    { slug: "ayu-light", overlay0VsSidebar: 6.2784, overlay0VsRow: 4.777 },
+    { slug: "catppuccin-dark", overlay0VsSidebar: 6.2528, overlay0VsRow: 4.7439 },
+    { slug: "catppuccin-light", overlay0VsSidebar: 6.2987, overlay0VsRow: 4.7695 },
+    { slug: "dracula-dark", overlay0VsSidebar: 6.7918, overlay0VsRow: 5.1509 },
+    { slug: "everforest-dark", overlay0VsSidebar: 6.2796, overlay0VsRow: 4.7587 },
+    { slug: "everforest-light", overlay0VsSidebar: 6.192, overlay0VsRow: 4.7125 },
+    { slug: "github-dark", overlay0VsSidebar: 7.5198, overlay0VsRow: 5.6676 },
+    { slug: "github-light", overlay0VsSidebar: 9.6061, overlay0VsRow: 4.7187 },
+    { slug: "gruvbox-dark", overlay0VsSidebar: 6.25, overlay0VsRow: 4.7581 },
+    { slug: "gruvbox-light", overlay0VsSidebar: 6.1455, overlay0VsRow: 4.6548 },
+    { slug: "jellybeans", overlay0VsSidebar: 6.6575, overlay0VsRow: 5.0318 },
+    { slug: "kanagawa-dark", overlay0VsSidebar: 6.2124, overlay0VsRow: 4.7112 },
+    { slug: "kanagawa-light", overlay0VsSidebar: 6.211, overlay0VsRow: 4.7249 },
+    { slug: "monokai-dark", overlay0VsSidebar: 7.3312, overlay0VsRow: 5.5837 },
+    { slug: "night-owl-dark", overlay0VsSidebar: 6.4931, overlay0VsRow: 4.9438 },
+    { slug: "night-owl-light", overlay0VsSidebar: 6.1724, overlay0VsRow: 4.6981 },
+    { slug: "nord-dark", overlay0VsSidebar: 6.2037, overlay0VsRow: 4.7137 },
+    { slug: "nord-light", overlay0VsSidebar: 6.2378, overlay0VsRow: 4.7216 },
+    { slug: "one-half-dark", overlay0VsSidebar: 6.2247, overlay0VsRow: 4.7031 },
+    { slug: "one-half-light", overlay0VsSidebar: 6.1969, overlay0VsRow: 4.72 },
+    { slug: "rose-pine-dark", overlay0VsSidebar: 6.5818, overlay0VsRow: 5.0134 },
+    { slug: "rose-pine-light", overlay0VsSidebar: 6.117, overlay0VsRow: 4.6584 },
+    { slug: "shades-of-purple", overlay0VsSidebar: 7.8327, overlay0VsRow: 5.9572 },
+    { slug: "solarized-dark", overlay0VsSidebar: 6.261, overlay0VsRow: 4.751 },
+    { slug: "solarized-light", overlay0VsSidebar: 6.2439, overlay0VsRow: 4.7497 },
+    { slug: "tokyo-night-dark", overlay0VsSidebar: 6.3153, overlay0VsRow: 4.7684 },
+    { slug: "tokyo-night-light", overlay0VsSidebar: 6.1793, overlay0VsRow: 4.6821 },
   ];
 
   it.each(NAMED_FIXTURES)(
