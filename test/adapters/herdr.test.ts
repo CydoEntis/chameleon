@@ -612,6 +612,10 @@ describe("herdr adapter — nearest built-in ground fallback (CHM-41)", () => {
     ["nord-light", "#e5e9f0", "tokyo-night-day", 12.08],
     ["everforest-light", "#efebd4", "gruvbox-light", 18.68],
     ["night-owl-dark", "#011627", "rose-pine", 24.21],
+    // CHM-62's three additions — none has a Herdr built-in of its own either.
+    ["jellybeans", "#121212", "vesper", 3.46],
+    ["shades-of-purple", "#1e1d40", "catppuccin", 18.03],
+    ["ayu-dark-deep", "#0b0e14", "vesper", 6.71],
   ];
 
   it.each(UNMAPPED_PACK_GROUNDS)("picks %s's nearest built-in, %s, for ground %s", (_slug, groundHex, expectedThemeName) => {

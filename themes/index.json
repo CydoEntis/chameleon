@@ -154,5 +154,23 @@
     "name": "Monokai Classic",
     "family": "Monokai",
     "appearance": "dark"
+  },
+  {
+    "slug": "jellybeans",
+    "name": "Jellybeans",
+    "family": "Jellybeans",
+    "appearance": "dark"
+  },
+  {
+    "slug": "shades-of-purple",
+    "name": "Shades Of Purple",
+    "family": "Shades Of Purple",
+    "appearance": "dark"
+  },
+  {
+    "slug": "ayu-dark-deep",
+    "name": "Ayu Dark",
+    "family": "Ayu",
+    "appearance": "dark"
   }
 ]

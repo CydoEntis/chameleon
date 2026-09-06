@@ -79,7 +79,7 @@ describe("resolveActiveRowAndText", () => {
   });
 
   // Every one of the 606 schemes vendored from mbadolato/iTerm2-Color-Schemes
-  // — not just the 26 curated packs this library ships — clears both floors
+  // — not just the 29 curated packs this library ships — clears both floors
   // at the row's own visibility target without ever reaching the retreat
   // fallback. This is CHM-33's own warning taken seriously in the other
   // direction: rather than asserting an impossibility band exists somewhere
