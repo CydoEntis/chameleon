@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   captureOriginalSnapshotIfMissing,
   readOriginalSnapshot,
@@ -80,9 +80,16 @@ beforeEach(() => {
   claudeCodeSettingsPath = path.join(scratchDir, "claude-settings.json");
   ohMyPoshProfilePath = path.join(scratchDir, "profile.ps1");
   ohMyPoshConfigPath = path.join(scratchDir, "mine.omp.json");
+  // Oh My Posh discovery prefers $POSH_CONFIG over the profile's own init
+  // line, so a real one in the environment running this suite is found
+  // instead of the fixture above — and the test then asserts against the
+  // developer's own prompt. Clear both so the profile is the only source.
+  vi.stubEnv("POSH_CONFIG", "");
+  vi.stubEnv("POSH_THEME", "");
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(scratchDir, { recursive: true, force: true });
 });
 
