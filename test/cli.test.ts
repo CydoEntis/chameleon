@@ -37,8 +37,6 @@ function sgrColorEscape(sgrBase: 38 | 48, hex: string): string {
   return `\x1b[${sgrBase};2;${red};${green};${blue}m`;
 }
 
-const SGR_REVERSE_VIDEO = "\x1b[7m";
-
 /** Every SGR escape renderPickerRow/renderPickerFrame can emit, stripped away — CHM-66's own column and width acceptance criteria are stated "measured excluding escape sequences", so every such assertion goes through this rather than counting raw characters. */
 function stripAnsiEscapes(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -376,13 +374,14 @@ function findBundledPack(slug: string): LoadedThemePack {
 
 /**
  * `count` picker entries, cycling through the real bundled packs' own
- * ground/body colours (never invented hex) but with synthetic, fixed-width
- * names — "Synthetic Theme 001", "010", "100" — so a list this large has no
- * substring collisions between one entry's name and another's. Only
- * renderPickerFrame's *layout* is under test here (gutter width, name
- * column, row width, the footer's count): none of it depends on which real
- * pack a colour came from, and the 29 bundled packs are not enough entries
- * to reach the three-digit row numbers CHM-66's alignment rule names.
+ * accent/success/error/muted colours (never invented hex) but with
+ * synthetic, fixed-width names — "Synthetic Theme 001", "010", "100" — so a
+ * list this large has no substring collisions between one entry's name and
+ * another's. Only renderPickerFrame's *layout* is under test here (gutter
+ * width, name column, row width, the footer's count): none of it depends on
+ * which real pack a colour came from, and the 29 bundled packs are not
+ * enough entries to reach the three-digit row numbers CHM-66's alignment
+ * rule names.
  */
 function buildSyntheticEntries(count: number): PickerEntry[] {
   const templates = BUNDLED_PACKS.map(toPickerEntry);
@@ -430,36 +429,68 @@ describe("formatThemeLine", () => {
   });
 });
 
-// CHM-64: the picker paints each row in that pack's own colours — its own
-// ground behind its own body — rather than the name in default text beside
-// two small swatches. CHM-66 then dropped the swatches entirely and added
-// tint's own marker column and number gutter in front of that paint. Real
+// CHM-64 painted the picker row in that pack's own ground and body. Most
+// bundled packs are dark with near-identical grounds, so that background
+// made almost every row look the same — the maintainer: "with the bg color
+// all the themes look the same imo and you don't see a difference until you
+// hover over one." CHM-69 drops the full-row paint for four dots, one per
+// chromatic role (accent, success, error, muted) — the roles that actually
+// differ between packs, as against ground and body, which do not. Real
 // bundled packs, by name, per CLAUDE.md's "colour tests use real schemes'
 // real values."
 describe("renderPickerRow", () => {
   // Solarized Dark and Catppuccin Latte are named fixtures elsewhere in this
   // project (CLAUDE.md's known-failure list, code-standards.md) precisely
   // because their own numbers are unusual — a good pair to prove the row's
-  // background and foreground are that pack's own values, not a coincidence.
+  // dots are that pack's own values, not a coincidence.
   const SAMPLE_SLUGS = ["catppuccin-dark", "solarized-dark", "solarized-light", "gruvbox-light"];
 
   /** Just enough layout for a single row on its own — a one-wide gutter and a content width equal to what that one row actually needs, so padding never enters into it. */
   function singleRowLayout(entry: PickerEntry): { gutterDigits: number; contentWidth: number } {
     const userMarker = entry.origin === "user" ? "  (user)" : "";
-    return { gutterDigits: 1, contentWidth: `  1.  ${entry.name}${userMarker}`.length };
+    return { gutterDigits: 1, contentWidth: `  1.  ● ● ● ●  ${entry.name}${userMarker}`.length };
   }
 
-  it.each(SAMPLE_SLUGS)("paints %s's row in its own ground and body, with no accent swatch", (slug) => {
+  it.each(SAMPLE_SLUGS)("paints %s's four dots in its own accent, success, error and muted, and carries no row background", (slug) => {
     const loaded = findBundledPack(slug);
     const roleHexes = loaded.pack.payloads["oh-my-posh"];
     const entry = toPickerEntry(loaded);
 
     const row = renderPickerRow(entry, { displayNumber: 1, isHighlighted: false, isApplied: false }, singleRowLayout(entry));
 
-    expect(row).toContain(sgrColorEscape(48, roleHexes.ground));
-    expect(row).toContain(sgrColorEscape(38, roleHexes.body));
-    expect(row).not.toContain(sgrColorEscape(48, roleHexes.accent));
+    expect(row).toContain(sgrColorEscape(38, roleHexes.accent));
+    expect(row).toContain(sgrColorEscape(38, roleHexes.success));
+    expect(row).toContain(sgrColorEscape(38, roleHexes.error));
+    expect(row).toContain(sgrColorEscape(38, roleHexes.muted));
+    expect(row).not.toMatch(/\x1b\[48;/); // no SGR background code anywhere in the row
     expect(row).toContain(loaded.pack.manifest.name);
+  });
+
+  // The acceptance criterion, directly: Catppuccin Mocha and Dracula are two
+  // of the near-identical dark grounds this ticket names (#1e1e2e, #282a36)
+  // — a row background could never have told them apart, which is the whole
+  // reason it is gone. Their dots must still differ.
+  it("tells two dark packs with near-identical grounds apart by their dots alone", () => {
+    const catppuccinMocha = findBundledPack("catppuccin-dark");
+    const dracula = findBundledPack("dracula-dark");
+    const catppuccinGroundHex = catppuccinMocha.pack.payloads["oh-my-posh"].ground;
+    const draculaGroundHex = dracula.pack.payloads["oh-my-posh"].ground;
+
+    // The premise: these two grounds really are near-identical dark greys.
+    expect(relativeLuminance(catppuccinGroundHex)).toBeLessThan(0.03);
+    expect(relativeLuminance(draculaGroundHex)).toBeLessThan(0.03);
+
+    const catppuccinEntry = toPickerEntry(catppuccinMocha);
+    const draculaEntry = toPickerEntry(dracula);
+    const position = { displayNumber: 1, isHighlighted: false, isApplied: false };
+    const catppuccinRow = renderPickerRow(catppuccinEntry, position, singleRowLayout(catppuccinEntry));
+    const draculaRow = renderPickerRow(draculaEntry, position, singleRowLayout(draculaEntry));
+
+    expect(catppuccinEntry.accentHex).not.toBe(draculaEntry.accentHex);
+    expect(catppuccinEntry.successHex).not.toBe(draculaEntry.successHex);
+    expect(catppuccinEntry.errorHex).not.toBe(draculaEntry.errorHex);
+    expect(catppuccinEntry.mutedHex).not.toBe(draculaEntry.mutedHex);
+    expect(catppuccinRow).not.toBe(draculaRow);
   });
 
   it("marks a user pack, and only a user pack, the same way formatThemeLine does", () => {
@@ -472,80 +503,54 @@ describe("renderPickerRow", () => {
     expect(renderPickerRow(bundledEntry, position, singleRowLayout(bundledEntry))).not.toContain("(user)");
   });
 
-  // The acceptance criterion, directly: with every row now painted in its
-  // own pack's colours, the highlighted row can no longer be marked with a
-  // fixed background tint — some pack's own ground would match it and the
-  // highlight would vanish. Reverse video (SGR 7) swaps whatever foreground
-  // and background are already set, so it never depends on what those
-  // values are. Proved on every bundled pack, including the lightest and
-  // the darkest by measured ground luminance — not just a couple of named
-  // samples — because "vanishes on some theme" is exactly the failure mode
-  // a sample could miss.
+  // CHM-69: with no row background left for a fixed highlight colour to
+  // vanish into, the highlight goes back to something simpler than CHM-64's
+  // reverse video — a plain bold, proved on every bundled pack, not just a
+  // couple of named samples, since it must read the same regardless of
+  // which pack's own colours that row's dots carry.
   describe("the highlighted-row marker", () => {
     const allEntries = BUNDLED_PACKS.map(toPickerEntry);
-    const byGroundLuminance = [...allEntries].sort(
-      (entryA, entryB) => relativeLuminance(entryA.groundHex) - relativeLuminance(entryB.groundHex),
-    );
-    const darkestEntry = byGroundLuminance[0]!;
-    const lightestEntry = byGroundLuminance[byGroundLuminance.length - 1]!;
+    const SGR_BOLD = "\x1b[1m";
 
-    it("covers all 29 bundled packs, the darkest and lightest included", () => {
+    it("covers all 29 bundled packs", () => {
       expect(allEntries.length).toBe(29);
     });
 
-    it("is present on the darkest pack's ground", () => {
-      const row = renderPickerRow(darkestEntry, { displayNumber: 1, isHighlighted: true, isApplied: false }, singleRowLayout(darkestEntry));
-      expect(row).toContain(SGR_REVERSE_VIDEO);
-    });
-
-    it("is present on the lightest pack's ground", () => {
-      const row = renderPickerRow(lightestEntry, { displayNumber: 1, isHighlighted: true, isApplied: false }, singleRowLayout(lightestEntry));
-      expect(row).toContain(SGR_REVERSE_VIDEO);
-    });
-
-    it.each(allEntries)("marks $name highlighted, and only when highlighted", (entry) => {
+    it.each(allEntries)("bolds $name's row when highlighted, and only when highlighted", (entry) => {
       const layout = singleRowLayout(entry);
-      expect(renderPickerRow(entry, { displayNumber: 1, isHighlighted: true, isApplied: false }, layout)).toContain(SGR_REVERSE_VIDEO);
-      expect(renderPickerRow(entry, { displayNumber: 1, isHighlighted: false, isApplied: false }, layout)).not.toContain(
-        SGR_REVERSE_VIDEO,
-      );
+      expect(renderPickerRow(entry, { displayNumber: 1, isHighlighted: true, isApplied: false }, layout)).toContain(SGR_BOLD);
+      expect(renderPickerRow(entry, { displayNumber: 1, isHighlighted: false, isApplied: false }, layout)).not.toContain(SGR_BOLD);
     });
   });
 
-  // CHM-66: the highlighted and applied markers sit outside a row's own SGR
-  // paint entirely (see renderPickerRow), specifically so they read on any
-  // pack's own colours rather than depending on them — proved on the same
-  // darkest/lightest pair the reverse-video highlight is proved against
-  // above, by name.
+  // CHM-66: the highlighted and applied markers sit outside a row's own
+  // paint entirely (see renderPickerRow), specifically so they read
+  // regardless of a pack's own colours.
   describe("the highlighted and applied markers", () => {
-    const allEntries = BUNDLED_PACKS.map(toPickerEntry);
-    const byGroundLuminance = [...allEntries].sort(
-      (entryA, entryB) => relativeLuminance(entryA.groundHex) - relativeLuminance(entryB.groundHex),
-    );
-    const darkestEntry = byGroundLuminance[0]!;
-    const lightestEntry = byGroundLuminance[byGroundLuminance.length - 1]!;
+    const catppuccinEntry = toPickerEntry(findBundledPack("catppuccin-dark"));
+    const solarizedLightEntry = toPickerEntry(findBundledPack("solarized-light"));
     const NAMED_PACKS = [
-      ["darkest", darkestEntry] as const,
-      ["lightest", lightestEntry] as const,
+      ["Catppuccin Mocha", catppuccinEntry] as const,
+      ["Solarized Light", solarizedLightEntry] as const,
     ];
 
-    it.each(NAMED_PACKS)("shows '>' for the highlighted row on the %s bundled pack", (_label, entry) => {
+    it.each(NAMED_PACKS)("shows '>' for the highlighted row on %s", (_label, entry) => {
       const row = renderPickerRow(entry, { displayNumber: 1, isHighlighted: true, isApplied: false }, singleRowLayout(entry));
       expect(stripAnsiEscapes(row).startsWith(">")).toBe(true);
     });
 
-    it.each(NAMED_PACKS)("shows '*' for the applied row on the %s bundled pack, when it is not also highlighted", (_label, entry) => {
+    it.each(NAMED_PACKS)("shows '*' for the applied row on %s, when it is not also highlighted", (_label, entry) => {
       const row = renderPickerRow(entry, { displayNumber: 1, isHighlighted: false, isApplied: true }, singleRowLayout(entry));
       expect(stripAnsiEscapes(row).startsWith("*")).toBe(true);
     });
 
     it("leaves the marker blank for a row that is neither highlighted nor applied", () => {
-      const row = renderPickerRow(lightestEntry, { displayNumber: 1, isHighlighted: false, isApplied: false }, singleRowLayout(lightestEntry));
+      const row = renderPickerRow(solarizedLightEntry, { displayNumber: 1, isHighlighted: false, isApplied: false }, singleRowLayout(solarizedLightEntry));
       expect(stripAnsiEscapes(row).startsWith(" ")).toBe(true);
     });
 
     it("prefers the highlighted marker when the cursor sits on the applied row", () => {
-      const row = renderPickerRow(lightestEntry, { displayNumber: 1, isHighlighted: true, isApplied: true }, singleRowLayout(lightestEntry));
+      const row = renderPickerRow(solarizedLightEntry, { displayNumber: 1, isHighlighted: true, isApplied: true }, singleRowLayout(solarizedLightEntry));
       expect(stripAnsiEscapes(row).startsWith(">")).toBe(true);
     });
   });
@@ -553,13 +558,14 @@ describe("renderPickerRow", () => {
 
 // CHM-52 set the bar this ticket must not cross back over: per-row work is
 // string concatenation over values every pack already carries, so it should
-// be free — this asserts that rather than assuming it. CHM-66 adds a gutter
-// and a fixed-width pad on top, so the same budget is re-asserted here
-// rather than assumed to still hold.
+// be free — this asserts that rather than assuming it. CHM-66 added a gutter
+// and a fixed-width pad on top; CHM-69 adds four painted dots on top of
+// that, so the same budget is re-asserted here rather than assumed to still
+// hold.
 describe("the picker's per-row render cost", () => {
   it("renders every bundled pack's row, highlighted and not, in well under 30ms total", () => {
     const entries = BUNDLED_PACKS.map(toPickerEntry);
-    const layout = { gutterDigits: 2, contentWidth: 60 };
+    const layout = { gutterDigits: 2, contentWidth: 90 };
 
     const startedAtMs = performance.now();
     for (const [index, entry] of entries.entries()) {
