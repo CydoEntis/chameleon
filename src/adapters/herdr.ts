@@ -6,7 +6,7 @@ import { ROLES, type Role } from "../constants.js";
 import { mix, rgbDistance } from "../palette/color.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import { resolveSelectionAndBody } from "../palette/selection.js";
-import { ACTIVE_ROW_IDEAL_FRACTION, resolveActiveRowAndText } from "../palette/surfaces.js";
+import { ACTIVE_ROW_IDEAL_FRACTION, repairOverlay0, resolveActiveRowAndText } from "../palette/surfaces.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
 import { herdrConfigPath } from "./platform.js";
@@ -282,12 +282,22 @@ function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, stri
  * Fractions of the way from ground to body (see mix in palette/color.ts)
  * that make up Herdr's neutral surface scale — its token names borrow
  * Catppuccin's, running from nearest ground to nearest body. Evenly spaced
- * rather than tuned per theme: these tokens never carry text, so the scale
- * only needs to read as a ramp, not clear any particular contrast ratio.
- * `SURFACE_0_FRACTION` is the one exception — it is also active_row_bg's own
- * ideal fraction (see ACTIVE_ROW_IDEAL_FRACTION), since a selected row is
- * meant to read as this same raised tone, not a colour of its own, so it is
- * sourced from palette/surfaces.ts rather than redeclared here.
+ * rather than tuned per theme, except where a token actually carries text.
+ * Herdr's own docs describe all five with the same generic "override the
+ * token" line, so what each one paints was established by probe, not by
+ * reading: setting all five to distinct loud colours and reloading (CHM-78)
+ * showed overlay0 painting both the sidebar's own section headers and every
+ * agent row's subtitle line — read text, not a ramp step — while surface_dim
+ * painted only the separator rule and surface0, surface1 and overlay1
+ * appeared nowhere in the sidebar at all. Only overlay0 is therefore
+ * repaired, in surfaceScale below, rather than taken from the plain ramp —
+ * see repairOverlay0 in palette/surfaces.ts.
+ *
+ * `SURFACE_0_FRACTION` is the one exception among the four plain ones — it is
+ * also active_row_bg's own ideal fraction (see ACTIVE_ROW_IDEAL_FRACTION),
+ * since a selected row is meant to read as this same raised tone, not a
+ * colour of its own, so it is sourced from palette/surfaces.ts rather than
+ * redeclared here.
  */
 const SURFACE_DIM_FRACTION = 1 / 6;
 const SURFACE_0_FRACTION = ACTIVE_ROW_IDEAL_FRACTION;
@@ -295,13 +305,19 @@ const SURFACE_1_FRACTION = 3 / 6;
 const OVERLAY_0_FRACTION = 4 / 6;
 const OVERLAY_1_FRACTION = 5 / 6;
 
-/** Herdr's neutral surface scale, walking from ground toward body — see SURFACE_DIM_FRACTION and friends. */
-function surfaceScale(groundHex: string, bodyHex: string): Record<string, string> {
+/**
+ * Herdr's neutral surface scale, walking from ground toward body — see
+ * SURFACE_DIM_FRACTION and friends. `activeRowBackgroundHex` is
+ * `resolveActiveRowAndText`'s own settled row (CHM-50) — overlay0's subtitle
+ * line renders on both an ordinary sidebar row (`groundHex`) and a selected
+ * one, so its repair, like text and subtext0's own, has to answer to both.
+ */
+function surfaceScale(groundHex: string, bodyHex: string, activeRowBackgroundHex: string): Record<string, string> {
   return {
     surface_dim: mix(groundHex, bodyHex, SURFACE_DIM_FRACTION),
     surface0: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
     surface1: mix(groundHex, bodyHex, SURFACE_1_FRACTION),
-    overlay0: mix(groundHex, bodyHex, OVERLAY_0_FRACTION),
+    overlay0: repairOverlay0(mix(groundHex, bodyHex, OVERLAY_0_FRACTION), groundHex, activeRowBackgroundHex),
     overlay1: mix(groundHex, bodyHex, OVERLAY_1_FRACTION),
   };
 }
@@ -330,7 +346,7 @@ function structuralTokenValues(groundHex: string, activeRowBackgroundHex: string
     panel_bg: groundHex,
     active_row_bg: activeRowBackgroundHex,
     selection_bg: selectionHex,
-    ...surfaceScale(groundHex, bodyHex),
+    ...surfaceScale(groundHex, bodyHex, activeRowBackgroundHex),
   };
 }
 

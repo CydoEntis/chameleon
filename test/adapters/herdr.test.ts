@@ -923,6 +923,108 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CH
   });
 });
 
+// CHM-78: CHM-75 raised subtext0's own floor against active_row_bg, on the
+// theory that it was the token carrying the agent's own title and provider
+// on a selected row. Probing Herdr directly (setting surface_dim, surface0,
+// surface1, overlay0 and overlay1 to five distinct loud colours and
+// reloading — see this ticket's own body and repairOverlay0 in
+// palette/surfaces.ts) showed that surface never reads subtext0 at all:
+// overlay0 paints both the sidebar's own section headers and every agent
+// row's subtitle line, subtext0 renders nowhere in the sidebar, and
+// surface_dim, surface0, surface1 and overlay1 carry no text either. These
+// tests pin overlay0's own fix directly, the same shape as the CHM-50/CHM-75
+// suite above but for the token Herdr actually paints text with.
+describe("herdr adapter — overlay0 vs sidebar and active row (CHM-78)", () => {
+  interface Overlay0Tokens {
+    readonly sidebarBg: string;
+    readonly activeRowBg: string;
+    readonly overlay0: string;
+  }
+
+  function overlay0TokensFor(slug: string): Overlay0Tokens {
+    const packs = loadCuratedThemePacks();
+    const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+    if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+    const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-overlay0-"));
+    const configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+    try {
+      createHerdrAdapter(configPath).apply(pack.payloads["windows-terminal"], pack.manifest.slug);
+      const customTokens = createHerdrAdapter(configPath).read().theme.custom;
+      const sidebarBg = customTokens["sidebar_bg"];
+      const activeRowBg = customTokens["active_row_bg"];
+      const overlay0 = customTokens["overlay0"];
+      if (!sidebarBg || !activeRowBg || !overlay0) {
+        throw new Error(`"${slug}" wrote no sidebar_bg/active_row_bg/overlay0 tokens`);
+      }
+      return { sidebarBg, activeRowBg, overlay0 };
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  }
+
+  it("clears TEXT_MIN_RATIO against both sidebar_bg and active_row_bg, for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const { sidebarBg, activeRowBg, overlay0 } = overlay0TokensFor(pack.manifest.slug);
+      expect(contrastRatio(overlay0, sidebarBg), `${pack.manifest.slug}: overlay0-vs-sidebar`).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+      expect(contrastRatio(overlay0, activeRowBg), `${pack.manifest.slug}: overlay0-vs-row`).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    }
+  });
+
+  // Every bundled pack's own exact numbers — pinned the same way the
+  // CHM-50/CHM-75 suite above pins text-on-row and subtext0-on-row, so a
+  // future change that narrows coverage back down, for any one pack, shows
+  // up as a specific number moving rather than a boolean flipping. Unlike
+  // subtext0-on-row, no bundled pack falls short of TEXT_MIN_RATIO here —
+  // overlay0's own repair has ground and body's full distance to work with,
+  // never body's own narrower headroom over TEXT_MIN_RATIO.
+  const NAMED_FIXTURES = [
+    { slug: "ayu-dark-deep", overlay0VsSidebar: 9.822, overlay0VsRow: 4.676 },
+    { slug: "ayu-dark", overlay0VsSidebar: 9.9247, overlay0VsRow: 4.7069 },
+    { slug: "ayu-light", overlay0VsSidebar: 10.0717, overlay0VsRow: 4.7742 },
+    { slug: "catppuccin-dark", overlay0VsSidebar: 9.9763, overlay0VsRow: 4.7505 },
+    { slug: "catppuccin-light", overlay0VsSidebar: 10.0725, overlay0VsRow: 4.7701 },
+    { slug: "dracula-dark", overlay0VsSidebar: 9.9911, overlay0VsRow: 4.7565 },
+    { slug: "everforest-dark", overlay0VsSidebar: 10.1247, overlay0VsRow: 4.7679 },
+    { slug: "everforest-light", overlay0VsSidebar: 9.8943, overlay0VsRow: 4.6831 },
+    { slug: "github-dark", overlay0VsSidebar: 10.6457, overlay0VsRow: 4.7084 },
+    { slug: "github-light", overlay0VsSidebar: 9.9122, overlay0VsRow: 4.7129 },
+    { slug: "gruvbox-dark", overlay0VsSidebar: 9.9101, overlay0VsRow: 4.7028 },
+    { slug: "gruvbox-light", overlay0VsSidebar: 9.9688, overlay0VsRow: 4.7443 },
+    { slug: "jellybeans", overlay0VsSidebar: 10.079, overlay0VsRow: 4.7681 },
+    { slug: "kanagawa-dark", overlay0VsSidebar: 10.0209, overlay0VsRow: 4.764 },
+    { slug: "kanagawa-light", overlay0VsSidebar: 9.9065, overlay0VsRow: 4.6969 },
+    { slug: "monokai-dark", overlay0VsSidebar: 10.1284, overlay0VsRow: 4.7713 },
+    { slug: "night-owl-dark", overlay0VsSidebar: 9.8313, overlay0VsRow: 4.6809 },
+    { slug: "night-owl-light", overlay0VsSidebar: 9.8552, overlay0VsRow: 4.6901 },
+    { slug: "nord-dark", overlay0VsSidebar: 9.9669, overlay0VsRow: 4.7437 },
+    { slug: "nord-light", overlay0VsSidebar: 9.7955, overlay0VsRow: 4.6606 },
+    { slug: "one-half-dark", overlay0VsSidebar: 9.9957, overlay0VsRow: 4.7233 },
+    { slug: "one-half-light", overlay0VsSidebar: 9.9079, overlay0VsRow: 4.7151 },
+    { slug: "rose-pine-dark", overlay0VsSidebar: 10.0046, overlay0VsRow: 4.743 },
+    { slug: "rose-pine-light", overlay0VsSidebar: 9.9349, overlay0VsRow: 4.6939 },
+    { slug: "shades-of-purple", overlay0VsSidebar: 10.5191, overlay0VsRow: 4.7599 },
+    { slug: "solarized-dark", overlay0VsSidebar: 9.8692, overlay0VsRow: 4.6786 },
+    { slug: "solarized-light", overlay0VsSidebar: 9.8248, overlay0VsRow: 4.6746 },
+    { slug: "tokyo-night-dark", overlay0VsSidebar: 10.0167, overlay0VsRow: 4.7377 },
+    { slug: "tokyo-night-light", overlay0VsSidebar: 10.0621, overlay0VsRow: 4.7611 },
+  ];
+
+  it.each(NAMED_FIXTURES)(
+    "$slug: overlay0-vs-sidebar $overlay0VsSidebar, overlay0-vs-row $overlay0VsRow",
+    ({ slug, overlay0VsSidebar, overlay0VsRow }) => {
+      const { sidebarBg, activeRowBg, overlay0 } = overlay0TokensFor(slug);
+
+      expect(contrastRatio(overlay0, sidebarBg)).toBeCloseTo(overlay0VsSidebar, 3);
+      expect(contrastRatio(overlay0, activeRowBg)).toBeCloseTo(overlay0VsRow, 3);
+    },
+  );
+});
+
 // CHM-22: Chameleon's marked block wrote `text` and `subtext0` a second time
 // even when the user already had them further down [theme.custom]. TOML
 // forbids a duplicate key in a table, so Herdr rejected the whole file and
