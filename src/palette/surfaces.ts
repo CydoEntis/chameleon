@@ -34,6 +34,25 @@
  * room for both, the same "maximise, never demand" shape CHM-30 already
  * uses for the selection highlight.
  *
+ * CHM-80 found that CHM-75's own fix was still satisfying
+ * ACTIVE_ROW_MIN_VISIBLE_RATIO the expensive way: resolveActiveRowBackground
+ * held the row as close to `idealFraction` (and therefore as visible) as
+ * subtext0's own readability would tolerate, on the assumption that a more
+ * visible row was always the better outcome short of that hard limit. It is
+ * not. monokai-dark's row settled at 2.12 against ground, a mid grey
+ * (#585a52), and subtext0 then had to be dragged to 4.63 to read against it
+ * at all — legal, and the least readable text on screen, because a mid grey
+ * and a colour dragged toward body both sit in the light half of the scale
+ * with almost no separation left between them. The row is a band spanning
+ * the full sidebar width; a reader tells it apart by its edges, not by its
+ * own luminance against ground, so it needs far less separation than that
+ * reasoning assumed (see ACTIVE_ROW_MIN_VISIBLE_RATIO's own doc comment).
+ * CHM-80 both lowers that floor and inverts the search: the row now takes
+ * the smallest fraction that clears it, never the largest subtext0 happens
+ * to permit — which turns out to also be the fraction friendliest to
+ * subtext0's own readability, so the two were never actually in tension
+ * (see resolveActiveRowBackground's own doc comment).
+ *
  * Order follows from that: subtext0 is repaired against sidebar_bg and
  * every other surface the caller enumerates (e.g. Herdr's panel_bg and
  * selection_bg) via repairForegroundAgainstBackgrounds (CHM-40) *before*
@@ -82,10 +101,13 @@ export interface ResolvedActiveRowBackground {
  * floor at or below that is always reachable, so this bisection never runs
  * out of room the way a role's own hue-preserving repair occasionally does.
  *
- * `lowFraction` is `idealFraction` when called from the "push further from
- * ground" branch below, and 0 when called to find the absolute lowest
- * fraction visibility allows at all — see
- * fractionClearingMutedReadability's own bound.
+ * `lowFraction` is `idealFraction` when the ideal blend itself already
+ * falls short of the floor (nothing below it would fare any better, since
+ * this same monotonicity means contrast only rises as fraction rises), and
+ * 0 when the ideal blend is visible but the row still needs to retreat
+ * toward ground for a different reason (CHM-80's own "smallest lift" case —
+ * see resolveActiveRowBackground) — either way this returns the smallest
+ * fraction, at or above `lowFraction`, that clears the floor at all.
  */
 function fractionClearingVisibilityFloor(groundHex: string, bodyHex: string, lowFraction: number, minRatio: number): number {
   let low = lowFraction;
@@ -102,53 +124,41 @@ function fractionClearingVisibilityFloor(groundHex: string, bodyHex: string, low
 }
 
 /**
- * The largest fraction, within [`lowFraction`, `highFraction`], whose
- * ground/body mix still lets `mutedHex` clear `minRatio` against it — the
- * mirror image of fractionClearingVisibilityFloor's own search. Muted's own
- * resolved value sits far closer to body than any fraction this range
- * reaches (repairMuted, in repair.ts, aims it near body's own ratio), so as
- * the row's fraction rises from `lowFraction` toward `highFraction` it moves
- * *toward* muted's own luminance rather than away from it, and contrast
- * against it falls monotonically over exactly this range — the opposite
- * direction from the row-vs-ground search above. Callers only reach this
- * once they already know `highFraction` itself fails to clear `minRatio`
- * (CHM-75's whole reason to search at all) and `lowFraction` still does, so
- * the loop's invariant — `low` always clears the floor, `high` never does —
- * holds from the first iteration.
- */
-function fractionClearingMutedReadability(groundHex: string, bodyHex: string, mutedHex: string, lowFraction: number, highFraction: number, minRatio: number): number {
-  let low = lowFraction;
-  let high = highFraction;
-  for (let iteration = 0; iteration < SEARCH_ITERATIONS; iteration += 1) {
-    const midFraction = (low + high) / 2;
-    if (contrastRatio(mutedHex, mix(groundHex, bodyHex, midFraction)) < minRatio) {
-      high = midFraction;
-    } else {
-      low = midFraction;
-    }
-  }
-  return low;
-}
-
-/**
- * Resolves the selected row's own background against two floors at once:
+ * Resolves the selected row's own background against two floors:
  * ACTIVE_ROW_MIN_VISIBLE_RATIO against ground (CHM-50, a hard floor, never
  * traded away) and TEXT_MIN_RATIO for `mutedHex` — subtext0, already
  * repaired against every other surface by the caller — once it renders on
- * top of the row (CHM-75). `mix(groundHex, bodyHex, idealFraction)`
- * unchanged when it already clears both; otherwise the least extreme move
- * off `idealFraction` that clears whichever it does not, the same "nearest
- * colour that still gets there" shape resolveSelectionAndBody already uses
- * for the selection highlight:
+ * top of the row (CHM-75).
  *
- * - Ideal fails row-vs-ground: push further from ground (see
- *   fractionClearingVisibilityFloor) — visibility is the hard floor, so this
- *   never looks back at muted's own readability once it fires.
- * - Ideal clears row-vs-ground but muted cannot be read against it: fall
- *   fraction back toward ground instead (see fractionClearingMutedReadability),
- *   bounded below by the same visibility floor computed from 0 rather than
- *   from `idealFraction`, so readability is never bought by giving up
- *   visibility either.
+ * CHM-80 changes which of those two drives the search when they conflict.
+ * Before this fix, a pack whose ideal blend already cleared visibility but
+ * left muted unreadable retreated toward ground only as far as muted's own
+ * readability demanded, holding the row as close to `idealFraction` — and
+ * so as visible — as it could: row visibility was being maximised, text
+ * legibility only the constraint. That is backwards (see
+ * ACTIVE_ROW_MIN_VISIBLE_RATIO's own doc comment for why a band read by its
+ * edges needs far less separation from ground than a small glyph does), so
+ * the row now takes the smallest fraction that clears
+ * ACTIVE_ROW_MIN_VISIBLE_RATIO and nothing more. This never trades muted's
+ * readability away to get there — quite the opposite. Muted's own resolved
+ * luminance sits close to body's (CHM-75's own finding), so contrast
+ * between muted and the row falls monotonically as the row's own fraction
+ * rises from ground toward body (the mirror image of
+ * fractionClearingVisibilityFloor's own row-vs-ground monotonicity). The
+ * smallest fraction clearing visibility is therefore also the fraction
+ * that leaves muted the most contrast any fraction in range could give it:
+ * there is no second, competing search to run here any more, only the one.
+ *
+ * `mix(groundHex, bodyHex, idealFraction)` ships unchanged when it already
+ * clears both floors with margin — no conflict to resolve, so the row keeps
+ * reading as the same raised tone as Herdr's own surface0 (see
+ * ACTIVE_ROW_IDEAL_FRACTION). Otherwise the row moves to the smallest
+ * fraction that clears ACTIVE_ROW_MIN_VISIBLE_RATIO: searched upward from
+ * `idealFraction` when the ideal blend itself falls short of the floor
+ * (nothing below `idealFraction` would fare any better — see
+ * fractionClearingVisibilityFloor's own doc comment), or searched upward
+ * from ground itself when the ideal blend is already visible enough but
+ * muted cannot be read against it.
  *
  * The result is always a blend of this theme's own ground and body, so it
  * reads as the theme's own colours either way, never a synthesised grey
@@ -164,13 +174,14 @@ export function resolveActiveRowBackground(groundHex: string, bodyHex: string, m
     return { hex: idealHex, wasRepaired: false };
   }
 
-  if (!isIdealVisible) {
-    const fraction = fractionClearingVisibilityFloor(groundHex, bodyHex, idealFraction, minAcceptableVisibilityRatio);
-    return { hex: mix(groundHex, bodyHex, fraction), wasRepaired: true };
-  }
-
-  const lowestVisibleFraction = fractionClearingVisibilityFloor(groundHex, bodyHex, 0, minAcceptableVisibilityRatio);
-  const fraction = fractionClearingMutedReadability(groundHex, bodyHex, mutedHex, lowestVisibleFraction, idealFraction, minAcceptableReadabilityRatio);
+  // The smallest lift that clears visibility, not the largest muted's own
+  // readability happens to permit (CHM-80): searched up from `idealFraction`
+  // when the ideal blend itself is not visible enough, since nothing below
+  // it would be either; searched up from ground itself when the ideal blend
+  // is visible but muted cannot be read against it, since a smaller
+  // fraction can only ever help muted, never hurt it.
+  const lowFraction = isIdealVisible ? 0 : idealFraction;
+  const fraction = fractionClearingVisibilityFloor(groundHex, bodyHex, lowFraction, minAcceptableVisibilityRatio);
   return { hex: mix(groundHex, bodyHex, fraction), wasRepaired: true };
 }
 
