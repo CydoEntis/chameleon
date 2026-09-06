@@ -758,6 +758,13 @@ describe("USAGE", () => {
     expect(USAGE).toContain("chm themes --list");
     expect(USAGE).toContain("chm pick");
   });
+
+  // CHM-71: `chm original` is the new, wider undo — every surface back to
+  // before Chameleon's first apply, not just the most recent theme.
+  it("names `chm original` alongside `chm undo`, distinguishing the two", () => {
+    expect(USAGE).toContain("chm undo");
+    expect(USAGE).toContain("chm original");
+  });
 });
 
 // CHM-44: `chm themes` opens the picker, but only when both streams are a
