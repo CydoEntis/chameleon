@@ -796,7 +796,7 @@ interface SegmentForegroundRepairResult {
  * a block type that model does not parse (e.g. "rprompt") still survives an
  * apply.
  */
-function repairSegmentForegrounds(rawBlocks: readonly unknown[], paletteTable: Readonly<Record<string, string>>): SegmentForegroundRepairResult {
+export function repairSegmentForegrounds(rawBlocks: readonly unknown[], paletteTable: Readonly<Record<string, string>>): SegmentForegroundRepairResult {
   const normalizedBlocks = rawBlocks.map(withGeneratedBlockForegroundsNormalized);
 
   const signaturesByForegroundKey = new Map<string, Map<string, readonly string[]>>();

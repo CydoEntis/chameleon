@@ -6,7 +6,7 @@ import { ROLES, type Role } from "../constants.js";
 import { mix, rgbDistance } from "../palette/color.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import { resolveSelectionAndBody } from "../palette/selection.js";
-import { ACTIVE_ROW_IDEAL_FRACTION, repairOverlay0, resolveActiveRowAndText } from "../palette/surfaces.js";
+import { ACTIVE_ROW_IDEAL_FRACTION, OVERLAY_0_FRACTION, repairOverlay0, resolveActiveRowAndText, resolveHerdrBadgeTokens } from "../palette/surfaces.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
 import { herdrConfigPath } from "./platform.js";
@@ -214,7 +214,7 @@ function herdrThemeNameFor(slug: string, groundHex: string): string {
  * (established by probing `herdr config check` — see CHM-28's ticket body);
  * the remaining 13 have no Chameleon role to key off and are derived
  * directly from the scheme instead — see structuralTokenValues and
- * extraAccentTokenValues below.
+ * palette/surfaces.ts's resolveHerdrBadgeTokens.
  */
 const ROLE_TO_HERDR_TOKEN: Readonly<Record<Role, string>> = {
   ground: "sidebar_bg",
@@ -297,12 +297,14 @@ function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, stri
  * also active_row_bg's own ideal fraction (see ACTIVE_ROW_IDEAL_FRACTION),
  * since a selected row is meant to read as this same raised tone, not a
  * colour of its own, so it is sourced from palette/surfaces.ts rather than
- * redeclared here.
+ * redeclared here. `OVERLAY_0_FRACTION` is sourced from there too (CHM-79) —
+ * theme-pack.ts's build-time contrast gate needs the exact same pre-repair
+ * candidate this file mixes, or the gate could pass a value this adapter
+ * never actually ships.
  */
 const SURFACE_DIM_FRACTION = 1 / 6;
 const SURFACE_0_FRACTION = ACTIVE_ROW_IDEAL_FRACTION;
 const SURFACE_1_FRACTION = 3 / 6;
-const OVERLAY_0_FRACTION = 4 / 6;
 const OVERLAY_1_FRACTION = 5 / 6;
 
 /**
@@ -347,27 +349,6 @@ function structuralTokenValues(groundHex: string, activeRowBackgroundHex: string
     active_row_bg: activeRowBackgroundHex,
     selection_bg: selectionHex,
     ...surfaceScale(groundHex, bodyHex, activeRowBackgroundHex),
-  };
-}
-
-/**
- * Herdr's four extra accent tokens beyond Chameleon's own accent/success/
- * error roles, drawn straight from the scheme's own base ANSI slots — the
- * same slots role assignment measures from (see BASE_COLOR_SLOTS in
- * palette/roles.ts) but taken at face value here, the way ground and body
- * already are. These are supplementary swatches Herdr paints labels and
- * badges with, not text that must clear a contrast floor.
- *
- * No ANSI slot is orange, so `peach` is approximated as the midpoint
- * between the two slots that bracket it on the colour wheel.
- */
-function extraAccentTokenValues(scheme: Scheme): Record<string, string> {
-  return {
-    blue: scheme.blue,
-    teal: scheme.cyan,
-    mauve: scheme.purple,
-    yellow: scheme.yellow,
-    peach: mix(scheme.red, scheme.yellow, 0.5),
   };
 }
 
@@ -646,11 +627,12 @@ function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenV
  * Every [theme.custom] token value Chameleon writes: the six roles under
  * Herdr's own token names (see ROLE_TO_HERDR_TOKEN), the resolved selection
  * highlight (see structuralTokenValues), plus the structural and
- * extra-accent tokens derived straight from `scheme` and `colorTable`'s
- * ground/body — see structuralTokenValues and extraAccentTokenValues. Every
- * key is asserted against HERDR_ACCEPTED_CUSTOM_TOKENS before it reaches the
- * config, so a future addition that invents a token fails immediately
- * instead of shipping a key Herdr silently ignores (CHM-21).
+ * badge-swatch tokens derived straight from `scheme` and `colorTable`'s
+ * ground/body — see structuralTokenValues and palette/surfaces.ts's
+ * resolveHerdrBadgeTokens. Every key is asserted against
+ * HERDR_ACCEPTED_CUSTOM_TOKENS before it reaches the config, so a future
+ * addition that invents a token fails immediately instead of shipping a key
+ * Herdr silently ignores (CHM-21).
  */
 function customTokenValues(
   scheme: Scheme,
@@ -661,7 +643,7 @@ function customTokenValues(
   const tokenValues = {
     ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
     ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, selectionHex),
-    ...extraAccentTokenValues(scheme),
+    ...resolveHerdrBadgeTokens(scheme),
   };
   assertOnlyAcceptedHerdrTokens(tokenValues);
   return tokenValues;
