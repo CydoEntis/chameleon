@@ -100,6 +100,20 @@ function formatNerdFontLine(nerdFont: DoctorNerdFontCheck): string {
   return `nerd font: installed and selected (${nerdFont.selectedFontFace})`;
 }
 
+/**
+ * `chm doctor`'s Claude Code row grows one more line naming the restart it
+ * needs — undefined, so the row prints nothing extra, when Claude Code is not
+ * installed. An apply already says this (see reloadClaudeCode), but doctor is
+ * what someone runs when a theme looks wrong, and a running session holding a
+ * stale theme is the single most common reason for that (CHM-65). Whether a
+ * session is actually running is never checked — the note is unconditional,
+ * same as an apply's own — see CHM-65's "Out of scope."
+ */
+export function formatClaudeCodeRestartNote(isInstalled: boolean): string | undefined {
+  if (!isInstalled) return undefined;
+  return "  restart Claude Code to pick up a theme change — it reads its theme once, at startup";
+}
+
 /** Comma-joined target names, for a drift report — shared by `chm doctor` and `chm current`, see matchesVerbFor. */
 function formatDriftedTargets(driftedTargets: readonly Target[]): string {
   return driftedTargets.join(", ");
@@ -188,6 +202,10 @@ function runDoctor(): number {
     }
     if (check.target === "claude-code" && check.isInstalled && report.claudeCodeTheme) {
       process.stdout.write(`  theme: ${report.claudeCodeTheme}\n`);
+    }
+    if (check.target === "claude-code") {
+      const restartNote = formatClaudeCodeRestartNote(check.isInstalled);
+      if (restartNote) process.stdout.write(`${restartNote}\n`);
     }
   }
 
