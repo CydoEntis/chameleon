@@ -19,16 +19,24 @@
  * luminance hit the ratio above — legal, since WCAG contrast is a function
  * of luminance alone, but it meant 25 of the 26 bundled packs shipped a
  * selection with essentially zero chroma, and Solarized Dark's search
- * landed on pure black. The search now tints ground's own hue instead (see
- * groundTintedAtLuminance), at a chroma related to ground's own but clamped
- * between SELECTION_MIN_CHROMA and SELECTION_MAX_CHROMA — the achieved
- * ratio matches what a grey would reach whenever that clamped chroma still
- * leaves the target luminance reachable, which is the case for all 26
- * bundled packs (see theme-pack.test.ts).
+ * landed on pure black. That fix tinted ground's own hue instead, at a
+ * chroma clamped to a narrow band (SELECTION_MIN_CHROMA/
+ * SELECTION_MAX_CHROMA) — legible over grey, but ground's hue at that low a
+ * chroma is still, by construction, only a slightly different shade of the
+ * background: nord-dark's selection scored 1.98 for selection-vs-ground and
+ * still read as "a lighter grey on a grey", not a distinct colour.
+ *
+ * CHM-70 changes which hue the tint uses and how much of it survives, not
+ * the luminance search above — no floor moves. The tint now takes the
+ * pack's own accent hue (see chooseSelectionHue) rather than ground's own,
+ * falling back to whichever of success or error sits farthest from ground
+ * when accent itself is too close to tell apart from it, and holds as much
+ * chroma as the two floors actually leave room for (see
+ * maxChromaClearingFloors) instead of a fixed low ceiling.
  */
 
-import { RATIO_CLEARANCE_MARGIN, SELECTION_IDEAL_RATIO, SELECTION_MAX_CHROMA, SELECTION_MIN_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET } from "../constants.js";
-import { chromaOf, contrastRatio, fromHueChromaMatch, relativeLuminance, toHsl } from "./color.js";
+import { RATIO_CLEARANCE_MARGIN, SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_IDEAL_RATIO, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, WCAG_CONTRAST_OFFSET } from "../constants.js";
+import { chromaOf, contrastRatio, fromHueChromaMatch, hueDistanceDegrees, relativeLuminance, toHsl } from "./color.js";
 import { matchValueForLuminance } from "./repair.js";
 
 export interface ResolvedSelection {
@@ -36,6 +44,14 @@ export interface ResolvedSelection {
   /** contrastRatio(hex, ground) — the achieved pair this ticket asks to be inspectable rather than hidden; see resolveSelectionAndBody. */
   readonly selectionVsGroundRatio: number;
   readonly wasRepaired: boolean;
+  /**
+   * True only when a repair fired *and* accent's own hue was too close to
+   * ground's (see chooseSelectionHue) to build the tint from. False both
+   * when the candidate needed no repair at all and when it did but accent's
+   * hue was distinct enough to use directly — CHM-70's "or the fallback
+   * fired and is reported" made a checkable fact rather than a claim.
+   */
+  readonly usedFallbackHue: boolean;
 }
 
 export interface ResolvedBody {
@@ -157,22 +173,136 @@ function nearestLuminanceReaching(
   );
 }
 
+/** Which hue a repaired selection tints toward, and whether reaching it needed the fallback — see chooseSelectionHue. */
+interface SelectionHueChoice {
+  readonly hue: number;
+  readonly usedFallbackHue: boolean;
+}
+
 /**
- * Ground's own hue, tinted to `targetLuminance` at a chroma clamped between
- * SELECTION_MIN_CHROMA and SELECTION_MAX_CHROMA — CHM-38's replacement for a
- * hue-free grey search. Contrast is a function of luminance alone (see
- * contrastRatio), so whenever that luminance is reachable at this chroma
- * this lands on the same ratio a grey would; it only changes which colour
- * gets there, favouring one that still reads as the theme's own rather than
- * a fill borrowed from a greyscale. The ceiling matters more than it looks:
- * see SELECTION_MAX_CHROMA's own doc comment for why holding ground's full
- * chroma can otherwise pin the result back onto ground itself.
+ * The hue a repaired selection tints toward: the pack's own accent, unless
+ * accent's hue sits within SELECTION_HUE_MIN_DISTANCE_DEGREES of ground's
+ * own — indistinguishable from it in practice, the "still basically grey"
+ * failure this ticket reports — in which case this falls back to whichever
+ * of `otherChromaticHexes` (success, error) reads as farthest from ground
+ * instead of collapsing to grey. CHM-38 tinted ground's own hue at a
+ * near-zero chroma, which is by construction a slightly different shade of
+ * the background rather than a different colour — see this file's own doc
+ * comment for the worked nord-dark example.
  */
-function groundTintedAtLuminance(groundHex: string, targetLuminance: number): string {
-  const { hue } = toHsl(groundHex);
-  const chroma = Math.min(Math.max(chromaOf(groundHex), SELECTION_MIN_CHROMA), SELECTION_MAX_CHROMA);
+function chooseSelectionHue(groundHex: string, accentHex: string, otherChromaticHexes: readonly string[]): SelectionHueChoice {
+  const groundHue = toHsl(groundHex).hue;
+  const accentHue = toHsl(accentHex).hue;
+  if (hueDistanceDegrees(accentHue, groundHue) >= SELECTION_HUE_MIN_DISTANCE_DEGREES) {
+    return { hue: accentHue, usedFallbackHue: false };
+  }
+
+  const fallbackHue = otherChromaticHexes.map((hex) => toHsl(hex).hue).reduce((mostDistant, candidateHue) =>
+    hueDistanceDegrees(candidateHue, groundHue) > hueDistanceDegrees(mostDistant, groundHue) ? candidateHue : mostDistant,
+  );
+  return { hue: fallbackHue, usedFallbackHue: true };
+}
+
+/**
+ * How finely maxChromaClearingFloors scans chroma. Coarser than the
+ * 40-iteration bisections elsewhere in this file on purpose — see its own
+ * doc comment for why this scans a prefix instead of bisecting — but still
+ * far finer than an 8-bit channel can tell apart (a step is worth roughly
+ * 1/500th of a channel's full range).
+ */
+const CHROMA_SEARCH_STEPS = 200;
+
+/**
+ * The colour at `hue` and `chroma` landing closest to `targetLuminance`:
+ * exactly on it when `chroma` leaves it reachable, or the nearest edge of
+ * what this hue/chroma pair can reach otherwise (see
+ * matchValueForLuminance) — the same clamp-to-nearest behaviour every other
+ * luminance search in this file already relies on.
+ */
+function hueTintedTowardLuminance(hue: number, chroma: number, targetLuminance: number): string {
   const matchValue = matchValueForLuminance(hue, chroma, targetLuminance);
   return fromHueChromaMatch({ hue, chroma, matchValue });
+}
+
+/**
+ * Whether `candidateLuminance` sits on the same side of `groundLuminance`
+ * that `targetLuminance` does (or exactly on ground) — the guard
+ * maxChromaClearingFloors uses to rule out a chroma that "clears" ground
+ * visibility only by overshooting past ground on the far side, in the
+ * opposite direction from the one the luminance search (nearestLuminanceReaching
+ * et al.) actually chose.
+ */
+function isOnTargetSideOfGround(candidateLuminance: number, targetLuminance: number, groundLuminance: number): boolean {
+  return (candidateLuminance - groundLuminance) * (targetLuminance - groundLuminance) >= 0;
+}
+
+/**
+ * The largest chroma, at `hue`, whose tint toward `targetLuminance` (see
+ * hueTintedTowardLuminance) still clears `bodyFloorRatio` against `bodyHex`
+ * and `minGroundRatio` against `groundHex`, without overshooting past ground
+ * onto its far side — CHM-70's replacement for CHM-38's fixed low ceiling
+ * (SELECTION_MAX_CHROMA), maximising chroma at whatever the two floors
+ * actually leave room for instead of holding it to an arbitrary narrow band.
+ *
+ * Scans the full range rather than bisecting or stopping at the first
+ * failure: whether a chroma clears both floors is *not* strictly
+ * downward-closed. nord-dark is the fixture this matters for — its target
+ * luminance sits exactly on the body floor's own boundary (any grey there
+ * measures precisely the margined floor, 4.7268 against a 4.725 minimum),
+ * so 8-bit channel rounding on a *chromatic* tint at that same luminance can
+ * land a hair either side of it non-monotonically as chroma grows
+ * (4.7215 at chroma 0.005, back up to 4.762 at chroma 0.02) — a search that
+ * stopped at the first dip would settle for chroma 0 and ship exactly the
+ * "still basically grey" result this ticket reports. The far-side guard
+ * above (isOnTargetSideOfGround) is what keeps scanning the *whole* range
+ * safe: without it, a chroma large enough to clamp targetLuminance onto
+ * ground's far side could look like it clears ground-visibility from over
+ * there while having long since failed the far stricter body floor —
+ * Solarized Dark's own targetLuminance of 0 is the fixture proving that
+ * side exists at all.
+ */
+function maxChromaClearingFloors(
+  hue: number,
+  targetLuminance: number,
+  groundHex: string,
+  bodyHex: string,
+  bodyFloorRatio: number,
+  minGroundRatio: number,
+): number {
+  const groundLuminance = relativeLuminance(groundHex);
+  let bestChroma = 0;
+  for (let step = 1; step <= CHROMA_SEARCH_STEPS; step += 1) {
+    const candidateChroma = step / CHROMA_SEARCH_STEPS;
+    const candidateHex = hueTintedTowardLuminance(hue, candidateChroma, targetLuminance);
+    const staysOnTargetSide = isOnTargetSideOfGround(relativeLuminance(candidateHex), targetLuminance, groundLuminance);
+    const clearsBodyFloor = contrastRatio(bodyHex, candidateHex) >= bodyFloorRatio;
+    const clearsGroundVisibility = contrastRatio(candidateHex, groundHex) >= minGroundRatio;
+    if (staysOnTargetSide && clearsBodyFloor && clearsGroundVisibility) {
+      bestChroma = candidateChroma;
+    }
+  }
+  return bestChroma;
+}
+
+/**
+ * `hue`, tinted toward `targetLuminance` at the most chroma the two floors
+ * leave room for (see maxChromaClearingFloors) — CHM-70's replacement for
+ * groundTintedAtLuminance, which held chroma to a narrow, mostly-arbitrary
+ * band regardless of what the target luminance could actually support.
+ * Chroma 0 (used whenever nothing more is safe) reproduces exactly the
+ * grey CHM-30/CHM-50 already proved clears both floors for every bundled
+ * pack, so this can never do worse than the pre-CHM-70 behaviour.
+ */
+function hueTintedAtLuminance(
+  hue: number,
+  targetLuminance: number,
+  groundHex: string,
+  bodyHex: string,
+  bodyFloorRatio: number,
+  minGroundRatio: number,
+): string {
+  const chroma = maxChromaClearingFloors(hue, targetLuminance, groundHex, bodyHex, bodyFloorRatio, minGroundRatio);
+  return hueTintedTowardLuminance(hue, chroma, targetLuminance);
 }
 
 /** `bodyHex`, pushed toward `targetLuminance` while holding its own hue and chroma — a stronger version of the same colour, not a different one. */
@@ -213,6 +343,8 @@ function resolveSelectionAgainstBody(
   candidateHex: string,
   groundHex: string,
   bodyHex: string,
+  accentHex: string,
+  otherChromaticHexes: readonly string[],
   bodyFloorRatio: number,
   achievableRatio: number,
 ): ResolvedSelection {
@@ -223,12 +355,20 @@ function resolveSelectionAgainstBody(
   const candidateGroundRatio = contrastRatio(candidateHex, groundHex);
   const candidateClearsBodyFloor = contrastRatio(bodyHex, candidateHex) >= TEXT_MIN_RATIO;
   if (candidateClearsBodyFloor && candidateGroundRatio >= targetRatio) {
-    return { hex: candidateHex, selectionVsGroundRatio: candidateGroundRatio, wasRepaired: false };
+    return { hex: candidateHex, selectionVsGroundRatio: candidateGroundRatio, wasRepaired: false, usedFallbackHue: false };
   }
 
   const targetLuminance = nearestLuminanceReaching(groundLuminance, bodyLuminance, bodyFloorRatio, targetRatio);
-  const hex = groundTintedAtLuminance(groundHex, targetLuminance);
-  return { hex, selectionVsGroundRatio: contrastRatio(hex, groundHex), wasRepaired: true };
+  const { hue, usedFallbackHue } = chooseSelectionHue(groundHex, accentHex, otherChromaticHexes);
+  // The bare visibility floor, not the margined targetRatio above: even the
+  // pre-CHM-70 grey search only ever promised *this* much after 8-bit
+  // rounding on the final hex (tokyo-night-light's own shipped grey ships at
+  // 1.30, already under the margined 1.3125) — see maxChromaClearingFloors'
+  // own doc comment. Demanding the margined value here would reject chroma
+  // the surrounding code has always accepted, for no floor this ticket
+  // actually needs to hold.
+  const hex = hueTintedAtLuminance(hue, targetLuminance, groundHex, bodyHex, bodyFloorRatio, SELECTION_MIN_VISIBLE_RATIO);
+  return { hex, selectionVsGroundRatio: contrastRatio(hex, groundHex), wasRepaired: true, usedFallbackHue };
 }
 
 /**
@@ -267,8 +407,19 @@ function assertClearsBodyFloor(selectionHex: string, bodyHex: string): void {
  * never lands either back under them. assertClearsBodyFloor guards every
  * return below, so this function itself cannot hand back a value that
  * misses its own one guarantee.
+ *
+ * `accentHex` and `otherChromaticHexes` (success, error) are only consulted
+ * when a repair actually fires — see chooseSelectionHue — never when the
+ * scheme's own authored `candidateSelectionHex` already clears both floors
+ * on its own.
  */
-export function resolveSelectionAndBody(candidateSelectionHex: string, groundHex: string, bodyHex: string): SelectionResolution {
+export function resolveSelectionAndBody(
+  candidateSelectionHex: string,
+  groundHex: string,
+  bodyHex: string,
+  accentHex: string,
+  otherChromaticHexes: readonly string[],
+): SelectionResolution {
   const groundLuminance = relativeLuminance(groundHex);
   const bodyLuminance = relativeLuminance(bodyHex);
   const minAcceptableBodyRatio = TEXT_MIN_RATIO * RATIO_CLEARANCE_MARGIN;
@@ -276,7 +427,7 @@ export function resolveSelectionAndBody(candidateSelectionHex: string, groundHex
 
   const achievableRatio = bestGroundRatioAmong(oneSidedPiecesClearingBodyFloor(groundLuminance, bodyLuminance, minAcceptableBodyRatio), groundLuminance);
   if (achievableRatio >= minAcceptableVisibleRatio) {
-    const selection = resolveSelectionAgainstBody(candidateSelectionHex, groundHex, bodyHex, minAcceptableBodyRatio, achievableRatio);
+    const selection = resolveSelectionAgainstBody(candidateSelectionHex, groundHex, bodyHex, accentHex, otherChromaticHexes, minAcceptableBodyRatio, achievableRatio);
     assertClearsBodyFloor(selection.hex, bodyHex);
     return { selection, body: { hex: bodyHex, wasNudged: false } };
   }
@@ -287,7 +438,15 @@ export function resolveSelectionAndBody(candidateSelectionHex: string, groundHex
     oneSidedPiecesClearingBodyFloor(groundLuminance, relativeLuminance(nudgedBodyHex), minAcceptableBodyRatio),
     groundLuminance,
   );
-  const selection = resolveSelectionAgainstBody(candidateSelectionHex, groundHex, nudgedBodyHex, minAcceptableBodyRatio, nudgedAchievableRatio);
+  const selection = resolveSelectionAgainstBody(
+    candidateSelectionHex,
+    groundHex,
+    nudgedBodyHex,
+    accentHex,
+    otherChromaticHexes,
+    minAcceptableBodyRatio,
+    nudgedAchievableRatio,
+  );
   assertClearsBodyFloor(selection.hex, nudgedBodyHex);
   return { selection, body: { hex: nudgedBodyHex, wasNudged: true } };
 }
