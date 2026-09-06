@@ -387,30 +387,45 @@ function runEdit(argv: string[]): number {
 }
 
 /**
- * One line of `chm <theme>`/`chm undo`'s per-target report — plain text, no
- * Nerd Font glyph. An "applied" or "restored" result can still carry a
- * `detail` — CHM-39's profile-creation notice, or CHM-45's "Herdr is not
- * running, nothing to reload" — which is shown rather than dropped, since
- * both are exactly the kind of thing worth telling the user without
- * failing the command.
+ * `chm <theme>`/`chm undo`'s own per-target report, once a caller has
+ * already printed its one-line "applied <slug>"/"restored" headline — CHM-67:
+ * silence means success, so a target that simply did what the command name
+ * already promised earns no line of its own. Only two things still do:
+ *
+ * - A failure, on stderr, naming the target and why — and once any target
+ *   fails, every other target's line is dropped too (CHM-27's own partial-
+ *   apply warning is the thing to read next, not a wall of "this one was
+ *   fine").
+ * - A carried `detail` on an outright success — Oh My Posh's own profile-
+ *   creation notice (CHM-39), Herdr's "nothing running to reload" (CHM-45),
+ *   Claude Code's restart notice (CHM-49) — because that is new information
+ *   the plain "applied"/"restored" status never was.
+ *
+ * A plain "skipped (not installed)" is deliberately never one of the two: it
+ * is the routine, unchanging fact a person without Herdr would otherwise see
+ * on every single apply, and `chm doctor` already reports it, once,
+ * compactly, for whoever actually wants it.
  */
-function formatPackActionLine(result: PackActionResult): string {
-  if (result.status === "applied") return result.detail ? `${result.target}: applied — ${result.detail}` : `${result.target}: applied`;
-  if (result.status === "restored") return result.detail ? `${result.target}: restored — ${result.detail}` : `${result.target}: restored`;
-  if (result.status === "skipped") return `${result.target}: skipped (${result.detail})`;
-  return `${result.target}: failed — ${result.detail}`;
+export function formatNoteworthyResultLines(results: readonly PackActionResult[]): {
+  readonly stdoutLines: readonly string[];
+  readonly stderrLines: readonly string[];
+} {
+  const failedResults = results.filter((result) => result.status === "failed");
+  if (failedResults.length > 0) {
+    return { stdoutLines: [], stderrLines: failedResults.map((result) => `${result.target}: failed — ${result.detail}`) };
+  }
+
+  const stdoutLines = results
+    .filter((result) => result.status !== "skipped" && result.detail !== undefined)
+    .map((result) => `${result.target}: ${result.status} — ${result.detail}`);
+  return { stdoutLines, stderrLines: [] };
 }
 
-/** Prints one line per target — a failure on stderr, everything else on stdout — so a script can tell success from failure without parsing text. */
-function printPackActionResults(results: readonly PackActionResult[]): void {
-  for (const result of results) {
-    const line = formatPackActionLine(result);
-    if (result.status === "failed") {
-      process.stderr.write(`${line}\n`);
-    } else {
-      process.stdout.write(`${line}\n`);
-    }
-  }
+/** Prints whatever formatNoteworthyResultLines found worth saying — nothing at all when every target simply did what the command's own headline already said. */
+function printNoteworthyResults(results: readonly PackActionResult[]): void {
+  const { stdoutLines, stderrLines } = formatNoteworthyResultLines(results);
+  for (const line of stdoutLines) process.stdout.write(`${line}\n`);
+  for (const line of stderrLines) process.stderr.write(`${line}\n`);
 }
 
 // --- Chameleon's single-writer lock (CHM-56) --------------------------------
@@ -464,7 +479,7 @@ function runApply(slug: string): number {
     try {
       const report = applyThemePack(slug);
       process.stdout.write(`applied ${report.slug}\n`);
-      printPackActionResults(report.results);
+      printNoteworthyResults(report.results);
       if (!report.isFullyApplied) {
         process.stderr.write(
           `chm: ${report.slug} was only partially applied — the state file was left unchanged, and \`chm current\`/\`chm doctor\` may now report drift until this is fixed\n`,
@@ -500,17 +515,22 @@ function runUndo(): number {
       const resync = resyncInterruptedPreview();
       if (resync.status === "resynced-to-pack") {
         process.stdout.write(`chm undo: a theme preview was in progress — resynced every target back to "${resync.report.slug}"\n`);
-        printPackActionResults(resync.report.results);
+        printNoteworthyResults(resync.report.results);
         return resync.report.isFullyApplied ? 0 : 1;
       }
       if (resync.status === "resynced-to-undo") {
         process.stdout.write("chm undo: a theme preview was in progress — restoring your original configuration\n");
-        printPackActionResults(resync.results);
+        printNoteworthyResults(resync.results);
         return didAnyTargetFail(resync.results) ? 1 : 0;
       }
 
       const results = undoAppliedPack();
-      printPackActionResults(results);
+      // CHM-67: the same one-line headline runApply's own "applied <slug>"
+      // is — undo just has no slug of its own to name, since each target is
+      // restored from its own independent backup rather than a pack applied
+      // as one unit.
+      process.stdout.write("chm undo: restored\n");
+      printNoteworthyResults(results);
       return didAnyTargetFail(results) ? 1 : 0;
     } catch (error) {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
