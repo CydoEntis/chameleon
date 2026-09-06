@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CurrentPackReport, LoadedThemePack } from "../src/index.js";
+import type { CurrentPackReport, LoadedThemePack, PackActionResult } from "../src/index.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../src/index.js";
 import { relativeLuminance } from "../src/palette/color.js";
 import {
@@ -10,6 +10,7 @@ import {
   formatClaudeCodeRestartNote,
   formatDriftLine,
   formatLockHeldMessage,
+  formatNoteworthyResultLines,
   formatPreviewInProgressLine,
   formatThemeLine,
   hasDrift,
@@ -114,6 +115,107 @@ describe("formatClaudeCodeRestartNote", () => {
 
   it("says nothing when Claude Code is not installed", () => {
     expect(formatClaudeCodeRestartNote(false)).toBeUndefined();
+  });
+});
+
+// CHM-67: a successful apply used to print one line per target even though
+// four of the five lines in the ticket's own example all said the same
+// thing — it worked. `formatNoteworthyResultLines` is what runApply/runUndo
+// now print after their own one-line "applied <slug>"/"restored" headline,
+// so these prove the headline is genuinely the only line left in the plain
+// case, and that a failure or a carried detail still surface.
+describe("formatNoteworthyResultLines", () => {
+  it("says nothing at all when every target simply applied, with no detail to add", () => {
+    const results: readonly PackActionResult[] = [
+      { target: "windows-terminal", status: "applied" },
+      { target: "oh-my-posh", status: "applied" },
+    ];
+
+    expect(formatNoteworthyResultLines(results)).toEqual({ stdoutLines: [], stderrLines: [] });
+  });
+
+  // The routine case a person without Herdr would otherwise see on every
+  // single apply — CHM-67's own headline complaint. `chm doctor` is where
+  // this is worth reporting, not here.
+  it("drops a plain not-installed skip rather than printing it every apply", () => {
+    const results: readonly PackActionResult[] = [
+      { target: "windows-terminal", status: "applied" },
+      { target: "herdr", status: "skipped", detail: "not installed" },
+    ];
+
+    expect(formatNoteworthyResultLines(results)).toEqual({ stdoutLines: [], stderrLines: [] });
+  });
+
+  // Claude Code's own restart notice (CHM-49) — the one case this ticket
+  // names explicitly as still worth a line even on outright success, since it
+  // is the difference between "applied" and "applied but you will not see it
+  // yet". Oh My Posh's profile-creation notice (CHM-39) and Herdr's "nothing
+  // running to reload" (CHM-45) are the same shape: a detail on success is
+  // new information, not noise.
+  it("keeps a carried detail on an outright success, on stdout", () => {
+    const results: readonly PackActionResult[] = [
+      { target: "windows-terminal", status: "applied" },
+      { target: "claude-code", status: "applied", detail: "restart Claude Code to see it" },
+    ];
+
+    expect(formatNoteworthyResultLines(results)).toEqual({
+      stdoutLines: ["claude-code: applied — restart Claude Code to see it"],
+      stderrLines: [],
+    });
+  });
+
+  // CHM-27: a failed target is named with its reason, on stderr — but see the
+  // next test for the other half of this rule.
+  it("names a failed target and its reason, on stderr", () => {
+    const results: readonly PackActionResult[] = [
+      { target: "windows-terminal", status: "applied" },
+      { target: "oh-my-posh", status: "failed", detail: "permission denied" },
+    ];
+
+    expect(formatNoteworthyResultLines(results)).toEqual({
+      stdoutLines: [],
+      stderrLines: ["oh-my-posh: failed — permission denied"],
+    });
+  });
+
+  // "Do not print the targets that succeeded" — once one target needs
+  // attention, a wall of "this one was fine" lines (even a carried detail
+  // like Claude Code's restart notice) is exactly the noise this ticket
+  // removes; CHM-27's own partial-apply warning is the thing to read next.
+  it("prints only the failure when a failure and a successful detail both exist", () => {
+    const results: readonly PackActionResult[] = [
+      { target: "windows-terminal", status: "failed", detail: "permission denied" },
+      { target: "claude-code", status: "applied", detail: "restart Claude Code to see it" },
+    ];
+
+    expect(formatNoteworthyResultLines(results)).toEqual({
+      stdoutLines: [],
+      stderrLines: ["windows-terminal: failed — permission denied"],
+    });
+  });
+
+  it("names every failed target when more than one fails", () => {
+    const results: readonly PackActionResult[] = [
+      { target: "windows-terminal", status: "failed", detail: "permission denied" },
+      { target: "oh-my-posh", status: "failed", detail: "config locked" },
+    ];
+
+    expect(formatNoteworthyResultLines(results)).toEqual({
+      stdoutLines: [],
+      stderrLines: ["windows-terminal: failed — permission denied", "oh-my-posh: failed — config locked"],
+    });
+  });
+
+  // `chm undo`'s own "restored" status carries the same detail contract as
+  // "applied" — nothing new here, just proof the two statuses are treated
+  // alike rather than only "applied" getting the carried-detail exception.
+  it("keeps a carried detail on a restored target the same way it does for applied", () => {
+    const results: readonly PackActionResult[] = [{ target: "herdr", status: "restored", detail: "Herdr is not running — nothing to reload" }];
+
+    expect(formatNoteworthyResultLines(results)).toEqual({
+      stdoutLines: ["herdr: restored — Herdr is not running — nothing to reload"],
+      stderrLines: [],
+    });
   });
 });
 
