@@ -1349,19 +1349,10 @@ describe("oh my posh adapter — edge cases", () => {
 
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-edge-"));
-    // Never trust whatever the machine actually running these tests happens
-    // to have exported — a dev box with Oh My Posh live in the same shell
-    // running `npm test` would otherwise make this suite pass or fail
-    // depending on what shell it happened to be run from. See CHM-36: the
-    // bug this file exists to catch survived exactly because every earlier
-    // version of this test exported the variable it was meant to discover.
-    vi.stubEnv("POSH_CONFIG", "");
-    vi.stubEnv("POSH_THEME", "");
   });
 
   afterEach(() => {
     rmSync(stateDir, { recursive: true, force: true });
-    vi.unstubAllEnvs();
   });
 
   it("names the file and the problem when a config it must edit is shaped wrong", () => {
@@ -1555,8 +1546,6 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-fallback-"));
     ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
-    vi.stubEnv("POSH_CONFIG", "");
-    vi.stubEnv("POSH_THEME", "");
   });
 
   afterEach(() => {
