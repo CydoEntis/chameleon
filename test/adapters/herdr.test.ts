@@ -6,8 +6,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HERDR_BUILTIN_GROUNDS, createHerdrAdapter, herdrMatchesRoleHexes, nearestHerdrBuiltinThemeNameFor, undoHerdr } from "../../src/adapters/herdr.js";
-import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, TEXT_MIN_RATIO, type Role } from "../../src/constants.js";
-import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
+import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, PANEL_BG_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, type Role } from "../../src/constants.js";
+import { contrastRatio, relativeLuminance, rgbDistance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
@@ -721,14 +721,11 @@ describe("herdr adapter — full custom token vocabulary (CHM-28)", () => {
 
     const config = createHerdrAdapter(configPath).read();
     const expectedColorTable = resolveRoleHexes(GITHUB_LIGHT_SCHEME);
-    // panel_bg matches sidebar_bg (both are the pack's own ground) — the
-    // fix here is that it is set at all, not that it differs from ground.
-    expect(config.theme.custom["panel_bg"]).toBe(expectedColorTable.ground);
-    // The rest of the scale must actually move away from ground and body,
-    // not just repeat one of them — otherwise "the row colours changed" is
-    // a name change with no visible effect, exactly what this ticket is
-    // about.
-    const surfaceTokens = ["surface_dim", "surface0", "surface1", "overlay0", "overlay1", "active_row_bg"];
+    // The whole scale, panel_bg included (CHM-81), must actually move away
+    // from ground and body, not just repeat one of them — otherwise "the
+    // row colours changed" is a name change with no visible effect, exactly
+    // what this ticket is about.
+    const surfaceTokens = ["panel_bg", "surface_dim", "surface0", "surface1", "overlay0", "overlay1", "active_row_bg"];
     for (const token of surfaceTokens) {
       const value = config.theme.custom[token];
       expect(value).not.toBe(expectedColorTable.ground);
@@ -1063,6 +1060,101 @@ describe("herdr adapter — CHM-79's declared contrast inventory, every bundled 
       const failures = checkContrastPairs(herdrContrastPairs(tokens));
       expect(failures, `${pack.manifest.slug}: ${failures.map((failure) => failure.pair.label).join(", ")}`).toEqual([]);
     }
+  });
+});
+
+// CHM-81: Herdr paints Windows Terminal's own text-selection highlight in
+// panel_bg whenever the host terminal never answers its own OSC 11
+// background query — Windows Terminal does not reliably do — falling back to
+// selection_palette_background, which is panel_bg itself (see panes.rs in
+// Herdr's own source, quoted in this ticket's body). Chameleon used to write
+// panel_bg identical to ground (structuralTokenValues, pre-fix): contrast
+// 1.00, so a selection painted that way showed nothing at all. These tests
+// pin the fix directly, against the real [theme.custom] table every one of
+// the 29 bundled packs actually ships — the same allCustomTokensFor real
+// output the CHM-79 suite above already proves its own pairs against.
+describe("herdr adapter — panel_bg (CHM-81)", () => {
+  function allCustomTokensFor(slug: string): HerdrTokenSet {
+    const packs = loadCuratedThemePacks();
+    const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+    if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+    const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-panel-bg-"));
+    const configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+    try {
+      createHerdrAdapter(configPath).apply(pack.payloads["windows-terminal"], pack.manifest.slug);
+      return createHerdrAdapter(configPath).read().theme.custom as unknown as HerdrTokenSet;
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  }
+
+  it("never writes panel_bg equal to sidebar_bg, for any bundled pack — the reported bug", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const tokens = allCustomTokensFor(pack.manifest.slug);
+      expect(tokens.panel_bg, pack.manifest.slug).not.toBe(tokens.sidebar_bg);
+    }
+  });
+
+  it("clears PANEL_BG_MIN_VISIBLE_RATIO against sidebar_bg, so a selection painted in panel_bg is detectable, for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+
+    for (const pack of packs) {
+      const tokens = allCustomTokensFor(pack.manifest.slug);
+      expect(contrastRatio(tokens.panel_bg, tokens.sidebar_bg), pack.manifest.slug).toBeGreaterThanOrEqual(PANEL_BG_MIN_VISIBLE_RATIO);
+    }
+  });
+
+  it("keeps text readable (TEXT_MIN_RATIO) against panel_bg, so selected text stays legible, for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+
+    for (const pack of packs) {
+      const tokens = allCustomTokensFor(pack.manifest.slug);
+      expect(contrastRatio(tokens.text, tokens.panel_bg), pack.manifest.slug).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    }
+  });
+
+  // panel_bg is a blend of the pack's own ground and body (see
+  // resolvePanelBackground in palette/surfaces.ts) — its own luminance
+  // always sits strictly between the two, never past body and never back
+  // past ground on the far side, so it stays dark on a dark pack and light
+  // on a light one instead of reading as a highlight of its own.
+  it("stays a blend of this pack's own ground and body — luminance strictly between the two — for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+
+    for (const pack of packs) {
+      const tokens = allCustomTokensFor(pack.manifest.slug);
+      const groundLuminance = relativeLuminance(tokens.sidebar_bg);
+      const bodyLuminance = relativeLuminance(tokens.text);
+      const panelLuminance = relativeLuminance(tokens.panel_bg);
+      const [lowerLuminance, upperLuminance] = groundLuminance <= bodyLuminance ? [groundLuminance, bodyLuminance] : [bodyLuminance, groundLuminance];
+      expect(panelLuminance, pack.manifest.slug).toBeGreaterThan(lowerLuminance);
+      expect(panelLuminance, pack.manifest.slug).toBeLessThan(upperLuminance);
+    }
+  });
+
+  // The regression proof CHM-81 asks for directly: feeding the CHM-79
+  // inventory the exact pre-fix value (panel_bg identical to sidebar_bg)
+  // fails the new visibility pair this ticket adds — proving the gate
+  // catches the reported bug rather than merely proving the fixed code
+  // passes it.
+  it("fails herdr panel_bg on sidebar_bg when fed the pre-fix value — proving the gate catches the reported bug", () => {
+    const tokens = allCustomTokensFor(MAPPED_DARK_SLUG);
+    const preFixTokens: HerdrTokenSet = { ...tokens, panel_bg: tokens.sidebar_bg };
+    expect(contrastRatio(preFixTokens.panel_bg, preFixTokens.sidebar_bg)).toBe(1);
+
+    const failures = checkContrastPairs(herdrContrastPairs(preFixTokens));
+    const panelBgOnSidebar = failures.find((failure) => failure.pair.label === "herdr panel_bg on sidebar_bg");
+
+    expect(panelBgOnSidebar).toBeDefined();
+    expect(panelBgOnSidebar?.ratio).toBe(1);
+
+    // The real, resolved value (what this adapter actually ships) clears it.
+    expect(checkContrastPairs(herdrContrastPairs(tokens)).some((failure) => failure.pair.label === "herdr panel_bg on sidebar_bg")).toBe(false);
   });
 });
 

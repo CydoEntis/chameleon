@@ -12,8 +12,8 @@ import {
   herdrContrastPairs,
   OVERLAY_0_FRACTION,
   repairOverlay0,
-  resolveActiveRowAndText,
   resolveHerdrBadgeTokens,
+  resolvePanelAndActiveRow,
   windowsTerminalContrastPairs,
   type ContrastFailure,
   type HerdrTokenSet,
@@ -252,12 +252,17 @@ export function buildThemePack(
   );
   assertSelectionReadableUnderBody(selection.hex, body.hex, scheme.name);
 
-  // Herdr's selected-row background and its text tokens, resolved together
-  // (CHM-50) — see palette/surfaces.ts's own doc comment for why order and
-  // shared-value repair both matter. panel_bg is not passed as an "other"
-  // surface: it is definitionally ground (see adapters/herdr.ts's
-  // structuralTokenValues), so checking against ground already covers it.
-  const rowAndText = resolveActiveRowAndText(
+  // panel_bg, Herdr's selected-row background and its text tokens, resolved
+  // together (CHM-81, folding in CHM-50) — see palette/surfaces.ts's own
+  // resolvePanelAndActiveRow doc comment for why order and shared-value
+  // repair both matter. panel_bg can no longer be definitionally ground
+  // (the pre-CHM-81 behaviour): Herdr falls back to painting the entire
+  // text-selection highlight in panel_bg whenever the host terminal never
+  // answers its own background query, and a panel_bg identical to ground
+  // made that selection invisible. Resolved exactly the way
+  // adapters/herdr.ts's own live apply does, so this build-time gate can
+  // never pass a value the live adapter would not also ship.
+  const { panelBackground, rowAndText } = resolvePanelAndActiveRow(
     resolvedPalette.ground.hex,
     body.hex,
     resolvedPalette.muted.hex,
@@ -296,13 +301,17 @@ export function buildThemePack(
   // Terminal and Herdr actually render, for this pack's own resolved
   // colours — see palette/surfaces.ts. overlay0 is repaired here exactly the
   // way adapters/herdr.ts's own surfaceScale repairs it (CHM-78) — same
-  // fraction, same repair — so this gate can never pass a value the live
-  // adapter would not also ship. panel_bg is not passed separately: it is
-  // definitionally ground (see adapters/herdr.ts's structuralTokenValues).
-  const overlay0Hex = repairOverlay0(mix(resolvedPalette.ground.hex, body.hex, OVERLAY_0_FRACTION), resolvedPalette.ground.hex, rowAndText.activeRowBackgroundHex);
+  // fraction, same repair, same panel_bg (CHM-81) — so this gate can never
+  // pass a value the live adapter would not also ship.
+  const overlay0Hex = repairOverlay0(
+    mix(resolvedPalette.ground.hex, body.hex, OVERLAY_0_FRACTION),
+    resolvedPalette.ground.hex,
+    rowAndText.activeRowBackgroundHex,
+    panelBackground.hex,
+  );
   const herdrTokens: HerdrTokenSet = {
     sidebar_bg: resolvedPalette.ground.hex,
-    panel_bg: resolvedPalette.ground.hex,
+    panel_bg: panelBackground.hex,
     active_row_bg: rowAndText.activeRowBackgroundHex,
     selection_bg: selection.hex,
     text: rowAndText.textHex,

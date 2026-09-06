@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, PANEL_BG_MIN_VISIBLE_RATIO, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { repairCursorColor } from "../../src/palette/ansi.js";
 import { contrastRatio, mix } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
@@ -13,6 +13,8 @@ import {
   resolveActiveRowAndText,
   resolveActiveRowBackground,
   resolveHerdrBadgeTokens,
+  resolvePanelAndActiveRow,
+  resolvePanelBackground,
   windowsTerminalContrastPairs,
   type HerdrTokenSet,
 } from "../../src/palette/surfaces.js";
@@ -110,11 +112,76 @@ describe("resolveActiveRowBackground", () => {
   });
 });
 
+// CHM-81: Herdr paints Windows Terminal's own text-selection highlight in
+// panel_bg whenever the host terminal never answers its own background
+// query, and Chameleon used to write panel_bg identical to ground — invisible
+// as a highlight. resolvePanelBackground is the fix: a ground/body blend
+// that is visibly its own surface against ground, while never giving up
+// body's own legibility on top of it.
+describe("resolvePanelBackground", () => {
+  it("finds a blend that clears both floors with room to spare, for a pack whose ground and body contrast widely — monokai-dark's own fixture", () => {
+    // monokai-dark's own ground/body clear 14.69 — comfortable room for a
+    // panel_bg that clears PANEL_BG_MIN_VISIBLE_RATIO against ground without
+    // threatening body's own TEXT_MIN_RATIO floor against it.
+    expect(contrastRatio(MONOKAI_DARK.ground, MONOKAI_DARK.body)).toBeCloseTo(14.6868, 3);
+
+    const panelBackground = resolvePanelBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body);
+
+    expect(panelBackground.wasRepaired).toBe(false);
+    expect(panelBackground.hex).toBe("#585a52");
+    expect(contrastRatio(panelBackground.hex, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(PANEL_BG_MIN_VISIBLE_RATIO);
+    expect(contrastRatio(MONOKAI_DARK.body, panelBackground.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(panelBackground.hex).not.toBe(MONOKAI_DARK.ground);
+    expect(panelBackground.hex).not.toBe(MONOKAI_DARK.body);
+  });
+
+  // Ayu Light's own resolved ground/body clear only 6.12 — too little room
+  // for both PANEL_BG_MIN_VISIBLE_RATIO (2.0) and TEXT_MIN_RATIO (4.5) on
+  // body at once (their product, 9.0, exceeds it). Body-on-panel_bg is the
+  // one floor never traded away — a selection painted over unreadable text
+  // is no fix at all, the same shape resolveSelectionAndBody already holds
+  // for the selection highlight itself — so visibility gives way instead.
+  it("holds body's own legibility floor even when that leaves visibility short of PANEL_BG_MIN_VISIBLE_RATIO", () => {
+    expect(contrastRatio(AYU_LIGHT.ground, AYU_LIGHT.body)).toBeCloseTo(6.1192, 3);
+
+    const panelBackground = resolvePanelBackground(AYU_LIGHT.ground, AYU_LIGHT.body);
+
+    expect(panelBackground.wasRepaired).toBe(true);
+    expect(contrastRatio(AYU_LIGHT.body, panelBackground.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(panelBackground.hex, AYU_LIGHT.ground)).toBeLessThan(PANEL_BG_MIN_VISIBLE_RATIO);
+    // Still a real, if narrower, gap from ground — not collapsed back to it.
+    expect(contrastRatio(panelBackground.hex, AYU_LIGHT.ground)).toBeGreaterThan(1);
+  });
+
+  it("never returns ground itself", () => {
+    for (const fixture of [MONOKAI_DARK, AYU_LIGHT, NO_REPAIR]) {
+      expect(resolvePanelBackground(fixture.ground, fixture.body).hex).not.toBe(fixture.ground);
+    }
+  });
+
+  it("is always a plain blend of this theme's own ground and body — every channel between the two source colours' own matching channels, never a colour invented from nowhere", () => {
+    const panelBackground = resolvePanelBackground(AYU_LIGHT.ground, AYU_LIGHT.body);
+    for (const channelOffset of [1, 3, 5]) {
+      const groundChannel = Number.parseInt(AYU_LIGHT.ground.slice(channelOffset, channelOffset + 2), 16);
+      const bodyChannel = Number.parseInt(AYU_LIGHT.body.slice(channelOffset, channelOffset + 2), 16);
+      const panelChannel = Number.parseInt(panelBackground.hex.slice(channelOffset, channelOffset + 2), 16);
+      expect(panelChannel).toBeGreaterThanOrEqual(Math.min(groundChannel, bodyChannel));
+      expect(panelChannel).toBeLessThanOrEqual(Math.max(groundChannel, bodyChannel));
+    }
+  });
+});
+
 // CHM-78: adapters/herdr.ts's surfaceScale mixes overlay0 at 4/6 of the way
 // from ground to body — duplicated here rather than imported, the same way
 // this file's own ground/body/muted fixtures already stand in for herdr.ts's
 // real inputs.
 const OVERLAY_0_FRACTION = 4 / 6;
+
+// CHM-81's own panel_bg, resolved from MONOKAI_DARK's own ground/body — fed
+// into repairOverlay0 below the same way adapters/herdr.ts's surfaceScale
+// now does, so overlay0's own repair is checked against every surface it
+// actually renders on, panel_bg included.
+const MONOKAI_DARK_PANEL_BACKGROUND = resolvePanelBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body).hex;
 
 describe("repairOverlay0", () => {
   it("repairs the plain ramp value when it fails TEXT_MIN_RATIO against the active row — CHM-78's own reported case", () => {
@@ -127,22 +194,25 @@ describe("repairOverlay0", () => {
     expect(activeRow.hex).toBe("#585a52");
     expect(contrastRatio(candidateHex, activeRow.hex)).toBeLessThan(TEXT_MIN_RATIO);
 
-    const repaired = repairOverlay0(candidateHex, MONOKAI_DARK.ground, activeRow.hex);
+    const repaired = repairOverlay0(candidateHex, MONOKAI_DARK.ground, activeRow.hex, MONOKAI_DARK_PANEL_BACKGROUND);
 
     expect(repaired).not.toBe(candidateHex);
     expect(contrastRatio(repaired, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     expect(contrastRatio(repaired, activeRow.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(repaired, MONOKAI_DARK_PANEL_BACKGROUND)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
   });
 
   it("leaves an already-readable candidate unchanged", () => {
     // body itself always clears TEXT_MIN_RATIO against ground (see
-    // repairFailingRoles) and, here, against the settled row too — a stand-in
-    // for a candidate that needs no repair at all.
+    // repairFailingRoles), against the settled row too, and — by
+    // resolvePanelBackground's own hard floor (CHM-81) — against panel_bg: a
+    // stand-in for a candidate that needs no repair at all.
     const activeRow = resolveActiveRowBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body, MONOKAI_DARK.muted, ACTIVE_ROW_IDEAL_FRACTION);
     expect(contrastRatio(MONOKAI_DARK.body, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     expect(contrastRatio(MONOKAI_DARK.body, activeRow.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(MONOKAI_DARK.body, MONOKAI_DARK_PANEL_BACKGROUND)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
 
-    expect(repairOverlay0(MONOKAI_DARK.body, MONOKAI_DARK.ground, activeRow.hex)).toBe(MONOKAI_DARK.body);
+    expect(repairOverlay0(MONOKAI_DARK.body, MONOKAI_DARK.ground, activeRow.hex, MONOKAI_DARK_PANEL_BACKGROUND)).toBe(MONOKAI_DARK.body);
   });
 });
 
@@ -246,6 +316,33 @@ describe("resolveActiveRowAndText", () => {
   });
 });
 
+// CHM-81: panel_bg and the active row depend on each other's settled output
+// (see resolvePanelAndActiveRow's own doc comment for why), so they are
+// resolved together rather than one at a time.
+describe("resolvePanelAndActiveRow", () => {
+  it("resolves panel_bg from a settled text value, and folds panel_bg back in so text and subtext0 both clear their floors against it too — monokai-dark's own fixture", () => {
+    const resolved = resolvePanelAndActiveRow(MONOKAI_DARK.ground, MONOKAI_DARK.body, MONOKAI_DARK.muted, [MONOKAI_DARK.selection], ACTIVE_ROW_IDEAL_FRACTION);
+
+    expect(resolved.panelBackground.wasRepaired).toBe(false);
+    expect(resolved.panelBackground.hex).toBe("#585a52");
+    expect(resolved.rowAndText.wasVisibilityTraded).toBe(false);
+    expect(resolved.rowAndText.textHex).toBe(MONOKAI_DARK.body);
+    expect(resolved.rowAndText.subtextHex).toBe(MONOKAI_DARK.muted);
+
+    // Both text and subtext0 answer to the real, resolved panel_bg — not
+    // just to ground, the row and the selection highlight.
+    expect(contrastRatio(resolved.rowAndText.textHex, resolved.panelBackground.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(resolved.rowAndText.subtextHex, resolved.panelBackground.hex)).toBeGreaterThanOrEqual(MUTED_MIN_RATIO);
+  });
+
+  it("matches resolvePanelBackground's own output for the same ground/body pair — no drift between the standalone resolver and this composed one", () => {
+    const standalone = resolvePanelBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body);
+    const resolved = resolvePanelAndActiveRow(MONOKAI_DARK.ground, MONOKAI_DARK.body, MONOKAI_DARK.muted, [MONOKAI_DARK.selection], ACTIVE_ROW_IDEAL_FRACTION);
+
+    expect(resolved.panelBackground.hex).toBe(standalone.hex);
+  });
+});
+
 // CHM-79: the declared contrast inventory — every (foreground, background)
 // pair a target actually renders, named once, gated together (see this
 // module's own "declared contrast inventory" section). checkContrastPairs
@@ -323,11 +420,12 @@ describe("herdrContrastPairs", () => {
     monokaiRoleHexes.accent,
     [monokaiRoleHexes.success, monokaiRoleHexes.error],
   );
+  const monokaiPanelBackground = resolvePanelBackground(monokaiRoleHexes.ground, monokaiSelectionAndBody.body.hex);
   const monokaiRowAndText = resolveActiveRowAndText(
     monokaiRoleHexes.ground,
     monokaiSelectionAndBody.body.hex,
     monokaiRoleHexes.muted,
-    [monokaiSelectionAndBody.selection.hex],
+    [monokaiSelectionAndBody.selection.hex, monokaiPanelBackground.hex],
     ACTIVE_ROW_IDEAL_FRACTION,
   );
   const monokaiBadgeTokens = resolveHerdrBadgeTokens(monokaiScheme);
@@ -335,7 +433,7 @@ describe("herdrContrastPairs", () => {
   function monokaiTokens(overrides: Partial<HerdrTokenSet> = {}): HerdrTokenSet {
     return {
       sidebar_bg: monokaiRoleHexes.ground,
-      panel_bg: monokaiRoleHexes.ground,
+      panel_bg: monokaiPanelBackground.hex,
       active_row_bg: monokaiRowAndText.activeRowBackgroundHex,
       selection_bg: monokaiSelectionAndBody.selection.hex,
       text: monokaiRowAndText.textHex,
@@ -344,6 +442,7 @@ describe("herdrContrastPairs", () => {
         mix(monokaiRoleHexes.ground, monokaiSelectionAndBody.body.hex, OVERLAY_0_FRACTION),
         monokaiRoleHexes.ground,
         monokaiRowAndText.activeRowBackgroundHex,
+        monokaiPanelBackground.hex,
       ),
       accent: monokaiRoleHexes.accent,
       green: monokaiRoleHexes.success,
@@ -374,9 +473,13 @@ describe("herdrContrastPairs", () => {
   it("holds the three Chameleon roles (accent, green, red) to TEXT_MIN_RATIO, and the four badge swatches to ANSI_MIN_RATIO instead — CHM-79's own stated exemption", () => {
     const pairs = herdrContrastPairs(monokaiTokens());
 
+    // Checked against sidebar_bg only, not panel_bg too — CHM-81 gave
+    // panel_bg its own resolved value, and accent/success/error are only
+    // ever repaired against ground (see HERDR_ACCENT_BACKGROUNDS's own doc
+    // comment in palette/surfaces.ts).
     for (const role of ["accent", "green", "red"]) {
       const rolePairs = pairs.filter((pair) => pair.label.startsWith(`herdr ${role} on`));
-      expect(rolePairs).toHaveLength(2);
+      expect(rolePairs).toHaveLength(1);
       for (const pair of rolePairs) {
         expect(pair.minRatio).toBe(TEXT_MIN_RATIO);
         expect(pair.kind).toBe("text");
@@ -385,7 +488,7 @@ describe("herdrContrastPairs", () => {
 
     for (const badgeToken of ["yellow", "blue", "teal", "mauve", "peach"]) {
       const badgePairs = pairs.filter((pair) => pair.label.startsWith(`herdr ${badgeToken} on`));
-      expect(badgePairs).toHaveLength(2);
+      expect(badgePairs).toHaveLength(1);
       for (const pair of badgePairs) {
         expect(pair.minRatio).toBe(ANSI_MIN_RATIO);
         expect(pair.kind).toBe("visibility");

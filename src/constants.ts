@@ -173,6 +173,24 @@ export const SELECTION_HUE_MIN_DISTANCE_DEGREES = 20;
 export const ACTIVE_ROW_MIN_VISIBLE_RATIO = 2.0;
 
 /**
+ * The lowest panel_bg-vs-ground contrast that still reads as a distinct
+ * surface, rather than the same colour as the pane it sits in front of.
+ * CHM-81: Herdr paints Windows Terminal's own text-selection highlight in
+ * panel_bg whenever the host terminal never answers Herdr's OSC 11
+ * background query — Windows Terminal does not reliably do — and Chameleon
+ * wrote panel_bg identical to ground (contrast 1.00), so a selection painted
+ * that way showed nothing at all. Same value as ACTIVE_ROW_MIN_VISIBLE_RATIO
+ * — both exist for the same reason, "tell this apart from the surface it
+ * sits on" — but named separately because the two guarantees are different
+ * (a legible selection fallback here, a legible selected sidebar row there)
+ * and must be free to diverge. See palette/surfaces.ts's
+ * resolvePanelBackground, which holds this floor only up to whatever
+ * TEXT_MIN_RATIO on panel_bg (a hard floor, never traded away) leaves room
+ * for — every one of the 29 bundled packs clears both at once.
+ */
+export const PANEL_BG_MIN_VISIBLE_RATIO = 2.0;
+
+/**
  * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
  * clear before it still counts as its role's colour rather than a tinted
  * grey. Set below Fairyfloss's error candidate's own native chroma (0.24,
