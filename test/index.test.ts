@@ -54,7 +54,7 @@ describe("loadAllThemePacks", () => {
     expect(packs.length).toBeGreaterThan(0);
   });
 
-  it("a user pack declaring a bundled pack's own slug replaces it end to end — 26 bundled + 1 override = 26, not 27", () => {
+  it("a user pack declaring a bundled pack's own slug replaces it end to end — 29 bundled + 1 override = 29, not 30", () => {
     const { packs: bundledOnly } = loadAllThemePacks(path.join(userThemeDir, "does-not-exist"));
     const bundledCatppuccinDark = bundledOnly.find((loaded) => loaded.pack.manifest.slug === "catppuccin-dark");
     expect(bundledCatppuccinDark).toBeDefined();

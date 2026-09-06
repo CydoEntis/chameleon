@@ -1085,11 +1085,11 @@ describe("withActiveLayoutRespected — a theme apply must not clobber an active
     expect(JSON.stringify(written)).not.toContain("p:");
   });
 
-  it("recolours the active layout for every one of the 26 bundled themes, leaving it active every time", () => {
+  it("recolours the active layout for every one of the 29 bundled themes, leaving it active every time", () => {
     writePromptState({ originalConfigPath: ownedConfigPath, activeSlug: "spaceship", updatedAtMs: 1 }, promptStatePath);
     const adapter = buildAdapter();
     const curatedPacks = loadCuratedThemePacks();
-    expect(curatedPacks.length).toBe(26);
+    expect(curatedPacks.length).toBe(29);
 
     for (const pack of curatedPacks) {
       adapter.apply(pack.payloads["windows-terminal"]);
@@ -1140,7 +1140,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("leaves the palette key count identical after a second full pass through all 26 bundled themes — applied repeatedly, not once", () => {
+  it("leaves the palette key count identical after a second full pass through all 29 bundled themes — applied repeatedly, not once", () => {
     // The bug this ticket exists to fix only shows up on repeated applies —
     // the reporter's own measurement went from 47 keys to 418 after "a
     // handful of applies", never converging. Verified against the
@@ -1149,7 +1149,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
     // way every other test in this file exercises it, is exactly what hid
     // this bug in the first place.
     const curatedPacks = loadCuratedThemePacks();
-    expect(curatedPacks.length).toBe(26);
+    expect(curatedPacks.length).toBe(29);
     const adapter = createOhMyPoshAdapter(configPath, profilePath);
 
     for (const pack of curatedPacks) {

@@ -45,7 +45,7 @@ export function listVendoredSchemeFileNames(): string[] {
 /**
  * Reads and parses every vendored Windows Terminal scheme into a Palette.
  * Kept for the build-time tooling that wants the whole library measured —
- * tools/build-theme-packs.ts itself only needs the curated 26 and reads
+ * tools/build-theme-packs.ts itself only needs the curated 29 and reads
  * those directly with readVendoredScheme.
  */
 export function loadVendoredSchemes(): Palette[] {

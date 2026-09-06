@@ -1,0 +1,56 @@
+{
+  "manifest": {
+    "slug": "ayu-dark-deep",
+    "name": "Ayu Dark",
+    "family": "Ayu",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Ayu Dark",
+      "black": "#43474e",
+      "red": "#ea6c73",
+      "green": "#7fd962",
+      "yellow": "#f9af4f",
+      "blue": "#53bdfa",
+      "purple": "#cda1fa",
+      "cyan": "#90e1c6",
+      "white": "#c7c7c7",
+      "brightBlack": "#686868",
+      "brightRed": "#f07178",
+      "brightGreen": "#aad94c",
+      "brightYellow": "#ffb454",
+      "brightBlue": "#59c2ff",
+      "brightPurple": "#d2a6ff",
+      "brightCyan": "#95e6cb",
+      "brightWhite": "#ffffff",
+      "background": "#0b0e14",
+      "foreground": "#bfbdb6",
+      "cursorColor": "#e6b450",
+      "selectionBackground": "#40444d"
+    },
+    "oh-my-posh": {
+      "ground": "#0b0e14",
+      "body": "#bfbdb6",
+      "accent": "#cda1fa",
+      "muted": "#686868",
+      "success": "#90e1c6",
+      "error": "#ea6c73"
+    },
+    "herdr": {
+      "ground": "#0b0e14",
+      "body": "#bfbdb6",
+      "accent": "#cda1fa",
+      "muted": "#989898",
+      "success": "#90e1c6",
+      "error": "#ea6c73",
+      "selection_bg": "#40444d"
+    }
+  }
+}

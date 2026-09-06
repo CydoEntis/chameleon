@@ -26,6 +26,22 @@ interface CuratedEntry {
   readonly family: string;
   /** The variant this ticket's build must produce — cross-checked against the source scheme's own measured appearance, so a wrong entry here fails the build instead of shipping a mislabeled pack. */
   readonly appearance: Appearance;
+  /**
+   * Ships verbatim instead of the family+appearance slug toSlug would derive
+   * — for a standalone family with no light/dark sibling, where the default
+   * "-dark" suffix is redundant (CHM-62's jellybeans, shades-of-purple), or
+   * where the derived slug would collide with an already-shipped pack's
+   * (CHM-62's ayu-dark-deep, which would otherwise derive to "ayu-dark" and
+   * collide with the existing Ayu Mirage pack).
+   */
+  readonly slug?: string;
+  /**
+   * Overrides the vendored scheme's own "name" field for the shipped pack's
+   * display name — for Ayu.json, whose upstream name is the bare "Ayu",
+   * ambiguous next to the already-shipped "Ayu Mirage" and "Ayu Light"
+   * (CHM-62).
+   */
+  readonly displayName?: string;
 }
 
 /**
@@ -63,10 +79,17 @@ const CURATED_SCHEMES: readonly CuratedEntry[] = [
   { fileName: "Everforest Light Med.json", family: "Everforest", appearance: "light" },
   { fileName: "Dracula.json", family: "Dracula", appearance: "dark" },
   { fileName: "Monokai Classic.json", family: "Monokai", appearance: "dark" },
+  // CHM-62: three more dark-only additions, all already in the vendored
+  // collection. Ayu Dark (Ayu.json) is a genuinely different scheme from the
+  // already-shipped ayu-dark (Ayu Mirage.json) and ayu-light — see the slug
+  // and displayName overrides above for how the two stay distinguishable.
+  { fileName: "Jellybeans.json", family: "Jellybeans", appearance: "dark", slug: "jellybeans" },
+  { fileName: "Shades Of Purple.json", family: "Shades Of Purple", appearance: "dark", slug: "shades-of-purple" },
+  { fileName: "Ayu.json", family: "Ayu", appearance: "dark", slug: "ayu-dark-deep", displayName: "Ayu Dark" },
 ];
 
-/** The twelve two-appearance families plus Dracula and Monokai — see CHM-6's "What". */
-const EXPECTED_PACK_COUNT = 26;
+/** The twelve two-appearance families plus Dracula, Monokai, Jellybeans, Shades Of Purple and Ayu Dark (all five dark-only) — see CHM-6's "What" and CHM-62. */
+const EXPECTED_PACK_COUNT = 29;
 
 /** A built pack alongside the source scheme it was built from — describeAnsiRepairs needs both, to diff shipped against upstream. */
 interface BuiltPack {
@@ -76,7 +99,8 @@ interface BuiltPack {
 
 function buildPackFor(entry: CuratedEntry): BuiltPack {
   const scheme = readVendoredScheme(entry.fileName);
-  const pack = buildThemePack(scheme, entry.family, ATTRIBUTION);
+  const schemeToBuild = entry.displayName !== undefined ? { ...scheme, name: entry.displayName } : scheme;
+  const pack = buildThemePack(schemeToBuild, entry.family, ATTRIBUTION, entry.slug);
 
   if (pack.manifest.appearance !== entry.appearance) {
     throw new Error(
@@ -139,7 +163,7 @@ function writeThemesDir(packs: readonly ThemePack[]): void {
  * One line per pack naming the selection trade-off resolveSelectionAndBody
  * made for it — CHM-30's "report the achieved pair per pack so the
  * trade-off is inspectable rather than hidden", printed at the one point a
- * human actually looks at these 26 packs together. Read from herdr's own
+ * human actually looks at these 29 packs together. Read from herdr's own
  * payload, the one CHM-30 wires selection into, rather than recomputed —
  * so this can never report something other than what actually shipped.
  */
@@ -188,11 +212,12 @@ function describeBodyNudge({ scheme, pack }: BuiltPack): string | undefined {
 }
 
 /**
- * Generates the twelve curated theme families (light + dark) plus Dracula
- * and Monokai (dark only) under themes/ — see CHM-6. Run with
- * `npm run generate:themes`; the output is committed, not built on every
- * install, so `themes/` ships as static data and nothing on the `ch`
- * startup path needs the 606-scheme vendor library this reads from.
+ * Generates the twelve curated theme families (light + dark) plus the five
+ * dark-only additions — Dracula, Monokai, Jellybeans, Shades Of Purple and
+ * Ayu Dark (CHM-6, CHM-62) — under themes/. Run with `npm run
+ * generate:themes`; the output is committed, not built on every install, so
+ * `themes/` ships as static data and nothing on the `ch` startup path needs
+ * the 606-scheme vendor library this reads from.
  */
 function main(): void {
   if (CURATED_SCHEMES.length !== EXPECTED_PACK_COUNT) {

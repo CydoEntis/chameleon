@@ -5,13 +5,14 @@ import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../../src/palette/
 import { buildThemePack } from "../../src/palette/theme-pack.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
-// The twelve families in CHM-6, each light and dark, plus Dracula and
-// Monokai (dark only) — see CLAUDE.md's "What".
-const EXPECTED_PACK_COUNT = 26;
-const EXPECTED_DARK_ONLY_FAMILIES = ["Dracula", "Monokai"];
+// The twelve families in CHM-6, each light and dark, plus Dracula, Monokai,
+// Jellybeans, Shades Of Purple and Ayu Dark (all dark only, the last three
+// added by CHM-62) — see CLAUDE.md's "What".
+const EXPECTED_PACK_COUNT = 29;
+const EXPECTED_DARK_ONLY_FAMILIES = ["Dracula", "Monokai", "Jellybeans", "Shades Of Purple"];
 
 describe("loadCuratedThemePacks", () => {
-  it("loads exactly the curated 26 — the front row, not the full ~600-scheme library", () => {
+  it("loads exactly the curated 29 — the front row, not the full ~600-scheme library", () => {
     const packs = loadCuratedThemePacks();
     expect(packs.length).toBe(EXPECTED_PACK_COUNT);
   });
@@ -91,7 +92,7 @@ describe("mergeThemePacksBySlug", () => {
     expect(merged.every((loaded) => loaded.origin === "bundled")).toBe(true);
   });
 
-  it("lets a user pack override a bundled pack of the same slug — the exact count and colours from the ticket: 26 bundled + 1 override = 26, not 27", () => {
+  it("lets a user pack override a bundled pack of the same slug — the exact count and colours from the ticket: 29 bundled + 1 override = 29, not 30", () => {
     const bundledPacks = loadCuratedThemePacks();
     const draculaScheme = readVendoredScheme("Dracula.json");
     // A different family and name from the bundled "Dracula" pack — the
