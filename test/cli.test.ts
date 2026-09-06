@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CurrentPackReport, LoadedThemePack, PromptPackListEntry } from "../src/index.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../src/index.js";
+import { relativeLuminance } from "../src/palette/color.js";
 import {
   buildTerminalPreviewSequence,
   buildTerminalResetSequence,
@@ -13,12 +14,24 @@ import {
   formatThemeLine,
   hasDrift,
   normalizeThemeQuery,
+  renderPickerRow,
   renderPromptPickerFrame,
   resolveThemeQuery,
   shouldRestoreOriginalSelectionOnExit,
+  toPickerEntry,
   USAGE,
   wantsPlainThemeList,
 } from "../src/cli.js";
+
+/** The same 24-bit SGR escape renderPickerRow emits — sgrBase 38 for foreground, 48 for background — built independently here so the test proves the row carries the pack's own channel values, not just some escape sequence. */
+function sgrColorEscape(sgrBase: 38 | 48, hex: string): string {
+  const red = Number.parseInt(hex.slice(1, 3), 16);
+  const green = Number.parseInt(hex.slice(3, 5), 16);
+  const blue = Number.parseInt(hex.slice(5, 7), 16);
+  return `\x1b[${sgrBase};2;${red};${green};${blue}m`;
+}
+
+const SGR_REVERSE_VIDEO = "\x1b[7m";
 
 // CHM-34: `ch doctor` was reporting "drift: none" — a comparison it never
 // performed — whenever the recorded pack could no longer be loaded (deleted
@@ -150,6 +163,93 @@ describe("formatThemeLine", () => {
     const bundled = findBundledPack("catppuccin-dark");
     const userPack: LoadedThemePack = { ...bundled, origin: "user" };
     expect(formatThemeLine(userPack)).toContain("(user)");
+  });
+});
+
+// CHM-64: the picker paints each row in that pack's own colours — its own
+// ground behind its own body — rather than the name in default text beside
+// two small swatches. Real bundled packs, by name, per CLAUDE.md's "colour
+// tests use real schemes' real values."
+describe("renderPickerRow", () => {
+  // Solarized Dark and Catppuccin Latte are named fixtures elsewhere in this
+  // project (CLAUDE.md's known-failure list, code-standards.md) precisely
+  // because their own numbers are unusual — a good pair to prove the row's
+  // background and foreground are that pack's own values, not a coincidence.
+  const SAMPLE_SLUGS = ["catppuccin-dark", "solarized-dark", "solarized-light", "gruvbox-light"];
+
+  it.each(SAMPLE_SLUGS)("paints %s's row in its own ground and body, and keeps its accent visible", (slug) => {
+    const loaded = findBundledPack(slug);
+    const roleHexes = loaded.pack.payloads["oh-my-posh"];
+    const entry = toPickerEntry(loaded);
+
+    const row = renderPickerRow(entry, false);
+
+    expect(row).toContain(sgrColorEscape(48, roleHexes.ground));
+    expect(row).toContain(sgrColorEscape(38, roleHexes.body));
+    expect(row).toContain(sgrColorEscape(48, roleHexes.accent));
+    expect(row).toContain(loaded.pack.manifest.name);
+  });
+
+  it("marks a user pack, and only a user pack, the same way formatThemeLine does", () => {
+    const bundled = findBundledPack("catppuccin-dark");
+    const userEntry = toPickerEntry({ ...bundled, origin: "user" });
+    const bundledEntry = toPickerEntry(bundled);
+
+    expect(renderPickerRow(userEntry, false)).toContain("(user)");
+    expect(renderPickerRow(bundledEntry, false)).not.toContain("(user)");
+  });
+
+  // The acceptance criterion, directly: with every row now painted in its
+  // own pack's colours, the highlighted row can no longer be marked with a
+  // fixed background tint — some pack's own ground would match it and the
+  // highlight would vanish. Reverse video (SGR 7) swaps whatever foreground
+  // and background are already set, so it never depends on what those
+  // values are. Proved on every bundled pack, including the lightest and
+  // the darkest by measured ground luminance — not just a couple of named
+  // samples — because "vanishes on some theme" is exactly the failure mode
+  // a sample could miss.
+  describe("the highlighted-row marker", () => {
+    const allEntries = BUNDLED_PACKS.map(toPickerEntry);
+    const byGroundLuminance = [...allEntries].sort(
+      (entryA, entryB) => relativeLuminance(entryA.groundHex) - relativeLuminance(entryB.groundHex),
+    );
+    const darkestEntry = byGroundLuminance[0]!;
+    const lightestEntry = byGroundLuminance[byGroundLuminance.length - 1]!;
+
+    it("covers all 26 bundled packs, the darkest and lightest included", () => {
+      expect(allEntries.length).toBe(26);
+    });
+
+    it("is present on the darkest pack's ground", () => {
+      expect(renderPickerRow(darkestEntry, true)).toContain(SGR_REVERSE_VIDEO);
+    });
+
+    it("is present on the lightest pack's ground", () => {
+      expect(renderPickerRow(lightestEntry, true)).toContain(SGR_REVERSE_VIDEO);
+    });
+
+    it.each(allEntries)("marks $name highlighted, and only when highlighted", (entry) => {
+      expect(renderPickerRow(entry, true)).toContain(SGR_REVERSE_VIDEO);
+      expect(renderPickerRow(entry, false)).not.toContain(SGR_REVERSE_VIDEO);
+    });
+  });
+});
+
+// CHM-52 set the bar this ticket must not cross back over: per-row work is
+// string concatenation over values every pack already carries, so it should
+// be free — this asserts that rather than assuming it.
+describe("the picker's per-row render cost", () => {
+  it("renders every bundled pack's row, highlighted and not, in well under 30ms total", () => {
+    const entries = BUNDLED_PACKS.map(toPickerEntry);
+
+    const startedAtMs = performance.now();
+    for (const entry of entries) {
+      renderPickerRow(entry, false);
+      renderPickerRow(entry, true);
+    }
+    const elapsedMs = performance.now() - startedAtMs;
+
+    expect(elapsedMs).toBeLessThan(30);
   });
 });
 
