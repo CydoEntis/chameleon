@@ -13,6 +13,7 @@ import {
   formatDriftLine,
   formatLockHeldMessage,
   formatNoteworthyResultLines,
+  formatOhMyPoshOwnedConfigLine,
   formatPreviewInProgressLine,
   formatThemeLine,
   hasDrift,
@@ -124,6 +125,31 @@ describe("formatClaudeCodeRestartNote", () => {
 
   it("says nothing when Claude Code is not installed", () => {
     expect(formatClaudeCodeRestartNote(false)).toBeUndefined();
+  });
+});
+
+// CHM-74: "chm doctor reports which config Chameleon owns and which config
+// it was seeded from."
+describe("formatOhMyPoshOwnedConfigLine", () => {
+  it("says nothing before anything has ever been seeded", () => {
+    expect(formatOhMyPoshOwnedConfigLine(undefined)).toBeUndefined();
+  });
+
+  it("names both the owned path and the config it was seeded from", () => {
+    expect(
+      formatOhMyPoshOwnedConfigLine({
+        ownedConfigPath: "C:\\Users\\me\\AppData\\Local\\chameleon\\chameleon.omp.json",
+        seededFromPath: "C:\\Users\\me\\.config\\oh-my-posh\\chips-solarized-light.omp.json",
+      }),
+    ).toBe(
+      "oh-my-posh owns C:\\Users\\me\\AppData\\Local\\chameleon\\chameleon.omp.json — seeded from C:\\Users\\me\\.config\\oh-my-posh\\chips-solarized-light.omp.json",
+    );
+  });
+
+  it("reads as unknown, never a guess, for a config seeded before this was tracked", () => {
+    const line = formatOhMyPoshOwnedConfigLine({ ownedConfigPath: "/home/me/.local/share/chameleon/chameleon.omp.json", seededFromPath: undefined });
+    expect(line).toContain("/home/me/.local/share/chameleon/chameleon.omp.json");
+    expect(line).toContain("unknown");
   });
 });
 
