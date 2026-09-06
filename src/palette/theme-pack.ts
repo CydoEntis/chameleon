@@ -1,12 +1,23 @@
 import { z } from "zod";
 import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
-import { repairAnsiSlots, type AnsiSlotName } from "./ansi.js";
-import { contrastRatio } from "./color.js";
+import { repairAnsiSlots, repairCursorColor, type AnsiSlotName } from "./ansi.js";
+import { contrastRatio, mix } from "./color.js";
 import { toPalette, type Appearance } from "./palette.js";
 import { repairFailingRoles } from "./repair.js";
 import { assignRolesByContrast } from "./roles.js";
 import { resolveSelectionAndBody } from "./selection.js";
-import { ACTIVE_ROW_IDEAL_FRACTION, resolveActiveRowAndText } from "./surfaces.js";
+import {
+  ACTIVE_ROW_IDEAL_FRACTION,
+  checkContrastPairs,
+  herdrContrastPairs,
+  OVERLAY_0_FRACTION,
+  repairOverlay0,
+  resolveActiveRowAndText,
+  resolveHerdrBadgeTokens,
+  windowsTerminalContrastPairs,
+  type ContrastFailure,
+  type HerdrTokenSet,
+} from "./surfaces.js";
 import { SchemeSchema, type Scheme } from "./scheme.js";
 
 /**
@@ -180,6 +191,26 @@ function assertAnsiSlotsClearFloor(slots: Readonly<Record<AnsiSlotName, string>>
 }
 
 /**
+ * Fails loudly if any pair in CHM-79's own declared inventory (see
+ * palette/surfaces.ts) measures under its floor — the general-purpose gate
+ * this ticket adds, replacing the pattern every prior contrast ticket
+ * repeated: fix one pair, ship, wait for a user to find the next unchecked
+ * one (CHM-30 body-on-selection, CHM-38 selection chroma, CHM-50 the active
+ * row, CHM-70 the tint, CHM-75 subtext0 on the active row, CHM-76 the
+ * selection tint again, CHM-78 overlay0 on the active row — a pair nobody
+ * had ever measured). This runs *in addition to* the specific asserts above:
+ * those are each resolver's own proof that its particular guarantee holds;
+ * this is the inventory-wide proof that nothing else was missed.
+ */
+function assertContrastInventoryClearsFloors(failures: readonly ContrastFailure[], schemeName: string): void {
+  if (failures.length === 0) return;
+  const details = failures
+    .map((failure) => `${failure.pair.label} measures ${failure.ratio.toFixed(2)}, below its floor of ${failure.pair.minRatio}`)
+    .join("; ");
+  throw new Error(`"${schemeName}" fails its own declared contrast inventory: ${details}`);
+}
+
+/**
  * Runs a scheme through the full contrast engine — assign, then repair —
  * and packages the result as a shippable pack: a manifest carrying identity
  * and attribution, plus every target's payload. Pure: no file I/O, so the
@@ -237,9 +268,14 @@ export function buildThemePack(
 
   // The 16 ANSI slots an application paints text with directly, repaired
   // against ANSI_MIN_RATIO independently of the six roles above — see
-  // palette/ansi.ts (CHM-32).
+  // palette/ansi.ts (CHM-32). The cursor gets the exact same treatment
+  // (CHM-79): it is not one of the 16 slots, but it is the same kind of pair
+  // — distinguishable from ground, never held to a text floor — and nothing
+  // repaired it before this ticket (ayu-light's authored cursor measures
+  // 1.80 against its own background, nord-light's 1.90).
   const ansiRepair = repairAnsiSlots(scheme);
   assertAnsiSlotsClearFloor(ansiRepair.slots, resolvedPalette.ground.hex, scheme.name);
+  const repairedCursorHex = repairCursorColor(scheme.cursorColor, resolvedPalette.ground.hex);
 
   const roleHexes = roleHexTable(resolvedPalette);
   // herdr's own body/muted differ from oh-my-posh's here (CHM-30's selection
@@ -247,6 +283,40 @@ export function buildThemePack(
   // why this is the one payload allowed to disagree with the plain role
   // table on these two roles.
   const herdrRoleHexes = { ...roleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
+
+  const windowsTerminalPayload: Scheme = {
+    ...scheme,
+    ...ansiRepair.slots,
+    foreground: body.hex,
+    selectionBackground: selection.hex,
+    cursorColor: repairedCursorHex,
+  };
+
+  // CHM-79's own declared inventory, gated together: every pair Windows
+  // Terminal and Herdr actually render, for this pack's own resolved
+  // colours — see palette/surfaces.ts. overlay0 is repaired here exactly the
+  // way adapters/herdr.ts's own surfaceScale repairs it (CHM-78) — same
+  // fraction, same repair — so this gate can never pass a value the live
+  // adapter would not also ship. panel_bg is not passed separately: it is
+  // definitionally ground (see adapters/herdr.ts's structuralTokenValues).
+  const overlay0Hex = repairOverlay0(mix(resolvedPalette.ground.hex, body.hex, OVERLAY_0_FRACTION), resolvedPalette.ground.hex, rowAndText.activeRowBackgroundHex);
+  const herdrTokens: HerdrTokenSet = {
+    sidebar_bg: resolvedPalette.ground.hex,
+    panel_bg: resolvedPalette.ground.hex,
+    active_row_bg: rowAndText.activeRowBackgroundHex,
+    selection_bg: selection.hex,
+    text: rowAndText.textHex,
+    subtext0: rowAndText.subtextHex,
+    overlay0: overlay0Hex,
+    accent: roleHexes.accent,
+    green: roleHexes.success,
+    red: roleHexes.error,
+    ...resolveHerdrBadgeTokens(windowsTerminalPayload),
+  };
+  assertContrastInventoryClearsFloors(
+    [...checkContrastPairs(windowsTerminalContrastPairs(windowsTerminalPayload)), ...checkContrastPairs(herdrContrastPairs(herdrTokens))],
+    scheme.name,
+  );
 
   return {
     manifest: {
@@ -257,7 +327,7 @@ export function buildThemePack(
       ...(attribution !== undefined ? { attribution } : {}),
     },
     payloads: {
-      "windows-terminal": { ...scheme, ...ansiRepair.slots, foreground: body.hex, selectionBackground: selection.hex },
+      "windows-terminal": windowsTerminalPayload,
       "oh-my-posh": roleHexes,
       herdr: { ...herdrRoleHexes, selection_bg: selection.hex },
     },

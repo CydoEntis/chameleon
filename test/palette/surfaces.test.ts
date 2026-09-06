@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { repairCursorColor } from "../../src/palette/ansi.js";
 import { contrastRatio, mix } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
 import {
   ACTIVE_ROW_IDEAL_FRACTION,
+  checkContrastPairs,
+  herdrContrastPairs,
+  OVERLAY_0_FRACTION,
   repairOverlay0,
   resolveActiveRowAndText,
   resolveActiveRowBackground,
+  resolveHerdrBadgeTokens,
+  windowsTerminalContrastPairs,
+  type HerdrTokenSet,
 } from "../../src/palette/surfaces.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
@@ -236,5 +243,202 @@ describe("resolveActiveRowAndText", () => {
       const resolved = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
       expect(resolved.wasVisibilityTraded).toBe(false);
     }
+  });
+});
+
+// CHM-79: the declared contrast inventory — every (foreground, background)
+// pair a target actually renders, named once, gated together (see this
+// module's own "declared contrast inventory" section). checkContrastPairs
+// itself is trivial; what matters is that the inventory a target builds
+// names the pairs CHM-79's own ticket body lists, holds each to the right
+// floor, and refuses to run at all when a token shows up that inventory
+// does not know about.
+
+describe("checkContrastPairs", () => {
+  it("reports a pair whose measured ratio falls under its own declared floor, and omits one that clears it", () => {
+    const pairs = [
+      { label: "passing", foregroundHex: "#ffffff", backgroundHex: "#000000", minRatio: TEXT_MIN_RATIO, kind: "text" as const },
+      { label: "failing", foregroundHex: "#333333", backgroundHex: "#222222", minRatio: TEXT_MIN_RATIO, kind: "text" as const },
+    ];
+
+    const failures = checkContrastPairs(pairs);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.pair.label).toBe("failing");
+    expect(failures[0]?.ratio).toBeLessThan(TEXT_MIN_RATIO);
+  });
+});
+
+describe("windowsTerminalContrastPairs", () => {
+  // Ayu Light's own authored cursor measures 1.80 against its own
+  // background — under even ANSI_MIN_RATIO, and nothing before CHM-79 ever
+  // checked it: cursorColor is not one of the 16 ANSI slots, and it carried
+  // no pair of its own at all.
+  it("flags an unrepaired cursorColor against background, and clears once repaired — Ayu Light's own authored cursor", () => {
+    const scheme = readVendoredScheme("Ayu Light.json");
+    expect(contrastRatio(scheme.cursorColor, scheme.background)).toBeLessThan(ANSI_MIN_RATIO);
+
+    const failuresBefore = checkContrastPairs(windowsTerminalContrastPairs(scheme));
+    expect(failuresBefore.some((failure) => failure.pair.label === "windows-terminal cursorColor on background")).toBe(true);
+
+    const repairedScheme = { ...scheme, cursorColor: repairCursorColor(scheme.cursorColor, scheme.background) };
+    const failuresAfter = checkContrastPairs(windowsTerminalContrastPairs(repairedScheme));
+    expect(failuresAfter.some((failure) => failure.pair.label === "windows-terminal cursorColor on background")).toBe(false);
+  });
+
+  it("holds every one of the 16 ANSI slots and the cursor to ANSI_MIN_RATIO, and foreground to TEXT_MIN_RATIO against both background and selectionBackground", () => {
+    const scheme = readVendoredScheme("Dracula.json");
+    const pairs = windowsTerminalContrastPairs(scheme);
+
+    const cursorPair = pairs.find((pair) => pair.label === "windows-terminal cursorColor on background");
+    expect(cursorPair?.minRatio).toBe(ANSI_MIN_RATIO);
+    expect(cursorPair?.kind).toBe("visibility");
+
+    const foregroundPairs = pairs.filter((pair) => pair.label.startsWith("windows-terminal foreground on"));
+    expect(foregroundPairs).toHaveLength(2);
+    for (const pair of foregroundPairs) {
+      expect(pair.minRatio).toBe(TEXT_MIN_RATIO);
+      expect(pair.kind).toBe("text");
+    }
+
+    const ansiSlotPairs = pairs.filter((pair) => pair.label.endsWith(" on background") && pair.label !== "windows-terminal cursorColor on background" && pair.label !== "windows-terminal foreground on background");
+    expect(ansiSlotPairs).toHaveLength(16);
+    for (const pair of ansiSlotPairs) {
+      expect(pair.minRatio).toBe(ANSI_MIN_RATIO);
+      expect(pair.kind).toBe("visibility");
+    }
+  });
+});
+
+describe("herdrContrastPairs", () => {
+  // Monokai Classic's own real ANSI slots and resolved roles — the same
+  // pipeline theme-pack.ts's buildThemePack runs, reproduced here so this
+  // suite works from real values rather than invented ones.
+  const monokaiScheme = readVendoredScheme("Monokai Classic.json");
+  const monokaiRoleHexes = resolveRoleHexes(monokaiScheme);
+  const monokaiSelectionAndBody = resolveSelectionAndBody(
+    monokaiScheme.selectionBackground,
+    monokaiRoleHexes.ground,
+    monokaiRoleHexes.body,
+    monokaiRoleHexes.accent,
+    [monokaiRoleHexes.success, monokaiRoleHexes.error],
+  );
+  const monokaiRowAndText = resolveActiveRowAndText(
+    monokaiRoleHexes.ground,
+    monokaiSelectionAndBody.body.hex,
+    monokaiRoleHexes.muted,
+    [monokaiSelectionAndBody.selection.hex],
+    ACTIVE_ROW_IDEAL_FRACTION,
+  );
+  const monokaiBadgeTokens = resolveHerdrBadgeTokens(monokaiScheme);
+
+  function monokaiTokens(overrides: Partial<HerdrTokenSet> = {}): HerdrTokenSet {
+    return {
+      sidebar_bg: monokaiRoleHexes.ground,
+      panel_bg: monokaiRoleHexes.ground,
+      active_row_bg: monokaiRowAndText.activeRowBackgroundHex,
+      selection_bg: monokaiSelectionAndBody.selection.hex,
+      text: monokaiRowAndText.textHex,
+      subtext0: monokaiRowAndText.subtextHex,
+      overlay0: repairOverlay0(
+        mix(monokaiRoleHexes.ground, monokaiSelectionAndBody.body.hex, OVERLAY_0_FRACTION),
+        monokaiRoleHexes.ground,
+        monokaiRowAndText.activeRowBackgroundHex,
+      ),
+      accent: monokaiRoleHexes.accent,
+      green: monokaiRoleHexes.success,
+      red: monokaiRoleHexes.error,
+      ...monokaiBadgeTokens,
+      ...overrides,
+    };
+  }
+
+  it("throws, naming the token, when fed a key it has no declared pair or exemption for", () => {
+    const tokensWithUnknownKey = { ...monokaiTokens(), "some-future-token": "#123456" } as unknown as HerdrTokenSet;
+
+    expect(() => herdrContrastPairs(tokensWithUnknownKey)).toThrow(/some-future-token/);
+  });
+
+  it("never throws for the four ramp steps that carry no text — they are declared exempt, not forgotten", () => {
+    const tokensWithRampSteps: HerdrTokenSet = {
+      ...monokaiTokens(),
+      surface_dim: "#101010",
+      surface0: "#202020",
+      surface1: "#303030",
+      overlay1: "#404040",
+    };
+
+    expect(() => herdrContrastPairs(tokensWithRampSteps)).not.toThrow();
+  });
+
+  it("holds the three Chameleon roles (accent, green, red) to TEXT_MIN_RATIO, and the four badge swatches to ANSI_MIN_RATIO instead — CHM-79's own stated exemption", () => {
+    const pairs = herdrContrastPairs(monokaiTokens());
+
+    for (const role of ["accent", "green", "red"]) {
+      const rolePairs = pairs.filter((pair) => pair.label.startsWith(`herdr ${role} on`));
+      expect(rolePairs).toHaveLength(2);
+      for (const pair of rolePairs) {
+        expect(pair.minRatio).toBe(TEXT_MIN_RATIO);
+        expect(pair.kind).toBe("text");
+      }
+    }
+
+    for (const badgeToken of ["yellow", "blue", "teal", "mauve", "peach"]) {
+      const badgePairs = pairs.filter((pair) => pair.label.startsWith(`herdr ${badgeToken} on`));
+      expect(badgePairs).toHaveLength(2);
+      for (const pair of badgePairs) {
+        expect(pair.minRatio).toBe(ANSI_MIN_RATIO);
+        expect(pair.kind).toBe("visibility");
+      }
+    }
+  });
+
+  it("holds selection_bg against sidebar_bg to SELECTION_MIN_VISIBLE_RATIO, as a highlight pair rather than text", () => {
+    const pairs = herdrContrastPairs(monokaiTokens());
+    const selectionPair = pairs.find((pair) => pair.label === "herdr selection_bg on sidebar_bg");
+
+    expect(selectionPair?.minRatio).toBe(SELECTION_MIN_VISIBLE_RATIO);
+    expect(selectionPair?.kind).toBe("visibility");
+    expect(checkContrastPairs(herdrContrastPairs(monokaiTokens()))).not.toContainEqual(
+      expect.objectContaining({ pair: expect.objectContaining({ label: "herdr selection_bg on sidebar_bg" }) }),
+    );
+  });
+
+  // CHM-78's own reported bug, reproduced here as the regression proof CHM-79
+  // asks for: "the gate fails when run against the pre-CHM-78 overlay0
+  // value". #b6b7ac is the plain, unrepaired ramp value (ground/body mixed
+  // at OVERLAY_0_FRACTION) monokai-dark's own overlay0 measured before
+  // CHM-78's repairOverlay0 existed — 3.45 against active_row_bg #585a52,
+  // short of TEXT_MIN_RATIO even though overlay0 paints real text there (see
+  // palette/surfaces.ts's repairOverlay0 and this ticket's own body).
+  it("fails overlay0-on-active_row_bg when fed the pre-CHM-78, unrepaired ramp value — proving the gate catches the bug it exists for", () => {
+    const preRepairOverlay0 = mix(monokaiRoleHexes.ground, monokaiSelectionAndBody.body.hex, OVERLAY_0_FRACTION);
+    expect(contrastRatio(preRepairOverlay0, monokaiRowAndText.activeRowBackgroundHex)).toBeLessThan(TEXT_MIN_RATIO);
+
+    const failures = checkContrastPairs(herdrContrastPairs(monokaiTokens({ overlay0: preRepairOverlay0 })));
+    const overlay0OnRow = failures.find((failure) => failure.pair.label === "herdr overlay0 on active_row_bg");
+
+    expect(overlay0OnRow).toBeDefined();
+    expect(overlay0OnRow?.ratio).toBeLessThan(TEXT_MIN_RATIO);
+
+    // The real, repaired value (what adapters/herdr.ts and theme-pack.ts
+    // both actually ship) clears the same pair.
+    const failuresAfterRepair = checkContrastPairs(herdrContrastPairs(monokaiTokens()));
+    expect(failuresAfterRepair.some((failure) => failure.pair.label === "herdr overlay0 on active_row_bg")).toBe(false);
+  });
+
+  it("holds text and overlay0 to TEXT_MIN_RATIO and subtext0 to MUTED_MIN_RATIO, each against sidebar_bg, panel_bg and active_row_bg — CHM-79's own known Herdr pairs", () => {
+    const pairs = herdrContrastPairs(monokaiTokens());
+    const textBearingSurfaces = ["sidebar_bg", "panel_bg", "active_row_bg"];
+
+    for (const foregroundToken of ["text", "overlay0"]) {
+      const tokenPairs = textBearingSurfaces.map((surface) => pairs.find((pair) => pair.label === `herdr ${foregroundToken} on ${surface}`));
+      expect(tokenPairs.every((pair) => pair !== undefined)).toBe(true);
+      for (const pair of tokenPairs) expect(pair?.minRatio).toBe(TEXT_MIN_RATIO);
+    }
+
+    const subtextPairs = textBearingSurfaces.map((surface) => pairs.find((pair) => pair.label === `herdr subtext0 on ${surface}`));
+    expect(subtextPairs.every((pair) => pair !== undefined)).toBe(true);
+    for (const pair of subtextPairs) expect(pair?.minRatio).toBe(MUTED_MIN_RATIO);
   });
 });
