@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_IDEAL_RATIO, SELECTION_MAX_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import { SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_IDEAL_RATIO, SELECTION_MAX_CHROMA, SELECTION_MIN_RESOLVED_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { chromaOf, contrastRatio, hueDistanceDegrees, toHsl } from "../../src/palette/color.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
 
@@ -10,10 +10,30 @@ import { resolveSelectionAndBody } from "../../src/palette/selection.js";
 // resolveSelectionAndBody now needs to choose a repaired selection's hue —
 // see chooseSelectionHue.
 
-// Gruvbox Dark: selectionBackground already clears both the hard floor and
-// SELECTION_IDEAL_RATIO as authored (selection-vs-ground 2.26,
-// body-on-selection 4.75 — see themes/gruvbox-dark.json).
+// Gruvbox Dark: this ticket's (CHM-76) own named fixture. selectionBackground
+// clears both of resolveSelectionAndBody's contrast floors as authored
+// (selection-vs-ground 2.26, body-on-selection 4.75 — see
+// themes/gruvbox-dark.json's pre-fix history) — the exact case CHM-70 never
+// reached, because its tint only ran once a repair had already fired. But
+// its chroma is 0.071: grey-on-grey to the eye despite clearing both floors,
+// which are built on luminance alone. Below SELECTION_MIN_RESOLVED_CHROMA,
+// so CHM-76 retints it via chooseSelectionHue same as a contrast repair.
 const GRUVBOX_DARK = { ground: "#282828", body: "#ebdbb2", selection: "#665c54", accent: "#5d9da0", success: "#689d6a", error: "#ff5750" };
+
+// Monokai Classic: this ticket's other own named fixture, and the more
+// extreme case — selectionBackground clears both floors even more
+// comfortably than Gruvbox Dark's (selection-vs-ground 2.06, body-on-
+// selection 7.12) while carrying almost no chroma at all (0.035, the
+// lowest of any of the 29 bundled packs' authored candidates).
+const MONOKAI_DARK = { ground: "#272822", body: "#fdfff1", selection: "#57584f", accent: "#66d9ef", success: "#a6e22e", error: "#e6db74" };
+
+// Jellybeans: the control case CHM-76 must not touch. selectionBackground
+// clears both contrast floors as authored (selection-vs-ground 2.47,
+// body-on-selection 5.64) and already carries real chroma (0.290, close to
+// the ~0.55 mean across the 29 bundled packs) — well above
+// SELECTION_MIN_RESOLVED_CHROMA, so this is kept exactly as authored rather
+// than retinted toward accent for no reason.
+const JELLYBEANS = { ground: "#121212", body: "#dedede", selection: "#474e91", accent: "#e1c0fa", success: "#94b979", error: "#e27373" };
 
 // Dracula: selectionBackground clears the hard floor easily (8.59) but only
 // measures 1.56 for selection-vs-ground — short of SELECTION_IDEAL_RATIO —
@@ -60,12 +80,48 @@ function resolve(fixture: { ground: string; body: string; selection: string; acc
 }
 
 describe("resolveSelectionAndBody", () => {
-  it("keeps a selection that already clears the hard floor and the ideal ratio untouched", () => {
-    const { selection, body } = resolve(GRUVBOX_DARK);
+  it("keeps a selection that already clears the hard floor, the ideal ratio and the chroma floor untouched", () => {
+    const { selection, body } = resolve(JELLYBEANS);
 
-    expect(selection.hex).toBe(GRUVBOX_DARK.selection);
+    expect(selection.hex).toBe(JELLYBEANS.selection);
     expect(selection.wasRepaired).toBe(false);
     expect(body.wasNudged).toBe(false);
+  });
+
+  // CHM-76: an authored selection can clear both contrast floors and still
+  // be invisible, because contrast is a function of luminance alone and has
+  // no notion of colour — CHM-70's tint only ran once a repair had already
+  // fired, so a candidate like these two shipped exactly as authored.
+  it("retints Gruvbox Dark's selection despite it clearing both contrast floors, because its chroma (0.071) is below SELECTION_MIN_RESOLVED_CHROMA", () => {
+    const { selection } = resolve(GRUVBOX_DARK);
+
+    // The authored candidate really did clear both floors — this is not the
+    // DRACULA/ROSE_PINE_DAWN case of a candidate failing on contrast.
+    expect(contrastRatio(GRUVBOX_DARK.selection, GRUVBOX_DARK.ground)).toBeGreaterThanOrEqual(SELECTION_IDEAL_RATIO);
+    expect(contrastRatio(GRUVBOX_DARK.body, GRUVBOX_DARK.selection)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(chromaOf(GRUVBOX_DARK.selection)).toBeLessThan(SELECTION_MIN_RESOLVED_CHROMA);
+
+    expect(selection.wasRepaired).toBe(true);
+    expect(selection.hex).not.toBe(GRUVBOX_DARK.selection);
+    expect(chromaOf(selection.hex)).toBeGreaterThanOrEqual(SELECTION_MIN_RESOLVED_CHROMA);
+    expect(chromaOf(selection.hex)).toBeCloseTo(0.42, 2);
+    expect(contrastRatio(GRUVBOX_DARK.body, selection.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(selection.selectionVsGroundRatio).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
+  });
+
+  it("retints Monokai Classic's selection despite it clearing both contrast floors even more comfortably, because its chroma (0.035) is the lowest of any bundled pack", () => {
+    const { selection } = resolve(MONOKAI_DARK);
+
+    expect(contrastRatio(MONOKAI_DARK.selection, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(SELECTION_IDEAL_RATIO);
+    expect(contrastRatio(MONOKAI_DARK.body, MONOKAI_DARK.selection)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(chromaOf(MONOKAI_DARK.selection)).toBeLessThan(SELECTION_MIN_RESOLVED_CHROMA);
+
+    expect(selection.wasRepaired).toBe(true);
+    expect(selection.hex).not.toBe(MONOKAI_DARK.selection);
+    expect(chromaOf(selection.hex)).toBeGreaterThanOrEqual(SELECTION_MIN_RESOLVED_CHROMA);
+    expect(chromaOf(selection.hex)).toBeCloseTo(0.58, 2);
+    expect(contrastRatio(MONOKAI_DARK.body, selection.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(selection.selectionVsGroundRatio).toBeGreaterThanOrEqual(SELECTION_MIN_VISIBLE_RATIO);
   });
 
   it("repairs a selection short of the ideal ratio up to it, when ground and body leave room", () => {
@@ -117,9 +173,9 @@ describe("resolveSelectionAndBody", () => {
   });
 
   it("reports the achieved selection-vs-ground ratio alongside the resolved hex", () => {
-    const { selection } = resolve(GRUVBOX_DARK);
+    const { selection } = resolve(JELLYBEANS);
 
-    expect(selection.selectionVsGroundRatio).toBeCloseTo(contrastRatio(GRUVBOX_DARK.selection, GRUVBOX_DARK.ground), 5);
+    expect(selection.selectionVsGroundRatio).toBeCloseTo(contrastRatio(JELLYBEANS.selection, JELLYBEANS.ground), 5);
   });
 
   it("repairs a selection identical to body into one clearing both the hard floor and (up to rounding) the ideal ratio", () => {
