@@ -1,9 +1,11 @@
 import { performance } from "node:perf_hooks";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CurrentPackReport, LoadedThemePack, PackActionResult } from "../src/index.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug } from "../src/index.js";
 import { relativeLuminance } from "../src/palette/color.js";
 import {
+  buildStatuslineText,
   buildTerminalPreviewSequence,
   buildTerminalResetSequence,
   createSettledFileTargetPreview,
@@ -15,11 +17,13 @@ import {
   formatThemeLine,
   hasDrift,
   normalizeThemeQuery,
+  parseStatuslinePayload,
   type PickerEntry,
   renderPickerFrame,
   renderPickerRow,
   resolveThemeQuery,
   shouldRestoreOriginalSelectionOnExit,
+  type StatuslinePayload,
   toPickerEntry,
   USAGE,
   wantsPlainThemeList,
@@ -122,6 +126,115 @@ describe("formatClaudeCodeRestartNote", () => {
 
   it("says nothing when Claude Code is not installed", () => {
     expect(formatClaudeCodeRestartNote(false)).toBeUndefined();
+  });
+});
+
+const SGR_RESET = "\x1b[0m";
+
+describe("parseStatuslinePayload", () => {
+  it("parses Claude Code's own documented payload shape", () => {
+    const raw = JSON.stringify({
+      cwd: "/current/working/directory",
+      model: { id: "claude-opus-5", display_name: "Opus" },
+      workspace: { current_dir: "/current/working/directory", project_dir: "/original/project/directory" },
+      context_window: { used_percentage: 8 },
+      version: "2.1.90",
+    });
+
+    expect(parseStatuslinePayload(raw)).toEqual({
+      cwd: "/current/working/directory",
+      model: { id: "claude-opus-5", display_name: "Opus" },
+      workspace: { current_dir: "/current/working/directory", project_dir: "/original/project/directory" },
+      context_window: { used_percentage: 8 },
+      version: "2.1.90",
+    });
+  });
+
+  it("returns undefined for malformed JSON rather than throwing", () => {
+    expect(parseStatuslinePayload("not json at all")).toBeUndefined();
+  });
+
+  it("returns undefined for valid JSON that is not an object at all", () => {
+    expect(parseStatuslinePayload("[1, 2, 3]")).toBeUndefined();
+  });
+
+  it("tolerates a payload missing every field this command reads", () => {
+    expect(parseStatuslinePayload("{}")).toEqual({});
+  });
+});
+
+// CHM-68: `chm statusline`'s own output — coloured from the active pack's
+// roles, by name, so a real bundled pack is what proves the colours are
+// actually the pack's own rather than some hardcoded value that happens to
+// look plausible.
+describe("buildStatuslineText", () => {
+  const catppuccinDark = loadCuratedThemePacks().find((pack) => pack.manifest.slug === "catppuccin-dark")!;
+  const catppuccinRoleHexes = catppuccinDark.payloads["oh-my-posh"];
+
+  const payload: StatuslinePayload = {
+    model: { display_name: "Opus" },
+    workspace: { current_dir: "/home/user/projects/chameleon" },
+    context_window: { used_percentage: 42.6 },
+  };
+
+  it("colours each segment from the active pack's own roles, by name", () => {
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, "main");
+
+    expect(text).toBe(
+      [
+        `${sgrColorEscape(38, catppuccinRoleHexes.accent)}Opus${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.body)}chameleon${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.success)}main${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}43% context${SGR_RESET}`,
+      ].join("  ·  "),
+    );
+  });
+
+  it("changes colours when the active pack changes, with no further action", () => {
+    const tokyoNightLight = loadCuratedThemePacks().find((pack) => pack.manifest.slug === "tokyo-night-light")!;
+
+    const catppuccinText = buildStatuslineText(payload, catppuccinRoleHexes, "main");
+    const tokyoNightText = buildStatuslineText(payload, tokyoNightLight.payloads["oh-my-posh"], "main");
+
+    expect(tokyoNightText).not.toBe(catppuccinText);
+  });
+
+  it("omits the branch segment entirely when there is none", () => {
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, undefined);
+    expect(text).not.toContain("main");
+  });
+
+  it("omits the context segment when the payload has none yet — null before the first API response", () => {
+    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: null } }, catppuccinRoleHexes, undefined);
+    expect(text).not.toContain("context");
+  });
+
+  it("falls back to 'Claude Code' for the model name when the payload names none", () => {
+    const text = buildStatuslineText({}, catppuccinRoleHexes, undefined);
+    expect(text).toContain("Claude Code");
+  });
+
+  it("falls back to this process's own working directory when the payload could not be read at all", () => {
+    const text = buildStatuslineText(undefined, catppuccinRoleHexes, undefined);
+    expect(text).toContain(path.basename(process.cwd()));
+  });
+
+  // CLAUDE.md's "fail to a plain, uncoloured line ... exit 0" — no pack
+  // recorded as active is the ordinary case for a machine that never ran
+  // `chm <theme>` yet, not an error.
+  it("prints plain, uncoloured text when no pack has been recorded as active", () => {
+    const text = buildStatuslineText(payload, undefined, "main");
+
+    expect(text).not.toContain("\x1b[");
+    expect(text).toBe("Opus  ·  chameleon  ·  main  ·  43% context");
+  });
+
+  it("never contains a Nerd Font glyph — CLAUDE.md's own font-agnostic terminal output rule", () => {
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, "main");
+    const codePoints = Array.from(text).map((character) => character.codePointAt(0)!);
+    // Nerd Font icons live in Unicode's Private Use Area (U+E000-U+F8FF);
+    // nothing this command prints should ever fall inside it.
+    expect(codePoints.every((codePoint) => codePoint < 0xe000 || codePoint > 0xf8ff)).toBe(true);
   });
 });
 

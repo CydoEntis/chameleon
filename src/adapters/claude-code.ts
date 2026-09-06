@@ -8,8 +8,28 @@ import { claudeCodeSettingsPath } from "./platform.js";
 /** Suffix for the pre-apply copy of settings.json that `undoClaudeCode` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
 
-/** The one key this adapter ever touches — see CHM-51's "edit only the theme key and leave every other byte alone." */
+/**
+ * Suffix for the marker recording that this adapter has already told the
+ * user, once, that it found a pre-existing "statusLine" and left it alone —
+ * see ensureStatusLineConfigured. Colocated with settings.json itself, the
+ * same "beside the file it's about" choice BACKUP_FILE_SUFFIX makes, rather
+ * than a row in Chameleon's own global state directory: the fact this marker
+ * carries ("have I already said this about *this* settings.json") is scoped
+ * to one settings.json, not to the machine.
+ */
+const STATUS_LINE_NOTICE_FILE_SUFFIX = ".chameleon-statusline-notice";
+
+/** The two keys this adapter ever touches — see CHM-51's "edit only the theme key and leave every other byte alone", extended by CHM-68 to the one other key this adapter is ever allowed to set outright: statusLine, and only when it was never there at all. */
 const THEME_KEY = "theme";
+const STATUS_LINE_KEY = "statusLine";
+
+/** The `chm statusline` invocation this adapter points a bare "statusLine" at — see CHM-68. Runs in a shell on every platform Claude Code ships for, and resolves on PATH the same way any other globally installed `chm` command already does, so there is no path to get wrong. */
+const STATUSLINE_COMMAND = "chm statusline";
+const STATUSLINE_CONFIG_VALUE = { type: "command", command: STATUSLINE_COMMAND } as const;
+
+/** `chm <theme>`'s own one-time notice when settings.json already named a statusLine before Chameleon ever looked — CHM-68's own "said once, not on every apply." */
+const STATUS_LINE_ALREADY_SET_NOTICE =
+  "statusLine is already set in settings.json — left it as-is; delete that key yourself if you'd rather Chameleon set its own";
 
 /**
  * Claude Code's own six shipped themes, confirmed by inspecting the binary —
@@ -60,6 +80,10 @@ function themeToWriteFor(existingTheme: string | undefined, appearance: Appearan
 const ClaudeCodeSettingsSchema = z
   .object({
     theme: z.string().optional(),
+    // Never validated beyond "is it there at all" — this adapter only ever
+    // needs to know whether the key is present, never its shape, since it
+    // never edits an existing one (see ensureStatusLineConfigured).
+    statusLine: z.unknown().optional(),
   })
   .catchall(z.unknown());
 
@@ -82,7 +106,8 @@ export function claudeCodeMatchesAppearance(settings: ClaudeCodeSettings, appear
 export interface ClaudeCodeAdapter {
   detect(): boolean;
   read(): ClaudeCodeSettings;
-  apply(appearance: Appearance): void;
+  /** The one-time "statusLine already set" notice (see ensureStatusLineConfigured) — undefined every other time, theme's own upsert included. */
+  apply(appearance: Appearance): string | undefined;
   /** Always a notice naming the restart Claude Code needs — see reloadClaudeCode. */
   reload(): string | undefined;
 }
@@ -93,6 +118,10 @@ function defaultSettingsPath(): string {
 
 function backupPathFor(settingsPath: string): string {
   return `${settingsPath}${BACKUP_FILE_SUFFIX}`;
+}
+
+function statusLineNoticePathFor(settingsPath: string): string {
+  return `${settingsPath}${STATUS_LINE_NOTICE_FILE_SUFFIX}`;
 }
 
 function detectClaudeCode(settingsPath: string): boolean {
@@ -116,19 +145,63 @@ function readClaudeCodeSettings(settingsPath: string): ClaudeCodeSettings {
 }
 
 /**
- * Backs up settings.json, then sets "theme" to whichever of Claude Code's own
- * six values `appearance` maps to (see themeToWriteFor) — never touching
- * permissions, hooks, statusLine, enabledPlugins or anything else in the
- * file, and never wrapping the edit in Chameleon's usual ch:begin/ch:end
- * comment markers. Claude Code parses settings.json as strict JSON: a marker
- * comment anywhere in the file made it discard the whole document rather
- * than skip the one comment it did not recognise — permissions, hooks,
- * statusLine and enabledPlugins all stopped being honoured along with it,
- * silently, unless a user happened to run `claude doctor` (CHM-51). See
- * setUnmarkedTopLevelProperty, which does the surgical in-place value swap
- * this needs instead.
+ * Whether `noticePath`'s marker already exists — i.e. this settings.json has
+ * already been told, on some earlier apply, that its own pre-existing
+ * statusLine was left alone. See ensureStatusLineConfigured.
  */
-function applyClaudeCodeTheme(settingsPath: string, appearance: Appearance): void {
+function hasShownStatusLineNotice(noticePath: string): boolean {
+  return existsSync(noticePath);
+}
+
+/** Leaves an empty marker at `noticePath` — its presence is the whole fact, the same "mere presence" contract preview-state.ts's own marker carries. */
+function markStatusLineNoticeShown(noticePath: string): void {
+  writeFileSync(noticePath, "", "utf8");
+}
+
+/**
+ * Sets `text`'s own "statusLine" to Chameleon's `chm statusline` (CHM-68),
+ * but only when `existingSettings` carries no statusLine at all — the same
+ * "never overwrite a script someone wrote" CLAUDE.md holds for every config
+ * this project edits, extended here from colours to a command someone wrote
+ * themselves. Returns the updated text alongside a notice, shown at most
+ * once per settings.json (see hasShownStatusLineNotice), when a pre-existing
+ * statusLine was found and left untouched — `chm <theme>` surfaces that
+ * notice on whichever apply first notices it, and never repeats it after.
+ * Nothing is ever said when this adapter set statusLine itself for the first
+ * time: that already "just works", the same silence theme's own upsert gets.
+ */
+function ensureStatusLineConfigured(
+  settingsPath: string,
+  text: string,
+  existingSettings: ClaudeCodeSettings,
+  noticePath: string,
+): { text: string; notice: string | undefined } {
+  if (existingSettings.statusLine === undefined) {
+    return { text: setUnmarkedTopLevelProperty(settingsPath, text, STATUS_LINE_KEY, STATUSLINE_CONFIG_VALUE), notice: undefined };
+  }
+  if (hasShownStatusLineNotice(noticePath)) {
+    return { text, notice: undefined };
+  }
+  markStatusLineNoticeShown(noticePath);
+  return { text, notice: STATUS_LINE_ALREADY_SET_NOTICE };
+}
+
+/**
+ * Backs up settings.json, then sets "theme" to whichever of Claude Code's own
+ * six values `appearance` maps to (see themeToWriteFor) and, when it is
+ * entirely absent, "statusLine" to Chameleon's own `chm statusline`
+ * (ensureStatusLineConfigured, CHM-68) — never touching permissions, hooks,
+ * enabledPlugins or anything else in the file, and never wrapping either
+ * edit in Chameleon's usual ch:begin/ch:end comment markers. Claude Code
+ * parses settings.json as strict JSON: a marker comment anywhere in the file
+ * made it discard the whole document rather than skip the one comment it did
+ * not recognise — permissions, hooks, statusLine and enabledPlugins all
+ * stopped being honoured along with it, silently, unless a user happened to
+ * run `claude doctor` (CHM-51). See setUnmarkedTopLevelProperty, which does
+ * the surgical in-place value swap both edits need instead, applied twice in
+ * sequence so only one backup and one write cover both.
+ */
+function applyClaudeCodeTheme(settingsPath: string, appearance: Appearance): string | undefined {
   if (!existsSync(settingsPath)) {
     throw new Error(`no Claude Code settings.json found at ${settingsPath}`);
   }
@@ -136,11 +209,14 @@ function applyClaudeCodeTheme(settingsPath: string, appearance: Appearance): voi
   copyFileSync(settingsPath, backupPathFor(settingsPath));
 
   const originalText = readFileSync(settingsPath, "utf8");
-  const existingTheme = readClaudeCodeSettings(settingsPath).theme;
-  const themeToWrite = themeToWriteFor(existingTheme, appearance);
+  const existingSettings = readClaudeCodeSettings(settingsPath);
+  const themeToWrite = themeToWriteFor(existingSettings.theme, appearance);
 
-  const updatedText = setUnmarkedTopLevelProperty(settingsPath, originalText, THEME_KEY, themeToWrite);
-  writeFileSync(settingsPath, updatedText, "utf8");
+  const textWithTheme = setUnmarkedTopLevelProperty(settingsPath, originalText, THEME_KEY, themeToWrite);
+  const { text: finalText, notice } = ensureStatusLineConfigured(settingsPath, textWithTheme, existingSettings, statusLineNoticePathFor(settingsPath));
+
+  writeFileSync(settingsPath, finalText, "utf8");
+  return notice;
 }
 
 /**
