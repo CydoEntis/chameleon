@@ -94,6 +94,20 @@ export function chromaOf(hex: string): number {
   return (Math.max(red, green, blue) - Math.min(red, green, blue)) / 255;
 }
 
+/**
+ * Circular distance, in degrees, between two hues on the 360° colour wheel —
+ * 0 for identical hues, at most 180 for two sitting directly opposite each
+ * other. Plain subtraction is wrong here because hue wraps: 350° and 10° are
+ * 20° apart, not 340°. Shared by palette/role-mapping.ts (finding the
+ * destination hue family nearest a foreign key) and palette/selection.ts
+ * (checking the selection's hue actually differs from ground's) — same
+ * wheel, same wraparound, named once.
+ */
+export function hueDistanceDegrees(hueA: number, hueB: number): number {
+  const rawDistance = Math.abs(hueA - hueB);
+  return Math.min(rawDistance, 360 - rawDistance);
+}
+
 function clampByte(value: number): number {
   return Math.min(255, Math.max(0, Math.round(value)));
 }
