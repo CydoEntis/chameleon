@@ -1946,9 +1946,6 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
 // platform.ts now memoizes both for the process's lifetime — see
 // resetPlatformProbeCache.
 
-/** CHM-54's own acceptance number for a memoized (second-or-later) construction. */
-const MEMOIZED_CALL_BUDGET_MS = 5;
-
 describe("createDefaultOhMyPoshAdapter performance (CHM-54)", () => {
   beforeEach(() => {
     resetPlatformProbeCache();
@@ -1960,40 +1957,24 @@ describe("createDefaultOhMyPoshAdapter performance (CHM-54)", () => {
     resetPlatformProbeCache();
   });
 
-  it("costs under 5ms on a second call in the same process, once the first has already paid the real cost", () => {
+  it("spawns no further process on a second construction, once the first has already paid the real probe cost", () => {
     // ohMyPoshProfilePathFor only reaches the probed paths for pwsh on
     // Windows — everywhere else (and every other shell) resolves from env
     // vars alone, which was never the slow part. See CHM-25.
     if (!isWindows()) return;
     vi.stubEnv("PSModulePath", String.raw`C:\Program Files\PowerShell\Modules`);
-
-    // spawnSync itself blocks Node's event loop synchronously, so a mock
-    // standing in for a real PowerShell/registry spawn has to block the
-    // same way to reproduce CHM-54's actual cost — a plain mockReturnValue
-    // returns instantly and would prove nothing about the fix. This keeps
-    // the assertion deterministic across CI hosts, rather than depending on
-    // how long a real "powershell"/"reg" happens to take on whichever
-    // machine the suite runs on.
-    const SIMULATED_SPAWN_LATENCY_MS = 20;
-    vi.mocked(spawnSync).mockImplementation(() => {
-      const deadline = Date.now() + SIMULATED_SPAWN_LATENCY_MS;
-      while (Date.now() < deadline) {
-        // Busy-wait: see the comment above for why this can't just await.
-      }
-      return makeSpawnResult({ error: new Error("ENOENT"), status: null });
-    });
+    vi.mocked(spawnSync).mockReturnValue(makeSpawnResult({ error: new Error("ENOENT"), status: null }));
 
     createDefaultOhMyPoshAdapter();
     const spawnCallsAfterFirstConstruction = vi.mocked(spawnSync).mock.calls.length;
     expect(spawnCallsAfterFirstConstruction).toBeGreaterThan(0);
 
-    const secondCallStart = Date.now();
     createDefaultOhMyPoshAdapter();
-    const secondCallDurationMs = Date.now() - secondCallStart;
 
-    expect(secondCallDurationMs).toBeLessThan(MEMOIZED_CALL_BUDGET_MS);
     // No new spawn at all — every probe the second construction needed was
-    // already memoized by the first.
+    // already memoized by the first. This is the behavioural claim CHM-54
+    // actually makes; an elapsed-time budget (CHM-84) was only ever a proxy
+    // for it and flaked under load instead.
     expect(vi.mocked(spawnSync).mock.calls.length).toBe(spawnCallsAfterFirstConstruction);
   });
 });
