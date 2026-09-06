@@ -165,12 +165,29 @@ export const SELECTION_HUE_MIN_DISTANCE_DEGREES = 20;
  * resolved first and never traded away for readability; see
  * palette/surfaces.ts's resolveActiveRowAndText, which repairs the text
  * tokens themselves against whatever this settles on, rather than pulling
- * the row back toward invisibility to make them fit. CHM-75 adds a second
- * move in the other direction — the row's own fraction can fall back toward
- * ground, never below this same floor, so muted reads against it without
- * needing to move further from ground itself.
+ * the row back toward invisibility to make them fit.
+ *
+ * CHM-80 lowers this from 2.0, which set the floor as if the row were read
+ * the same way a glyph is: by its own luminance against the one background
+ * it sits on. It is not read that way. The row runs the full width of the
+ * sidebar, so a reader sees it as a band and tells it apart by its edges —
+ * the seam where it meets the ordinary rows above and below — not by how
+ * far its own luminance sits from a colour it never touches directly. A
+ * seam is visible at far less separation than a small glyph needs, and the
+ * old floor was spending contrast a band does not need to spend: forcing
+ * monokai-dark's row to 2.12 against ground landed it at a mid grey
+ * (#585a52), and subtext0 then had to be dragged to within 4.63 of
+ * TEXT_MIN_RATIO's own 4.5 floor just to read against it — legal, and the
+ * least readable text on screen, because both sides of that pair were
+ * light with almost no tonal separation left between them. The same theme
+ * measured at 1.25 still reads as a plainly visible band and leaves every
+ * text token on it four to five points of contrast better off (see
+ * resolveActiveRowBackground's own doc comment for why: text legibility is
+ * the goal here, row visibility only the constraint it must clear). Kept
+ * above CHM-50's own 1.15 danger line, so the bug that floor exists for —
+ * dracula-dark's row and sidebar going byte-identical — stays fixed.
  */
-export const ACTIVE_ROW_MIN_VISIBLE_RATIO = 2.0;
+export const ACTIVE_ROW_MIN_VISIBLE_RATIO = 1.25;
 
 /**
  * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
