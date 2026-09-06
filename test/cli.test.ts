@@ -187,10 +187,19 @@ describe("parseStatuslinePayload", () => {
   });
 });
 
-// CHM-68: `chm statusline`'s own output — coloured from the active pack's
-// roles, by name, so a real bundled pack is what proves the colours are
-// actually the pack's own rather than some hardcoded value that happens to
-// look plausible.
+/** The same bar buildMeterBar renders — U+2588 FULL BLOCK filled, U+2591 LIGHT SHADE empty, `wholePercent` of 10 characters full — built independently here so a test proves the actual glyphs and fill count, not just that some bar-shaped string came back. */
+function meterBar(wholePercent: number): string {
+  const filledCount = Math.round((wholePercent / 100) * 10);
+  return "█".repeat(filledCount) + "░".repeat(10 - filledCount);
+}
+
+// CHM-68/CHM-83: `chm statusline`'s own output — coloured from the active
+// pack's roles, by name, so a real bundled pack is what proves the colours
+// are actually the pack's own rather than some hardcoded value that happens
+// to look plausible. CHM-83 replaced the old bare "43% context" segment with
+// a bar-and-percentage meter, and added a matching meter each for the
+// 5-hour and 7-day rate-limit windows, dropping the reporter's own absolute
+// token counts entirely.
 describe("buildStatuslineText", () => {
   const catppuccinDark = loadCuratedThemePacks().find((pack) => pack.manifest.slug === "catppuccin-dark")!;
   const catppuccinRoleHexes = catppuccinDark.payloads["oh-my-posh"];
@@ -209,7 +218,7 @@ describe("buildStatuslineText", () => {
         `${sgrColorEscape(38, catppuccinRoleHexes.accent)}Opus${SGR_RESET}`,
         `${sgrColorEscape(38, catppuccinRoleHexes.body)}chameleon${SGR_RESET}`,
         `${sgrColorEscape(38, catppuccinRoleHexes.success)}main${SGR_RESET}`,
-        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}43% context${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}context ${meterBar(43)} 43%${SGR_RESET}`,
       ].join("  ·  "),
     );
   });
@@ -228,9 +237,10 @@ describe("buildStatuslineText", () => {
     expect(text).not.toContain("main");
   });
 
-  it("omits the context segment when the payload has none yet — null before the first API response", () => {
+  it("omits the context meter entirely when the payload has none yet — null before the first API response, rather than rendering it at zero", () => {
     const text = buildStatuslineText({ ...payload, context_window: { used_percentage: null } }, catppuccinRoleHexes, undefined);
     expect(text).not.toContain("context");
+    expect(text).not.toContain("0%");
   });
 
   it("falls back to 'Claude Code' for the model name when the payload names none", () => {
@@ -250,7 +260,7 @@ describe("buildStatuslineText", () => {
     const text = buildStatuslineText(payload, undefined, "main");
 
     expect(text).not.toContain("\x1b[");
-    expect(text).toBe("Opus  ·  chameleon  ·  main  ·  43% context");
+    expect(text).toBe(`Opus  ·  chameleon  ·  main  ·  context ${meterBar(43)} 43%`);
   });
 
   it("never contains a Nerd Font glyph — CLAUDE.md's own font-agnostic terminal output rule", () => {
@@ -259,6 +269,74 @@ describe("buildStatuslineText", () => {
     // Nerd Font icons live in Unicode's Private Use Area (U+E000-U+F8FF);
     // nothing this command prints should ever fall inside it.
     expect(codePoints.every((codePoint) => codePoint < 0xe000 || codePoint > 0xf8ff)).toBe(true);
+  });
+
+  // CHM-83: the reporter's own script prints the absolute token counts
+  // alongside each meter; the reporter explicitly does not want those here.
+  // The payload can carry token counts (context_window.total_input_tokens
+  // etc.) even though this command never reads them — this proves they never
+  // leak into the line just because they were present on stdin.
+  it("never renders an absolute token count, even when the payload carries one", () => {
+    const text = buildStatuslineText(
+      { ...payload, context_window: { used_percentage: 42.6, total_input_tokens: 85200, context_window_size: 200000 } },
+      catppuccinRoleHexes,
+      "main",
+    );
+
+    expect(text).not.toContain("85200");
+    expect(text).not.toContain("200000");
+    expect(text).not.toContain("token");
+  });
+
+  it("renders a 5-hour and a 7-day meter when the payload carries those windows", () => {
+    const text = buildStatuslineText(
+      { ...payload, rate_limits: { five_hour: { used_percentage: 23.5 }, seven_day: { used_percentage: 41.2 } } },
+      catppuccinRoleHexes,
+      "main",
+    );
+
+    expect(text).toBe(
+      [
+        `${sgrColorEscape(38, catppuccinRoleHexes.accent)}Opus${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.body)}chameleon${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.success)}main${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}context ${meterBar(43)} 43%${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}5h ${meterBar(24)} 24%${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}7d ${meterBar(41)} 41%${SGR_RESET}`,
+      ].join("  ·  "),
+    );
+  });
+
+  it("omits the 5-hour meter entirely when that window is absent from the payload, rather than rendering it at zero", () => {
+    const text = buildStatuslineText({ ...payload, rate_limits: { seven_day: { used_percentage: 41.2 } } }, catppuccinRoleHexes, "main");
+
+    expect(text).not.toContain("5h");
+    expect(text).toContain("7d");
+  });
+
+  it("omits the 7-day meter entirely when that window is absent from the payload, rather than rendering it at zero", () => {
+    const text = buildStatuslineText({ ...payload, rate_limits: { five_hour: { used_percentage: 23.5 } } }, catppuccinRoleHexes, "main");
+
+    expect(text).toContain("5h");
+    expect(text).not.toContain("7d");
+  });
+
+  it("omits both rate-limit meters when the payload carries no rate_limits at all — a plan with no rate limits, or before the first API response", () => {
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, "main");
+    expect(text).not.toContain("5h");
+    expect(text).not.toContain("7d");
+  });
+
+  // CHM-83's own "keep": a nearly exhausted window must read as urgent
+  // rather than blend into the row.
+  it("colours a meter in the pack's own error role once it reaches the 90 percent warning threshold", () => {
+    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: 90 } }, catppuccinRoleHexes, "main");
+    expect(text).toContain(`${sgrColorEscape(38, catppuccinRoleHexes.error)}context ${meterBar(90)} 90%${SGR_RESET}`);
+  });
+
+  it("still colours a meter muted just below the 90 percent warning threshold", () => {
+    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: 89 } }, catppuccinRoleHexes, "main");
+    expect(text).toContain(`${sgrColorEscape(38, catppuccinRoleHexes.muted)}context ${meterBar(89)} 89%${SGR_RESET}`);
   });
 });
 
