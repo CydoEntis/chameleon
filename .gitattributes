@@ -33,3 +33,13 @@ test/adapters/fixtures/chips.omp.json text eol=lf
 # Same reasoning again, for the Claude Code adapter's own hostile fixture
 # (see test/adapters/claude-code.test.ts).
 test/adapters/fixtures/claude-code-settings.jsonc text eol=lf
+
+# The three sources vendored from outside the iTerm2 collection. Each one's
+# SOURCE.txt claims it is copied unmodified from a pinned commit, and
+# tools/external-scheme-sources.ts verifies the PaperColor port against
+# PaperColor.vim on every build — both claims are about the checked-in bytes,
+# so autocrlf must not get a vote here either.
+vendor/papercolor-terminal-app/PaperColor-dark.terminal text eol=lf
+vendor/papercolor-terminal-app/PaperColor-light.terminal text eol=lf
+vendor/papercolor-theme/PaperColor.vim text eol=lf
+vendor/tangotango/tangotango-theme.el text eol=lf

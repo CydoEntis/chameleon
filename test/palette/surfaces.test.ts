@@ -680,7 +680,7 @@ describe("herdrContrastPairs", () => {
   });
 });
 
-// CHM-80: subtext0-on-row asserted for every one of the 29 bundled packs
+// CHM-80: subtext0-on-row asserted for every one of the 32 bundled packs
 // together, dark and light alike — light packs invert which direction the
 // row's fraction moves (CHM-30 already found the unreachable cases live on
 // that side), so a fix proven only against dark packs would not prove
@@ -724,7 +724,7 @@ describe("subtext0-on-row clears TEXT_MIN_RATIO, dark and light packs alike (CHM
 
   it("clears TEXT_MIN_RATIO for every bundled pack outside the three named exceptions", () => {
     const packs = loadCuratedThemePacks();
-    expect(packs.length).toBe(29);
+    expect(packs.length).toBe(32);
 
     for (const pack of packs) {
       if (PACKS_BELOW_TEXT_MIN_RATIO.has(pack.manifest.slug)) continue;

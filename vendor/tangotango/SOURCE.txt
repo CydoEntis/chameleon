@@ -1,0 +1,20 @@
+Source:  https://github.com/juba/color-theme-tangotango
+Commit:  6202d4a19ac1def1b2596f1906c4524dd7303563
+License: GPL-3.0-or-later (full notice in the file's own header)
+
+tangotango-theme.el is copied unmodified from that commit. It is an Emacs
+theme, not a terminal scheme: it carries no 16 ANSI slots. Only four values
+are read from it at build time (tools/external-scheme-sources.ts) — the
+`default` face's foreground and background, the `cursor` face's background,
+and the `region` face's background.
+
+The 16 ANSI slots for the shipped pack come from "Builtin Tango Dark" in
+vendor/iterm2-color-schemes (MIT) instead, because TangoTango *is* the Tango
+palette: all seven of its accent colours are byte-identical to that scheme's
+bright row (#ef2929 #8ae234 #fce94f #729fcf #ad7fa8 #555753 #eeeeec), a
+match asserted in test/tools/external-scheme-sources.test.ts so it cannot
+drift silently. What makes the pack TangoTango rather than Tango is the four
+values above — juba re-grounds the palette on #2e3434 instead of black.
+
+Licence note: Chameleon ships MIT. Only those four bare colour values are
+taken from this GPL-3.0 file; see themes/ATTRIBUTION.md.

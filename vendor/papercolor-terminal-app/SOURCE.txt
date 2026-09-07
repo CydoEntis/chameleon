@@ -1,0 +1,20 @@
+Source:  https://github.com/tomotargz/papercolor-terminal-app
+Commit:  3b7a1c9ecc0642d355a2d73ba899a1ac2d18a0c7
+License: MIT (LICENSE in this directory, copied from upstream)
+
+The two .terminal files are copied unmodified from that commit. They are
+macOS Terminal.app profiles: XML plists whose colour values are base64
+NSKeyedArchiver blobs, decoded at build time by tools/external-scheme-sources.ts.
+Build-time only, like vendor/iterm2-color-schemes — nothing ships or reads
+these at runtime. To update, vendor a newer pinned commit and update the SHA
+above; do not hand-edit the files.
+
+Why a third-party port rather than NLKNguyen/papercolor-theme itself:
+PaperColor upstream is a Vim theme with no usable ANSI mapping. Its palette
+keys color00..color15 are syntax slots, not ANSI slots — in the light
+palette color00 is #eeeeee (the background) and color07 is #444444 (the
+foreground), so upstream's own `let g:terminal_color_0 = color00` puts
+near-white in ANSI black and near-black in ANSI white. Upstream marks that
+block "TODO: Fix this". This port carries upstream's exact hex values, and
+inherits that same slot ordering — see the note in tools/external-scheme-sources.ts
+on why Chameleon can absorb it where a mechanical mapper could not.
