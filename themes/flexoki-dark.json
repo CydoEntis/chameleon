@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "flexoki-dark",
+    "name": "Flexoki Dark",
+    "family": "Flexoki",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Flexoki Dark",
+      "black": "#4a4949",
+      "red": "#d14d41",
+      "green": "#879a39",
+      "yellow": "#d0a215",
+      "blue": "#4385be",
+      "purple": "#ce5d97",
+      "cyan": "#3aa99f",
+      "white": "#878580",
+      "brightBlack": "#575653",
+      "brightRed": "#af3029",
+      "brightGreen": "#66800b",
+      "brightYellow": "#ad8301",
+      "brightBlue": "#205ea6",
+      "brightPurple": "#a02f6f",
+      "brightCyan": "#24837b",
+      "brightWhite": "#cecdc3",
+      "background": "#100f0f",
+      "foreground": "#cecdc3",
+      "cursorColor": "#cecdc3",
+      "selectionBackground": "#005e56"
+    },
+    "oh-my-posh": {
+      "ground": "#100f0f",
+      "body": "#cecdc3",
+      "accent": "#3aa99f",
+      "muted": "#646360",
+      "success": "#879a39",
+      "error": "#d75347"
+    },
+    "herdr": {
+      "ground": "#100f0f",
+      "body": "#cecdc3",
+      "accent": "#3aa99f",
+      "muted": "#a6a5a2",
+      "success": "#90a342",
+      "error": "#f57165",
+      "selection_bg": "#005e56"
+    },
+    "statusline": {
+      "context": "#3aa99f",
+      "fiveHour": "#d0a215",
+      "sevenDay": "#879a39"
+    }
+  }
+}

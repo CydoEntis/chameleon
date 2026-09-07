@@ -34,21 +34,40 @@ vendor/tangotango/SOURCE.txt.
 
 ## Families
 
+- Aura
 - Ayu
 - Catppuccin
+- Challenger Deep
+- Cobalt2
+- Doom One
 - Dracula
+- Embark
+- Everblush
 - Everforest
+- Flexoki
 - GitHub
 - Gruvbox
+- Iceberg
 - Jellybeans
 - Kanagawa
+- Melange
+- Modus Vivendi
 - Monokai
+- Moonfly
 - Night Owl
+- Nightfox
 - Nord
 - One Half
 - PaperColor
 - Rosé Pine
+- Seoulbones
 - Shades Of Purple
+- Snazzy
 - Solarized
+- Sonokai
+- Synthwave
 - TangoTango
+- Terafox
 - Tokyo Night
+- Vesper
+- Zenbones

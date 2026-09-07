@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "doom-one",
+    "name": "Doom One",
+    "family": "Doom One",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Doom One",
+      "black": "#5c5c5c",
+      "red": "#ff6c6b",
+      "green": "#98be65",
+      "yellow": "#ecbe7b",
+      "blue": "#a9a1e1",
+      "purple": "#c678dd",
+      "cyan": "#51afef",
+      "white": "#bbc2cf",
+      "brightBlack": "#5c5c5c",
+      "brightRed": "#ff6655",
+      "brightGreen": "#99bb66",
+      "brightYellow": "#ecbe7b",
+      "brightBlue": "#a9a1e1",
+      "brightPurple": "#c678dd",
+      "brightCyan": "#51afef",
+      "brightWhite": "#bfbfbf",
+      "background": "#282c34",
+      "foreground": "#bbc2cf",
+      "cursorColor": "#51afef",
+      "selectionBackground": "#2406fa"
+    },
+    "oh-my-posh": {
+      "ground": "#282c34",
+      "body": "#bbc2cf",
+      "accent": "#a9a1e1",
+      "muted": "#777777",
+      "success": "#98be65",
+      "error": "#ff6c6b"
+    },
+    "herdr": {
+      "ground": "#282c34",
+      "body": "#bbc2cf",
+      "accent": "#b7afef",
+      "muted": "#aeaeae",
+      "success": "#98be65",
+      "error": "#ff9999",
+      "selection_bg": "#2406fa"
+    },
+    "statusline": {
+      "context": "#51afef",
+      "fiveHour": "#ecbe7b",
+      "sevenDay": "#98be65"
+    }
+  }
+}

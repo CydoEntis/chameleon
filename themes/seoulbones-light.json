@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "seoulbones-light",
+    "name": "Seoulbones Light",
+    "family": "Seoulbones",
+    "appearance": "light",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Seoulbones Light",
+      "black": "#9d9d9d",
+      "red": "#dc5284",
+      "green": "#628562",
+      "yellow": "#c48562",
+      "blue": "#0084a3",
+      "purple": "#896788",
+      "cyan": "#008586",
+      "white": "#555555",
+      "brightBlack": "#a09b9c",
+      "brightRed": "#be3c6d",
+      "brightGreen": "#487249",
+      "brightYellow": "#a76b48",
+      "brightBlue": "#006f89",
+      "brightPurple": "#7f4c7e",
+      "brightCyan": "#006f70",
+      "brightWhite": "#777777",
+      "background": "#e2e2e2",
+      "foreground": "#505050",
+      "cursorColor": "#555555",
+      "selectionBackground": "#feaafb"
+    },
+    "oh-my-posh": {
+      "ground": "#e2e2e2",
+      "body": "#555555",
+      "accent": "#785677",
+      "muted": "#827d7e",
+      "success": "#486b48",
+      "error": "#616161"
+    },
+    "herdr": {
+      "ground": "#e2e2e2",
+      "body": "#505050",
+      "accent": "#674566",
+      "muted": "#565152",
+      "success": "#355835",
+      "error": "#4f4f4f",
+      "selection_bg": "#feaafb"
+    },
+    "statusline": {
+      "context": "#006e6e",
+      "fiveHour": "#91522f",
+      "sevenDay": "#486b48"
+    }
+  }
+}
