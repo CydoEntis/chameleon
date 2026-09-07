@@ -59,6 +59,32 @@ function windowsTerminalSchemeName(schemeName: string): string {
  */
 const WINDOWS_TERMINAL_SCHEME_FORK_NAME_PATTERN = /^(.+) \(modified(?: \d+)?\)$/;
 
+/**
+ * Every colour scheme name Windows Terminal ships built into the
+ * application itself (TerminalSettingsModel's defaults.json) — fixed, short,
+ * and unchanged since the app's first stable release. These never appear as
+ * entries in settings.json's schemes[] the way a user-defined or
+ * Chameleon-written scheme does: the app owns them internally and only ever
+ * writes a fork of one out ("One Half Dark (modified 29)"), never the
+ * built-in itself. CHM-92: deadWindowsTerminalSchemeForkNames used to require
+ * the forked-from name to be present as an entry in schemes[] before trusting
+ * a fork was dead, which meant a fork of a built-in — the common case, since
+ * forking only happens to a name Windows Terminal already owns — could never
+ * be recognised. This list lets a fork of a built-in be recognised on its
+ * name alone, without needing the built-in to appear anywhere in the file.
+ */
+const WINDOWS_TERMINAL_BUILT_IN_SCHEME_NAMES = new Set([
+  "Campbell",
+  "Campbell Powershell",
+  "Vintage",
+  "One Half Dark",
+  "One Half Light",
+  "Solarized Dark",
+  "Solarized Light",
+  "Tango Dark",
+  "Tango Light",
+]);
+
 /** winget's package identifier for Windows Terminal (stable), used to build the one-line install command `ch doctor` offers. */
 export const WINDOWS_TERMINAL_WINGET_PACKAGE_ID = "Microsoft.WindowsTerminal";
 
@@ -406,14 +432,18 @@ function schemeEntryNames(schemesNode: Node): string[] {
 /**
  * Every schemes[] entry name that is a dead Windows Terminal fork left
  * behind by CHM-91: shaped like a fork (WINDOWS_TERMINAL_SCHEME_FORK_NAME_PATTERN)
- * *and* the name it was forked from still exists as another entry in the
- * same array — which is only ever true of a fork Windows Terminal itself
- * created, never a scheme a user happened to name with "(modified)" in it,
- * since that name would not also match anything else present. `activeSchemeName`
- * — whatever profiles.defaults.colorScheme currently names — is excluded
- * even when it is shaped like a fork: this function only ever decides what
- * is dead, and the entry actually selected right now is never that, no
- * matter how it got there.
+ * *and* the name it was forked from is one Windows Terminal would actually
+ * have forked — either a known built-in (WINDOWS_TERMINAL_BUILT_IN_SCHEME_NAMES,
+ * which never appears as an entry in schemes[] itself — see CHM-92) or a
+ * name that still exists as another entry in the same array (a user-defined
+ * scheme Windows Terminal forked instead, the CHM-91 case this already
+ * handled). Neither branch matches a scheme a user happened to name with
+ * "(modified)" in it: its forked-from half is neither a built-in nor present
+ * elsewhere in the file, so it was never forked from anything at all.
+ * `activeSchemeName` — whatever profiles.defaults.colorScheme currently
+ * names — is excluded even when it is shaped like a fork: this function only
+ * ever decides what is dead, and the entry actually selected right now is
+ * never that, no matter how it got there.
  */
 function deadWindowsTerminalSchemeForkNames(schemesNode: Node, activeSchemeName: unknown): string[] {
   const entryNames = schemeEntryNames(schemesNode);
@@ -421,7 +451,8 @@ function deadWindowsTerminalSchemeForkNames(schemesNode: Node, activeSchemeName:
   return entryNames.filter((name) => {
     if (name === activeSchemeName) return false;
     const forkedFromName = WINDOWS_TERMINAL_SCHEME_FORK_NAME_PATTERN.exec(name)?.[1];
-    return forkedFromName !== undefined && entryNameSet.has(forkedFromName);
+    if (forkedFromName === undefined) return false;
+    return WINDOWS_TERMINAL_BUILT_IN_SCHEME_NAMES.has(forkedFromName) || entryNameSet.has(forkedFromName);
   });
 }
 
