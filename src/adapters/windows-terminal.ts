@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
@@ -16,6 +16,7 @@ import {
   requireNode,
   upsertMarkedBlock,
 } from "./marked-json-edit.js";
+import { writeFileAtomically } from "./atomic-write.js";
 
 /**
  * Windows Terminal's package family name for the stable release channel.
@@ -354,7 +355,7 @@ function applyWindowsTerminalScheme(settingsPath: string, scheme: Scheme): void 
   const withColorScheme = upsertDefaultColorScheme(settingsPath, withScheme, namedScheme.name);
   const withTheme = upsertTopLevelTheme(settingsPath, withColorScheme, appearance);
 
-  writeFileSync(settingsPath, withTheme, "utf8");
+  writeFileAtomically(settingsPath, withTheme);
 }
 
 /**
@@ -404,7 +405,7 @@ export function selectWindowsTerminalFont(fontFace: string, settingsPath: string
   const originalText = readFileSync(resolvedSettingsPath, "utf8");
   const updatedText = upsertSelectedFont(resolvedSettingsPath, originalText, fontFace);
 
-  writeFileSync(resolvedSettingsPath, updatedText, "utf8");
+  writeFileAtomically(resolvedSettingsPath, updatedText);
 }
 
 /**
@@ -494,7 +495,7 @@ export function removeDeadWindowsTerminalSchemeForks(settingsPath: string | unde
     (text, forkName) => removeSchemeEntryByName(resolvedSettingsPath, text, forkName),
     originalText,
   );
-  writeFileSync(resolvedSettingsPath, updatedText, "utf8");
+  writeFileAtomically(resolvedSettingsPath, updatedText);
 
   return deadForkNames.length;
 }
