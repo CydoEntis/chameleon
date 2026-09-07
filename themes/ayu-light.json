@@ -46,10 +46,10 @@
     "herdr": {
       "ground": "#f8f9fa",
       "body": "#5a5f64",
-      "accent": "#875eb0",
+      "accent": "#744b9d",
       "muted": "#616161",
-      "success": "#0c805a",
-      "error": "#c34546",
+      "success": "#006b48",
+      "error": "#ad2f30",
       "selection_bg": "#ead5ff"
     },
     "statusline": {

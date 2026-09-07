@@ -49,7 +49,7 @@
       "accent": "#7dcfff",
       "muted": "#9da4c4",
       "success": "#9ece6a",
-      "error": "#f7768e",
+      "error": "#fe7d95",
       "selection_bg": "#00578a"
     },
     "statusline": {
