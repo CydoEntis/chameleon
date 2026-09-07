@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { createDefaultOhMyPoshAdapter, discoverPreOwnedOhMyPoshConfig } from "./oh-my-posh.js";
 import { claudeCodeSettingsPath, detectShell, herdrConfigPath, ohMyPoshProfilePathFor, stateDir, type Shell } from "./platform.js";
 import { defaultWindowsTerminalSettingsPath } from "./windows-terminal.js";
+import { writeFileAtomically } from "./atomic-write.js";
 
 /**
  * CHM-71: the machine's own setup, exactly as it was before Chameleon ever
@@ -79,9 +80,7 @@ export function defaultOriginalSnapshotPath(): string {
  */
 function writeSnapshotAtomically(snapshotPath: string, snapshot: OriginalSnapshot): void {
   mkdirSync(path.dirname(snapshotPath), { recursive: true });
-  const temporaryPath = path.join(path.dirname(snapshotPath), `.${path.basename(snapshotPath)}.tmp-${process.pid}-${Date.now()}`);
-  writeFileSync(temporaryPath, JSON.stringify(snapshot, null, 2), "utf8");
-  renameSync(temporaryPath, snapshotPath);
+  writeFileAtomically(snapshotPath, JSON.stringify(snapshot, null, 2));
 }
 
 /**
@@ -212,7 +211,7 @@ export function captureOriginalSnapshotIfMissing(
 /** Backs a raw file write with the same directory-creation courtesy every adapter's own apply already extends to a config that might not exist yet — restoring must never fail merely because a parent directory was cleaned up since the snapshot was taken. */
 function writeTextEnsuringDir(targetPath: string, text: string): void {
   mkdirSync(path.dirname(targetPath), { recursive: true });
-  writeFileSync(targetPath, text, "utf8");
+  writeFileAtomically(targetPath, text);
 }
 
 /** Writes Windows Terminal's settings.json back exactly as snapshotted. Returns whether there was anything recorded to restore. */

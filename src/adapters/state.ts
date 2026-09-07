@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { stateDir } from "./platform.js";
+import { writeFileAtomically } from "./atomic-write.js";
 
 /** File name of the pointer `ch <slug>` writes and `ch current`, `ch next` and `ch dark`/`ch light` all read. */
 const ACTIVE_PACK_FILE_NAME = "active-pack.json";
@@ -40,7 +41,7 @@ export function readActivePackState(statePath: string = defaultActivePackStatePa
 export function writeActivePackState(slug: string, statePath: string = defaultActivePackStatePath()): void {
   mkdirSync(path.dirname(statePath), { recursive: true });
   const state: ActivePackState = { slug, updatedAtMs: Date.now() };
-  writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  writeFileAtomically(statePath, JSON.stringify(state, null, 2));
 }
 
 // --- CHM-86: whether Chameleon manages Claude Code's statusLine ------------
@@ -93,5 +94,5 @@ export function readStatuslineState(statePath: string = defaultStatuslineStatePa
 export function writeStatuslineState(isEnabled: boolean, statePath: string = defaultStatuslineStatePath()): void {
   mkdirSync(path.dirname(statePath), { recursive: true });
   const state: StatuslineState = { isEnabled };
-  writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  writeFileAtomically(statePath, JSON.stringify(state, null, 2));
 }

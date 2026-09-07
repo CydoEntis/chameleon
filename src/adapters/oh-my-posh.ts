@@ -17,6 +17,7 @@ import {
   upsertMarkedBlock,
 } from "./marked-json-edit.js";
 import { detectShell, ohMyPoshProfilePathFor, stateDir, type Shell } from "./platform.js";
+import { writeFileAtomically } from "./atomic-write.js";
 
 /** Suffix for the pre-apply copy of a config or profile file that `undoOhMyPosh` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -1122,7 +1123,7 @@ function upsertInitLine(shell: Shell, profilePath: string, ownedConfigPath: stri
   const eol = detectLineEnding(originalText || "\n");
   const { begin, end } = PROFILE_BLOCK_MARKERS[shell];
   const updatedText = upsertProfileBlock(originalText, buildProfileOwnedBlock(shell, ownedConfigPath), eol, begin, end, shell);
-  writeFileSync(profilePath, updatedText, "utf8");
+  writeFileAtomically(profilePath, updatedText);
   return didProfileAlreadyExist ? undefined : profileCreationNotice(profilePath, shell);
 }
 
@@ -1315,7 +1316,7 @@ const OhMyPoshSeedStateSchema = z.object({
 export type OhMyPoshSeedState = z.infer<typeof OhMyPoshSeedStateSchema>;
 
 function writeSeedStateFile(ownedConfigPath: string, state: OhMyPoshSeedState): void {
-  writeFileSync(seedStatePathFor(ownedConfigPath), JSON.stringify(state, null, 2), "utf8");
+  writeFileAtomically(seedStatePathFor(ownedConfigPath), JSON.stringify(state, null, 2));
 }
 
 /**
@@ -1480,7 +1481,7 @@ function recolorConfigInto(configPath: string, profilePath: string, shell: Shell
     updatedConfigText = upsertBlocksArray(configPath, updatedConfigText, [...finalBlocks]);
   }
   assertNoDanglingPaletteReferences(configPath, updatedConfigText, finalPaletteTable);
-  writeFileSync(configPath, updatedConfigText, "utf8");
+  writeFileAtomically(configPath, updatedConfigText);
   recordOriginalPaletteHexes(configPath, originalPalette);
 
   const initLineNotice = upsertInitLine(shell, profilePath, configPath);
@@ -1742,7 +1743,7 @@ function writeLayout(configPath: string, layout: Layout): void {
   copyFileSync(configPath, backupPathFor(configPath));
   const originalText = readFileSync(configPath, "utf8");
   const updatedText = upsertBlocksArray(configPath, originalText, blocksFromLayout(layout));
-  writeFileSync(configPath, updatedText, "utf8");
+  writeFileAtomically(configPath, updatedText);
 }
 
 /** Reads Chameleon's owned config's layout — the left and right-hand segment blocks `ch edit` operates on. */

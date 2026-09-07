@@ -1,10 +1,11 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
 import type { Appearance } from "../palette/palette.js";
 import { setUnmarkedTopLevelProperty } from "./marked-json-edit.js";
 import { claudeCodeSettingsPath } from "./platform.js";
 import { defaultStatuslineStatePath, readStatuslineState, writeStatuslineState } from "./state.js";
+import { writeFileAtomically } from "./atomic-write.js";
 
 /** Suffix for the pre-apply copy of settings.json that `undoClaudeCode` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -219,7 +220,7 @@ function applyClaudeCodeTheme(settingsPath: string, appearance: Appearance, stat
   const textWithTheme = setUnmarkedTopLevelProperty(settingsPath, originalText, THEME_KEY, themeToWrite);
   const { text: finalText, notice } = ensureStatusLineConfigured(settingsPath, textWithTheme, existingSettings.statusLine, statuslineStatePath);
 
-  writeFileSync(settingsPath, finalText, "utf8");
+  writeFileAtomically(settingsPath, finalText);
   return notice;
 }
 
@@ -312,7 +313,7 @@ export function enableClaudeCodeStatusLine(
   copyFileSync(settingsPath, backupPathFor(settingsPath));
   const originalText = readFileSync(settingsPath, "utf8");
   const updatedText = setUnmarkedTopLevelProperty(settingsPath, originalText, STATUS_LINE_KEY, STATUSLINE_CONFIG_VALUE);
-  writeFileSync(settingsPath, updatedText, "utf8");
+  writeFileAtomically(settingsPath, updatedText);
   return undefined;
 }
 

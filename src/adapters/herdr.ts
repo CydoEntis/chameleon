@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ROLES, type Role } from "../constants.js";
@@ -20,6 +20,7 @@ import {
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
 import { herdrConfigPath } from "./platform.js";
+import { writeFileAtomically } from "./atomic-write.js";
 
 /** Suffix for the pre-apply copy of config.toml that `undoHerdr` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
@@ -797,7 +798,7 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
   const withCustom = upsertCustomBlock(withName, eol, resolvedTheme);
   const withUiAccent = upsertUiAccent(withCustom, eol, resolvedTheme.colorTable.accent);
 
-  writeFileSync(resolvedConfigPath, withUiAccent, "utf8");
+  writeFileAtomically(resolvedConfigPath, withUiAccent);
 }
 
 const HerdrCliErrorSchema = z.object({ code: z.string(), message: z.string().optional() }).catchall(z.unknown());
