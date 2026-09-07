@@ -43,3 +43,8 @@ vendor/papercolor-terminal-app/PaperColor-dark.terminal text eol=lf
 vendor/papercolor-terminal-app/PaperColor-light.terminal text eol=lf
 vendor/papercolor-theme/PaperColor.vim text eol=lf
 vendor/tangotango/tangotango-theme.el text eol=lf
+
+# The theme authors' own Alacritty exports, copied unmodified from a pinned
+# commit like every other vendored source here.
+vendor/cyberdream-nvim/*.toml text eol=lf
+vendor/bamboo-nvim/*.toml text eol=lf

@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "cyberdream-light",
+    "name": "Cyberdream Light",
+    "family": "Cyberdream",
+    "appearance": "light",
+    "attribution": {
+      "source": "scottmckendry/cyberdream.nvim",
+      "sourceUrl": "https://github.com/scottmckendry/cyberdream.nvim",
+      "commit": "39e1fda12c0704e01029b286a4c7e77e33a0c5cd",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Cyberdream Light",
+      "black": "#b3b3b3",
+      "red": "#d11500",
+      "green": "#008b0c",
+      "yellow": "#997b00",
+      "blue": "#0057d1",
+      "purple": "#a018ff",
+      "cyan": "#008c99",
+      "white": "#16181a",
+      "brightBlack": "#acacac",
+      "brightRed": "#d11500",
+      "brightGreen": "#008b0c",
+      "brightYellow": "#997b00",
+      "brightBlue": "#0057d1",
+      "brightPurple": "#a018ff",
+      "brightCyan": "#008c99",
+      "brightWhite": "#16181a",
+      "background": "#ffffff",
+      "foreground": "#16181a",
+      "cursorColor": "#16181a",
+      "selectionBackground": "#2580ff"
+    },
+    "oh-my-posh": {
+      "ground": "#ffffff",
+      "body": "#16181a",
+      "accent": "#0057d1",
+      "muted": "#929292",
+      "success": "#00870c",
+      "error": "#d11500"
+    },
+    "herdr": {
+      "ground": "#ffffff",
+      "body": "#16181a",
+      "accent": "#0057d1",
+      "muted": "#373737",
+      "success": "#006b0a",
+      "error": "#b91300",
+      "selection_bg": "#2580ff"
+    },
+    "statusline": {
+      "context": "#007f8b",
+      "fiveHour": "#8c7100",
+      "sevenDay": "#00870c"
+    }
+  }
+}
