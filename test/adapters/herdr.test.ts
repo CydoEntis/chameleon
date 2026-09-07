@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HERDR_BUILTIN_GROUNDS, createHerdrAdapter, herdrMatchesRoleHexes, nearestHerdrBuiltinThemeNameFor, undoHerdr } from "../../src/adapters/herdr.js";
+import { HERDR_BUILTIN_GROUNDS, createHerdrAdapter, herdrMatchesScheme, nearestHerdrBuiltinThemeNameFor, undoHerdr } from "../../src/adapters/herdr.js";
 import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, PANEL_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, type Role } from "../../src/constants.js";
 import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
@@ -30,9 +30,10 @@ import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
  * resolveActiveRowAndText), and CHM-85: `accent`/`success`/`error` a second
  * time against panel_bg (see repairHerdrAccentFamily), so they can differ
  * from the plain `resolveRoleHexes` table a bare role lookup would give.
- * Every test that asserts on these written tokens (or feeds
- * herdrMatchesRoleHexes) needs this, not the unrepaired table, or it is
- * pinning a value the adapter never actually writes.
+ * Every test that asserts on these written tokens needs this, not the
+ * unrepaired table, or it is pinning a value the adapter never actually
+ * writes. herdrMatchesScheme (CHM-88) runs this exact pipeline itself now,
+ * from a scheme, so it no longer needs this helper fed into it by hand.
  */
 function expectedHerdrRoleHexes(scheme: Scheme): Record<Role, string> {
   const roleHexes = resolveRoleHexes(scheme);
@@ -423,7 +424,15 @@ describe.each([
 
 // CHM-27: this is the exact comparison `ch current`/`ch doctor` use to
 // notice a target that has drifted from the recorded pack.
-describe("herdrMatchesRoleHexes", () => {
+//
+// CHM-88: herdrMatchesScheme takes the pack's own scheme, not a precomputed
+// role table, and re-runs applyHerdrScheme's own repair pipeline itself
+// (resolveHerdrTheme) to know what a live config should show right now —
+// see that function's own doc comment for why comparing against a pack's
+// stored payload instead reported permanent drift on a freshly applied
+// machine the moment that pipeline grew a repair the bundled packs were
+// never rebuilt against.
+describe("herdrMatchesScheme", () => {
   let configDir: string;
   let configPath: string;
 
@@ -441,20 +450,49 @@ describe("herdrMatchesRoleHexes", () => {
     const adapter = createHerdrAdapter(configPath);
     adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
-    expect(herdrMatchesRoleHexes(adapter.read(), expectedHerdrRoleHexes(ZEROX96F_SCHEME))).toBe(true);
+    expect(herdrMatchesScheme(adapter.read(), ZEROX96F_SCHEME)).toBe(true);
   });
 
   it("does not match a scheme other than the one last applied", () => {
     const adapter = createHerdrAdapter(configPath);
     adapter.apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
-    expect(herdrMatchesRoleHexes(adapter.read(), resolveRoleHexes(AARDVARK_BLUE_SCHEME))).toBe(false);
+    expect(herdrMatchesScheme(adapter.read(), AARDVARK_BLUE_SCHEME)).toBe(false);
   });
 
   it("does not match a config that was never themed by Chameleon at all", () => {
     const config = createHerdrAdapter(configPath).read();
 
-    expect(herdrMatchesRoleHexes(config, resolveRoleHexes(ZEROX96F_SCHEME))).toBe(false);
+    expect(herdrMatchesScheme(config, ZEROX96F_SCHEME)).toBe(false);
+  });
+
+  // CHM-88's own regression proof: night-owl-dark's own bundled payload
+  // (themes/night-owl-dark.json) carries error "#ef5350" — the pre-repair
+  // value repairHerdrAccentFamily (CHM-85) moves off of, to "#ff7674", to
+  // clear panel_bg and active_row_bg. A comparison keyed off that stored
+  // payload instead of the scheme — herdrMatchesRoleHexes's own bug before
+  // this ticket — fails this test even though the config it is checking is
+  // exactly what apply just wrote. See this ticket's own body for the four
+  // contrast measurements that make each value the right one for its own
+  // job.
+  it("reports no drift for every bundled pack immediately after apply", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const packConfigDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-drift-all-packs-"));
+      const packConfigPath = path.join(packConfigDir, "config.toml");
+      writeFileSync(packConfigPath, LF_FIXTURE, "utf8");
+      try {
+        const adapter = createHerdrAdapter(packConfigPath);
+        const scheme = pack.payloads["windows-terminal"];
+        adapter.apply(scheme, pack.manifest.slug);
+
+        expect(herdrMatchesScheme(adapter.read(), scheme), pack.manifest.slug).toBe(true);
+      } finally {
+        rmSync(packConfigDir, { recursive: true, force: true });
+      }
+    }
   });
 });
 
