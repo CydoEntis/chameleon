@@ -4,11 +4,22 @@ import { z } from "zod";
 import type { Appearance } from "../palette/palette.js";
 import { setUnmarkedTopLevelProperty } from "./marked-json-edit.js";
 import { claudeCodeSettingsPath } from "./platform.js";
+import { defaultStatuslineStatePath, readStatuslineState, writeStatuslineState } from "./state.js";
 
 /** Suffix for the pre-apply copy of settings.json that `undoClaudeCode` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
 
-/** The two keys this adapter ever touches — see CHM-51's "edit only the theme key and leave every other byte alone", extended by CHM-68 to statusLine. CHM-71 supersedes CHM-68's "only when it was never there at all": once the very first apply has snapshotted whatever the user had (see adapters/original-snapshot.ts), Chameleon owns statusLine outright, the same as theme, and `chm original` is what gives either one back. */
+/**
+ * The two keys this adapter ever touches — see CHM-51's "edit only the theme
+ * key and leave every other byte alone", extended by CHM-68 to statusLine.
+ * "theme" is unconditional on every apply, the same as it always has been.
+ * "statusLine" is not, any more: CHM-71's "Chameleon owns statusLine
+ * outright" is itself superseded by CHM-86 — a lifecycle a user can turn off
+ * and back on (state.ts's statusline state) now decides whether an apply
+ * touches this key at all, see ensureStatusLineConfigured. `chm original`
+ * remains the one command that gives either key's pre-Chameleon value back,
+ * whatever the lifecycle currently says.
+ */
 const THEME_KEY = "theme";
 const STATUS_LINE_KEY = "statusLine";
 
@@ -66,8 +77,8 @@ const ClaudeCodeSettingsSchema = z
   .object({
     theme: z.string().optional(),
     // Never validated beyond "is it there at all" — this adapter only ever
-    // needs to know whether the key is present, never its shape, since it
-    // never edits an existing one (see ensureStatusLineConfigured).
+    // needs to know whether the key is present, to decide a machine's first
+    // apply (see ensureStatusLineConfigured), never its shape.
     statusLine: z.unknown().optional(),
   })
   .catchall(z.unknown());
@@ -91,7 +102,13 @@ export function claudeCodeMatchesAppearance(settings: ClaudeCodeSettings, appear
 export interface ClaudeCodeAdapter {
   detect(): boolean;
   read(): ClaudeCodeSettings;
-  /** Always undefined — CHM-71 has nothing left to say here now that statusLine is set unconditionally; see ensureStatusLineConfigured. */
+  /**
+   * A notice worth telling the user, or undefined when apply's own
+   * "applied" headline already says everything there is to say — see
+   * ensureStatusLineConfigured. The one case this carries something: a
+   * machine's very first apply, when it finds a statusLine already there
+   * and leaves it alone rather than install over it (CHM-86).
+   */
   apply(appearance: Appearance): string | undefined;
   /** Always a notice naming the restart Claude Code needs — see reloadClaudeCode. */
   reload(): string | undefined;
@@ -126,24 +143,61 @@ function readClaudeCodeSettings(settingsPath: string): ClaudeCodeSettings {
 }
 
 /**
- * Sets `text`'s own "statusLine" to Chameleon's `chm statusline` (CHM-68),
- * unconditionally — CHM-71 supersedes CHM-68's "only when it was never there
- * at all": the one-time original snapshot (adapters/original-snapshot.ts)
- * is what now protects whatever statusLine the user had, the same way it
- * protects everything else Chameleon owns, so there is nothing left here to
- * check or to say — every apply just upserts it, exactly like "theme".
+ * The plain-language notice `ensureStatusLineConfigured` returns the one time
+ * a machine's first apply finds a statusLine already there — CHM-86's own
+ * acceptance criterion, "says plainly that Chameleon's was not installed over
+ * it." Named once here so the apply-time notice and `chm doctor`'s own report
+ * (see describeStatusLine) can never drift apart in wording.
  */
-function ensureStatusLineConfigured(settingsPath: string, text: string): string {
-  return setUnmarkedTopLevelProperty(settingsPath, text, STATUS_LINE_KEY, STATUSLINE_CONFIG_VALUE);
+const KEPT_EXISTING_STATUS_LINE_NOTICE =
+  "kept your existing statusLine instead of installing Chameleon's own — run `chm statusline on` to switch to it";
+
+/**
+ * Sets `text`'s own "statusLine" to Chameleon's `chm statusline`, or leaves it
+ * exactly as `text` already has it — decided by Chameleon's own recorded
+ * lifecycle choice (state.ts's statusline state), never unconditionally the
+ * way CHM-71 left it. CHM-86 supersedes that: a user who ran `chm statusline
+ * off` must have every apply after it, a theme switch included, leave the key
+ * alone.
+ *
+ * `readStatuslineState` coming back undefined means no choice has ever been
+ * recorded — true only on a machine's very first apply — and this is where
+ * that choice gets made and persisted for every apply after it: installing
+ * over nothing when `existingStatusLine` is absent (CHM-86's own "without
+ * being asked"), or leaving an existing one alone and saying so plainly
+ * (KEPT_EXISTING_STATUS_LINE_NOTICE) when it is not. Once a choice exists,
+ * this never revisits it on its own — only `chm statusline on`/`off`
+ * (enableClaudeCodeStatusLine/disableClaudeCodeStatusLine) change it again.
+ */
+function ensureStatusLineConfigured(
+  settingsPath: string,
+  text: string,
+  existingStatusLine: unknown,
+  statuslineStatePath: string,
+): { text: string; notice: string | undefined } {
+  const recordedState = readStatuslineState(statuslineStatePath);
+
+  if (recordedState === undefined) {
+    const isFirstApplyWithNoExistingStatusLine = existingStatusLine === undefined;
+    writeStatuslineState(isFirstApplyWithNoExistingStatusLine, statuslineStatePath);
+    if (!isFirstApplyWithNoExistingStatusLine) {
+      return { text, notice: KEPT_EXISTING_STATUS_LINE_NOTICE };
+    }
+  } else if (!recordedState.isEnabled) {
+    return { text, notice: undefined };
+  }
+
+  return { text: setUnmarkedTopLevelProperty(settingsPath, text, STATUS_LINE_KEY, STATUSLINE_CONFIG_VALUE), notice: undefined };
 }
 
 /**
  * Backs up settings.json, then sets "theme" to whichever of Claude Code's own
- * six values `appearance` maps to (see themeToWriteFor) and "statusLine" to
- * Chameleon's own `chm statusline` (ensureStatusLineConfigured) — never
- * touching permissions, hooks, enabledPlugins or anything else in the file,
- * and never wrapping either edit in Chameleon's usual ch:begin/ch:end comment
- * markers. Claude Code parses settings.json as strict JSON: a marker comment
+ * six values `appearance` maps to (see themeToWriteFor) and, when Chameleon's
+ * own lifecycle choice says to, "statusLine" to Chameleon's own `chm
+ * statusline` (ensureStatusLineConfigured) — never touching permissions,
+ * hooks, enabledPlugins or anything else in the file, and never wrapping
+ * either edit in Chameleon's usual ch:begin/ch:end comment markers. Claude
+ * Code parses settings.json as strict JSON: a marker comment
  * anywhere in the file made it discard the whole document rather than skip
  * the one comment it did not recognise — permissions, hooks, statusLine and
  * enabledPlugins all stopped being honoured along with it, silently, unless a
@@ -151,7 +205,7 @@ function ensureStatusLineConfigured(settingsPath: string, text: string): string 
  * which does the surgical in-place value swap both edits need instead,
  * applied twice in sequence so only one backup and one write cover both.
  */
-function applyClaudeCodeTheme(settingsPath: string, appearance: Appearance): string | undefined {
+function applyClaudeCodeTheme(settingsPath: string, appearance: Appearance, statuslineStatePath: string): string | undefined {
   if (!existsSync(settingsPath)) {
     throw new Error(`no Claude Code settings.json found at ${settingsPath}`);
   }
@@ -163,10 +217,10 @@ function applyClaudeCodeTheme(settingsPath: string, appearance: Appearance): str
   const themeToWrite = themeToWriteFor(existingSettings.theme, appearance);
 
   const textWithTheme = setUnmarkedTopLevelProperty(settingsPath, originalText, THEME_KEY, themeToWrite);
-  const finalText = ensureStatusLineConfigured(settingsPath, textWithTheme);
+  const { text: finalText, notice } = ensureStatusLineConfigured(settingsPath, textWithTheme, existingSettings.statusLine, statuslineStatePath);
 
   writeFileSync(settingsPath, finalText, "utf8");
-  return undefined;
+  return notice;
 }
 
 /**
@@ -184,16 +238,94 @@ function reloadClaudeCode(): string {
 
 /**
  * Builds the Claude Code adapter. `settingsPath` defaults to the real
- * ~/.claude/settings.json and is only ever overridden by tests, which point
- * it at a fixture copy so nothing here touches a real config.
+ * ~/.claude/settings.json and `statuslineStatePath` to Chameleon's own real
+ * statusline lifecycle record (state.ts) — both are only ever overridden by
+ * tests, which point them at fixture/scratch copies so nothing here touches a
+ * real config or a real machine's recorded choice.
  */
-export function createClaudeCodeAdapter(settingsPath: string = defaultSettingsPath()): ClaudeCodeAdapter {
+export function createClaudeCodeAdapter(
+  settingsPath: string = defaultSettingsPath(),
+  statuslineStatePath: string = defaultStatuslineStatePath(),
+): ClaudeCodeAdapter {
   return {
     detect: () => detectClaudeCode(settingsPath),
     read: () => readClaudeCodeSettings(settingsPath),
-    apply: (appearance) => applyClaudeCodeTheme(settingsPath, appearance),
+    apply: (appearance) => applyClaudeCodeTheme(settingsPath, appearance, statuslineStatePath),
     reload: () => reloadClaudeCode(),
   };
+}
+
+/**
+ * Whether Chameleon currently manages Claude Code's statusLine — true when
+ * nothing has ever decided otherwise (CHM-86's own "on by default"), so a
+ * fresh machine that has never applied a theme, and never run `chm statusline
+ * on`/`off`, still reports the default the next apply will act on.
+ */
+export function isClaudeCodeStatusLineEnabled(statuslineStatePath: string = defaultStatuslineStatePath()): boolean {
+  return readStatuslineState(statuslineStatePath)?.isEnabled ?? true;
+}
+
+/**
+ * The one shape describeStatusLine actually needs to read out of an
+ * otherwise-`unknown` statusLine value — never validated any further than
+ * this, since anything shaped like a command is nameable by its own command
+ * string regardless of what else it carries.
+ */
+const StatusLineCommandShapeSchema = z.object({ command: z.unknown() }).catchall(z.unknown());
+
+/**
+ * Plain-English name for whatever settings.json's own "statusLine" currently
+ * holds — `chm doctor`'s own "names which statusline is in use" (CHM-86).
+ * Chameleon's own command string is the only shape this names outright;
+ * anything else is described by its own command, or as "a custom statusLine"
+ * for a shape that is not even a command Claude Code would run.
+ */
+export function describeStatusLine(statusLine: unknown): string {
+  if (statusLine === undefined) return "none configured";
+
+  const parsed = StatusLineCommandShapeSchema.safeParse(statusLine);
+  if (!parsed.success) return "a custom statusLine";
+
+  const { command } = parsed.data;
+  return command === STATUSLINE_COMMAND ? `Chameleon's own (${STATUSLINE_COMMAND})` : `a custom command (${String(command)})`;
+}
+
+/**
+ * `chm statusline on` (CHM-86): records Chameleon's own choice to manage the
+ * statusLine, and — because this is an explicit request, unlike the more
+ * cautious first-apply decision ensureStatusLineConfigured makes for itself —
+ * writes it immediately, replacing whatever is configured right now. Backs up
+ * settings.json first, the same as every other write this adapter makes, so
+ * `chm undo` can still give it back. Returns a notice naming the one case
+ * there is nothing to write yet: Claude Code has no settings.json at all,
+ * so the choice is recorded for whenever it does.
+ */
+export function enableClaudeCodeStatusLine(
+  settingsPath: string = defaultSettingsPath(),
+  statuslineStatePath: string = defaultStatuslineStatePath(),
+): string | undefined {
+  writeStatuslineState(true, statuslineStatePath);
+  if (!existsSync(settingsPath)) {
+    return "no Claude Code settings.json found yet — the choice is recorded for when there is";
+  }
+
+  copyFileSync(settingsPath, backupPathFor(settingsPath));
+  const originalText = readFileSync(settingsPath, "utf8");
+  const updatedText = setUnmarkedTopLevelProperty(settingsPath, originalText, STATUS_LINE_KEY, STATUSLINE_CONFIG_VALUE);
+  writeFileSync(settingsPath, updatedText, "utf8");
+  return undefined;
+}
+
+/**
+ * `chm statusline off` (CHM-86): records Chameleon's own choice to stop
+ * managing the statusLine, so every apply after this — a theme switch
+ * included — leaves the key exactly as it finds it (see
+ * ensureStatusLineConfigured). Never touches settings.json itself: turning it
+ * off is a promise about future applies, not a request to change what is
+ * configured right now.
+ */
+export function disableClaudeCodeStatusLine(statuslineStatePath: string = defaultStatuslineStatePath()): void {
+  writeStatuslineState(false, statuslineStatePath);
 }
 
 /**
