@@ -65,7 +65,7 @@
  * instead — and that trade is reported back, never made silently.
  */
 
-import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, RATIO_CLEARANCE_MARGIN, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../constants.js";
+import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, PANEL_MIN_VISIBLE_RATIO, RATIO_CLEARANCE_MARGIN, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../constants.js";
 import { ANSI_SLOT_NAMES } from "./ansi.js";
 import { chromaOf, contrastRatio, fromHueChromaMatch, mix, relativeLuminance, toHsl } from "./color.js";
 import { matchValueForLuminance, repairForegroundAgainstBackgrounds, targetLuminanceFor } from "./repair.js";
@@ -85,21 +85,20 @@ export const ACTIVE_ROW_IDEAL_FRACTION = 2 / 6;
 /** Bisections used to find the fraction that clears a floor; matches repair.ts's own SEARCH_ITERATIONS — 40 gives far more precision than an 8-bit channel can express. */
 const SEARCH_ITERATIONS = 40;
 
-export interface ResolvedActiveRowBackground {
+export interface ResolvedSurfaceBackground {
   readonly hex: string;
   readonly wasRepaired: boolean;
 }
 
 /**
- * The smallest fraction, at or above `lowFraction`, whose ground/body mix
- * clears `minRatio` against ground. Contrast rises monotonically with
- * fraction here: `mix` moves each channel linearly from ground's own byte
- * value toward body's (see mix in color.ts), and relative luminance is a
- * monotonic function of every channel, so contrast-vs-ground only grows as
- * fraction moves from 0 (ground itself, ratio 1) toward 1 (body itself,
- * already guaranteed to clear TEXT_MIN_RATIO — see repairFailingRoles). A
- * floor at or below that is always reachable, so this bisection never runs
- * out of room the way a role's own hue-preserving repair occasionally does.
+ * The smallest fraction, within [lowFraction, highFraction], whose
+ * ground/body mix clears `minRatio` against ground. Contrast rises
+ * monotonically with fraction here: `mix` moves each channel linearly from
+ * ground's own byte value toward body's (see mix in color.ts), and relative
+ * luminance is a monotonic function of every channel, so contrast-vs-ground
+ * only grows as fraction moves from 0 (ground itself, ratio 1) toward 1
+ * (body itself, already guaranteed to clear TEXT_MIN_RATIO — see
+ * repairFailingRoles).
  *
  * `lowFraction` is `idealFraction` when the ideal blend itself already
  * falls short of the floor (nothing below it would fare any better, since
@@ -107,11 +106,24 @@ export interface ResolvedActiveRowBackground {
  * 0 when the ideal blend is visible but the row still needs to retreat
  * toward ground for a different reason (CHM-80's own "smallest lift" case —
  * see resolveActiveRowBackground) — either way this returns the smallest
- * fraction, at or above `lowFraction`, that clears the floor at all.
+ * fraction, at or above `lowFraction`, that clears the floor at all,
+ * provided `highFraction` itself can reach it.
+ *
+ * `highFraction` is 1 for resolveActiveRowBackground's own call — the floor
+ * is always reachable somewhere in range, per the monotonicity above — but a
+ * caller may cap it short of body instead, the way resolvePanelBackground's
+ * own PANEL_MAX_FRACTION does (CHM-85): panel_bg must stop searching before
+ * it reads as body's own tone rather than ground's, even if that means never
+ * reaching the floor at all. When `highFraction` itself falls short, every
+ * iteration below takes the "still under the floor" branch and `high` is
+ * never touched, so this settles on `highFraction` itself — the closest this
+ * range gets, not a value pulled from outside it — the same "maximise, never
+ * demand" shape TEXT_MIN_RATIO's own near misses already use elsewhere in
+ * this module.
  */
-function fractionClearingVisibilityFloor(groundHex: string, bodyHex: string, lowFraction: number, minRatio: number): number {
+function fractionClearingVisibilityFloor(groundHex: string, bodyHex: string, lowFraction: number, highFraction: number, minRatio: number): number {
   let low = lowFraction;
-  let high = 1;
+  let high = highFraction;
   for (let iteration = 0; iteration < SEARCH_ITERATIONS; iteration += 1) {
     const midFraction = (low + high) / 2;
     if (contrastRatio(mix(groundHex, bodyHex, midFraction), groundHex) < minRatio) {
@@ -164,7 +176,7 @@ function fractionClearingVisibilityFloor(groundHex: string, bodyHex: string, low
  * reads as the theme's own colours either way, never a synthesised grey
  * (CHM-38's own guarantee, held here too).
  */
-export function resolveActiveRowBackground(groundHex: string, bodyHex: string, mutedHex: string, idealFraction: number): ResolvedActiveRowBackground {
+export function resolveActiveRowBackground(groundHex: string, bodyHex: string, mutedHex: string, idealFraction: number): ResolvedSurfaceBackground {
   const idealHex = mix(groundHex, bodyHex, idealFraction);
   const minAcceptableVisibilityRatio = ACTIVE_ROW_MIN_VISIBLE_RATIO * RATIO_CLEARANCE_MARGIN;
   const minAcceptableReadabilityRatio = TEXT_MIN_RATIO * RATIO_CLEARANCE_MARGIN;
@@ -179,9 +191,73 @@ export function resolveActiveRowBackground(groundHex: string, bodyHex: string, m
   // when the ideal blend itself is not visible enough, since nothing below
   // it would be either; searched up from ground itself when the ideal blend
   // is visible but muted cannot be read against it, since a smaller
-  // fraction can only ever help muted, never hurt it.
+  // fraction can only ever help muted, never hurt it. Searched all the way
+  // to body (high 1) — the floor is always reachable there, unlike
+  // resolvePanelBackground's own capped search.
   const lowFraction = isIdealVisible ? 0 : idealFraction;
-  const fraction = fractionClearingVisibilityFloor(groundHex, bodyHex, lowFraction, minAcceptableVisibilityRatio);
+  const fraction = fractionClearingVisibilityFloor(groundHex, bodyHex, lowFraction, 1, minAcceptableVisibilityRatio);
+  return { hex: mix(groundHex, bodyHex, fraction), wasRepaired: true };
+}
+
+/**
+ * How far between ground and body Herdr's panel_bg sits before any repair —
+ * CHM-85: panes.rs:470 paints panel_bg as an ordinary pane surface, reaching
+ * tabs, overlays and the status bar, so it is on screen constantly rather
+ * than only while something is selected, and stays the same modest lift as
+ * surface_dim (see adapters/herdr.ts's surfaceScale) rather than
+ * active_row_bg's own deeper one.
+ */
+export const PANEL_IDEAL_FRACTION = 1 / 6;
+
+/**
+ * The furthest from ground panel_bg may move while searching for
+ * PANEL_MIN_VISIBLE_RATIO — half the way to body, and no further. Past that
+ * point panel_bg sits closer to body's own tone than to ground's, and a dark
+ * pack's panel surface would itself start reading as a light one (or a light
+ * pack's as dark) rather than the theme's own ground tone lifted slightly —
+ * exactly the "reads as a highlight, not a surface" failure this ticket's
+ * acceptance criteria name (panes.rs:470 paints panel_bg as tabs, overlays
+ * and the status bar too, none of which should ever look like a selection
+ * highlight). No bundled pack's own ground/body pair actually needs to
+ * search this far (see resolvePanelBackground's own doc comment) — it exists
+ * as the ceiling a pack this library does not ship could still hit, the same
+ * role `high` plays for resolveActiveRowBackground's own search, capped here
+ * instead of left open to body.
+ */
+export const PANEL_MAX_FRACTION = 0.5;
+
+/**
+ * Resolves Herdr's panel_bg — CHM-85's own fix. panes.rs:470 paints it as an
+ * ordinary pane surface, but Herdr's own selection_palette_background
+ * (src/ui/panes.rs, v0.8.2) also paints it as the automatic selection
+ * highlight's fallback whenever Herdr cannot read the host terminal's
+ * background over OSC 11 — Windows Terminal does not reliably answer that
+ * query (see terminal_theme.rs's own Windows-specific cfg guards beside it),
+ * so this fallback is the common case there, not an edge case. Chameleon
+ * used to write panel_bg identical to ground (see structuralTokenValues):
+ * Monokai Classic's own ground and panel_bg, both #272822, measured 1.00
+ * against each other — selecting text painted no highlight at all, not
+ * merely a dull one.
+ *
+ * Moves panel_bg the smallest distance from ground that clears
+ * PANEL_MIN_VISIBLE_RATIO, reusing resolveActiveRowBackground's own
+ * "smallest fraction that clears a visibility floor" bisection
+ * (fractionClearingVisibilityFloor, CHM-80) — but capped at
+ * PANEL_MAX_FRACTION rather than searched all the way to body, since a pane
+ * surface must keep reading as ground's own tone lifted slightly, never
+ * drifting toward body's (see PANEL_MAX_FRACTION's own doc comment). The
+ * ideal blend ships unchanged when it already clears the floor with margin —
+ * no bundled pack needs the search at all (see this ticket's own fixture in
+ * herdr.test.ts).
+ */
+export function resolvePanelBackground(groundHex: string, bodyHex: string): ResolvedSurfaceBackground {
+  const idealHex = mix(groundHex, bodyHex, PANEL_IDEAL_FRACTION);
+  const minAcceptableVisibilityRatio = PANEL_MIN_VISIBLE_RATIO * RATIO_CLEARANCE_MARGIN;
+  if (contrastRatio(idealHex, groundHex) >= minAcceptableVisibilityRatio) {
+    return { hex: idealHex, wasRepaired: false };
+  }
+
+  const fraction = fractionClearingVisibilityFloor(groundHex, bodyHex, PANEL_IDEAL_FRACTION, PANEL_MAX_FRACTION, minAcceptableVisibilityRatio);
   return { hex: mix(groundHex, bodyHex, fraction), wasRepaired: true };
 }
 
@@ -200,13 +276,17 @@ export function resolveActiveRowBackground(groundHex: string, bodyHex: string, m
  * `candidateHex` is overlay0's own plain ramp value (ground/body mixed at
  * OVERLAY_0_FRACTION); `activeRowBackgroundHex` is `resolveActiveRowAndText`'s
  * own settled row, since a subtitle line renders on both an ordinary sidebar
- * row (`groundHex`) and a selected one. Hue and chroma held fixed, the same
- * repairForegroundAgainstBackgrounds machinery `resolveActiveRowAndText`
- * itself already uses for text and subtext0 — unrepaired when the plain
- * ramp value already clears TEXT_MIN_RATIO against both.
+ * row (`groundHex`) and a selected one. `panelBackgroundHex` is
+ * `resolvePanelBackground`'s own settled panel_bg (CHM-85) — one more
+ * surface HERDR_TEXT_BEARING_SURFACES already declares overlay0 renders
+ * against, so it has to clear this one too, not just ground and the active
+ * row. Hue and chroma held fixed, the same repairForegroundAgainstBackgrounds
+ * machinery `resolveActiveRowAndText` itself already uses for text and
+ * subtext0 — unrepaired when the plain ramp value already clears
+ * TEXT_MIN_RATIO against all three.
  */
-export function repairOverlay0(candidateHex: string, groundHex: string, activeRowBackgroundHex: string): string {
-  return repairForegroundAgainstBackgrounds(candidateHex, [groundHex, activeRowBackgroundHex], TEXT_MIN_RATIO) ?? candidateHex;
+export function repairOverlay0(candidateHex: string, groundHex: string, activeRowBackgroundHex: string, panelBackgroundHex: string): string {
+  return repairForegroundAgainstBackgrounds(candidateHex, [groundHex, activeRowBackgroundHex, panelBackgroundHex], TEXT_MIN_RATIO) ?? candidateHex;
 }
 
 export interface ResolvedRowAndText {
@@ -428,6 +508,62 @@ export function resolveHerdrBadgeTokens(scheme: Scheme): HerdrBadgeTokens {
 }
 
 /**
+ * Herdr's own accent, green and red, and its four badge swatches, repaired a
+ * second time against panel_bg (CHM-85) — accent/green/red at TEXT_MIN_RATIO,
+ * the four badges at ANSI_MIN_RATIO (see HERDR_BADGE_TOKENS's own doc comment
+ * in this module's "declared contrast inventory" section for why those four
+ * are held to a lower floor).
+ *
+ * Needed because panel_bg moving away from ground at all (CHM-85's own fix)
+ * drops at least one of these below its floor for the majority of bundled
+ * packs: repairTowardFloor aims at the floor itself, not past it, whenever a
+ * role's own hue/chroma cannot reach further without losing recognisable
+ * colour (see repair.ts) — Dracula's own red measures 4.53 against ground,
+ * barely past the bare TEXT_MIN_RATIO of 4.5 — so any background shift
+ * toward it, however small, crosses back under the floor. Only Herdr paints
+ * these against panel_bg at all; Windows Terminal's ANSI slots and
+ * oh-my-posh's role table never render against it, so only Herdr's own
+ * copies need this second pass — the same "one target's own extra
+ * background, one target's own extra repair" shape body and muted already
+ * established (CHM-30's selection nudge, CHM-50's active-row repair).
+ *
+ * `repairForegroundAgainstBackgrounds` is checked against both `groundHex`
+ * and `panelBackgroundHex` together, not `panelBackgroundHex` alone, so a
+ * candidate already clearing ground with room to spare is left untouched
+ * rather than nudged for no reason, and the ground pairing can never regress
+ * either.
+ */
+export interface HerdrAccentFamily {
+  readonly accent: string;
+  readonly green: string;
+  readonly red: string;
+  readonly blue: string;
+  readonly teal: string;
+  readonly mauve: string;
+  readonly peach: string;
+  readonly yellow: string;
+}
+
+export function repairHerdrAccentFamily(
+  roleHexes: Readonly<{ accent: string; success: string; error: string }>,
+  badgeTokens: HerdrBadgeTokens,
+  groundHex: string,
+  panelBackgroundHex: string,
+): HerdrAccentFamily {
+  const backgrounds = [groundHex, panelBackgroundHex];
+  return {
+    accent: repairForegroundAgainstBackgrounds(roleHexes.accent, backgrounds, TEXT_MIN_RATIO) ?? roleHexes.accent,
+    green: repairForegroundAgainstBackgrounds(roleHexes.success, backgrounds, TEXT_MIN_RATIO) ?? roleHexes.success,
+    red: repairForegroundAgainstBackgrounds(roleHexes.error, backgrounds, TEXT_MIN_RATIO) ?? roleHexes.error,
+    blue: repairForegroundAgainstBackgrounds(badgeTokens.blue, backgrounds, ANSI_MIN_RATIO) ?? badgeTokens.blue,
+    teal: repairForegroundAgainstBackgrounds(badgeTokens.teal, backgrounds, ANSI_MIN_RATIO) ?? badgeTokens.teal,
+    mauve: repairForegroundAgainstBackgrounds(badgeTokens.mauve, backgrounds, ANSI_MIN_RATIO) ?? badgeTokens.mauve,
+    peach: repairForegroundAgainstBackgrounds(badgeTokens.peach, backgrounds, ANSI_MIN_RATIO) ?? badgeTokens.peach,
+    yellow: repairForegroundAgainstBackgrounds(badgeTokens.yellow, backgrounds, ANSI_MIN_RATIO) ?? badgeTokens.yellow,
+  };
+}
+
+/**
  * Whether a declared pair carries text a reader must be able to read
  * (TEXT_MIN_RATIO's own territory, or MUTED_MIN_RATIO for the tokens
  * deliberately de-emphasised) or exists only to be told apart from whatever
@@ -568,8 +704,14 @@ export interface HerdrTokenSet {
  */
 const HERDR_TOKENS_CARRYING_NO_TEXT: ReadonlySet<string> = new Set(["surface_dim", "surface0", "surface1", "overlay1"]);
 
-/** Herdr tokens that only ever appear as a background below, never as a foreground of their own. */
-const HERDR_BACKGROUND_ONLY_TOKENS: ReadonlySet<string> = new Set(["sidebar_bg", "panel_bg", "active_row_bg"]);
+/**
+ * Herdr tokens that only ever appear as a background below, never as a
+ * foreground of their own. panel_bg is not one of these (CHM-85): it is also
+ * checked as a foreground against sidebar_bg, since Herdr paints it as the
+ * automatic selection highlight's own fallback and that pairing must stay
+ * visible too — see the panel_bg-on-sidebar_bg pair in herdrContrastPairs.
+ */
+const HERDR_BACKGROUND_ONLY_TOKENS: ReadonlySet<string> = new Set(["sidebar_bg", "active_row_bg"]);
 
 /** The tokens every pair below actually reads — HerdrTokenSet's own required fields, as distinct from the four optional ramp steps that carry no pair at all (see HERDR_TOKENS_CARRYING_NO_TEXT). Named so `tokens[key]` below is known to be a plain `string`, never `string | undefined`. */
 type RequiredHerdrToken = Exclude<keyof HerdrTokenSet, "surface_dim" | "surface0" | "surface1" | "overlay1">;
@@ -603,7 +745,7 @@ const HERDR_BADGE_TOKENS: ReadonlySet<RequiredHerdrToken> = new Set(["yellow", "
  * adapters/herdr.ts to write without ever teaching this file what it paints.
  */
 function assertHerdrTokensAccountedFor(tokens: HerdrTokenSet): void {
-  const checkedForegroundTokens = new Set<string>(["text", "subtext0", "overlay0", ...HERDR_ACCENT_FOREGROUNDS, "selection_bg"]);
+  const checkedForegroundTokens = new Set<string>(["text", "subtext0", "overlay0", ...HERDR_ACCENT_FOREGROUNDS, "selection_bg", "panel_bg"]);
   for (const token of Object.keys(tokens)) {
     const isAccountedFor =
       checkedForegroundTokens.has(token) || HERDR_TOKENS_CARRYING_NO_TEXT.has(token) || HERDR_BACKGROUND_ONLY_TOKENS.has(token);
@@ -632,6 +774,13 @@ function assertHerdrTokensAccountedFor(tokens: HerdrTokenSet): void {
  * - selection_bg itself against sidebar_bg, a highlight-visibility pair at
  *   SELECTION_MIN_VISIBLE_RATIO — so a selection can never render as the
  *   same tone as the sidebar it sits on.
+ * - panel_bg itself against sidebar_bg, a highlight-visibility pair at
+ *   PANEL_MIN_VISIBLE_RATIO (CHM-85) — Herdr's own selection_palette_background
+ *   paints panel_bg as the automatic selection highlight's fallback whenever
+ *   it cannot read the host terminal's background over OSC 11, so this pair
+ *   is the same "never the same tone as the sidebar it sits on" guarantee as
+ *   selection_bg's own, for the case Herdr actually renders in practice on a
+ *   host — Windows Terminal — that does not answer that query.
  *
  * surface_dim, surface0, surface1 and overlay1 carry no pair at all — see
  * HERDR_TOKENS_CARRYING_NO_TEXT.
@@ -671,6 +820,13 @@ export function herdrContrastPairs(tokens: HerdrTokenSet): ContrastPair[] {
       foregroundHex: tokens.selection_bg,
       backgroundHex: tokens.sidebar_bg,
       minRatio: SELECTION_MIN_VISIBLE_RATIO,
+      kind: "visibility",
+    },
+    {
+      label: "herdr panel_bg on sidebar_bg",
+      foregroundHex: tokens.panel_bg,
+      backgroundHex: tokens.sidebar_bg,
+      minRatio: PANEL_MIN_VISIBLE_RATIO,
       kind: "visibility",
     },
   ];

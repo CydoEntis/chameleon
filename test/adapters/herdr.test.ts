@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HERDR_BUILTIN_GROUNDS, createHerdrAdapter, herdrMatchesRoleHexes, nearestHerdrBuiltinThemeNameFor, undoHerdr } from "../../src/adapters/herdr.js";
-import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, TEXT_MIN_RATIO, type Role } from "../../src/constants.js";
+import { ACTIVE_ROW_MIN_VISIBLE_RATIO, MUTED_MIN_RATIO, PANEL_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO, type Role } from "../../src/constants.js";
 import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
@@ -15,17 +15,22 @@ import {
   ACTIVE_ROW_IDEAL_FRACTION,
   checkContrastPairs,
   herdrContrastPairs,
+  repairHerdrAccentFamily,
   resolveActiveRowAndText,
+  resolveHerdrBadgeTokens,
+  resolvePanelBackground,
   type HerdrTokenSet,
 } from "../../src/palette/surfaces.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 
 /**
- * The exact role table `applyHerdrScheme` itself writes for `text` and
- * `subtext0` — CHM-50: herdr's own `body`/`muted` are repaired a second time
- * against the selected row (see resolveActiveRowAndText), so they can differ
- * from the plain `resolveRoleHexes` table a bare role lookup would give. Every
- * test that asserts on the written `text`/`subtext0` (or feeds
+ * The exact role table `applyHerdrScheme` itself writes for `text`,
+ * `subtext0`, `accent`, `success` and `error` — CHM-50: herdr's own
+ * `body`/`muted` are repaired a second time against the selected row (see
+ * resolveActiveRowAndText), and CHM-85: `accent`/`success`/`error` a second
+ * time against panel_bg (see repairHerdrAccentFamily), so they can differ
+ * from the plain `resolveRoleHexes` table a bare role lookup would give.
+ * Every test that asserts on these written tokens (or feeds
  * herdrMatchesRoleHexes) needs this, not the unrepaired table, or it is
  * pinning a value the adapter never actually writes.
  */
@@ -38,8 +43,17 @@ function expectedHerdrRoleHexes(scheme: Scheme): Record<Role, string> {
     roleHexes.accent,
     [roleHexes.success, roleHexes.error],
   );
-  const rowAndText = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
-  return { ...roleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
+  const panelBackground = resolvePanelBackground(roleHexes.ground, body.hex);
+  const rowAndText = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex, panelBackground.hex], ACTIVE_ROW_IDEAL_FRACTION);
+  const accentFamily = repairHerdrAccentFamily(roleHexes, resolveHerdrBadgeTokens(scheme), roleHexes.ground, panelBackground.hex);
+  return {
+    ...roleHexes,
+    body: rowAndText.textHex,
+    muted: rowAndText.subtextHex,
+    accent: accentFamily.accent,
+    success: accentFamily.green,
+    error: accentFamily.red,
+  };
 }
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
@@ -716,19 +730,22 @@ describe("herdr adapter — full custom token vocabulary (CHM-28)", () => {
     expect(config.theme.custom["yellow"]).toBe(GITHUB_LIGHT_SCHEME.yellow);
   });
 
+  // CHM-85: panel_bg used to match sidebar_bg exactly (both the pack's own
+  // ground) — Herdr's own selection_palette_background paints panel_bg as
+  // the automatic selection highlight's fallback, so a panel_bg identical to
+  // ground painted that highlight in the exact colour of the pane it was
+  // meant to stand out from. It now moves away from ground like every other
+  // surface in the scale.
   it("gives panel_bg, active_row_bg and the surface scale distinct tones between ground and body", () => {
     createHerdrAdapter(configPath).apply(GITHUB_LIGHT_SCHEME, UNMAPPED_LIGHT_SLUG);
 
     const config = createHerdrAdapter(configPath).read();
     const expectedColorTable = resolveRoleHexes(GITHUB_LIGHT_SCHEME);
-    // panel_bg matches sidebar_bg (both are the pack's own ground) — the
-    // fix here is that it is set at all, not that it differs from ground.
-    expect(config.theme.custom["panel_bg"]).toBe(expectedColorTable.ground);
-    // The rest of the scale must actually move away from ground and body,
-    // not just repeat one of them — otherwise "the row colours changed" is
-    // a name change with no visible effect, exactly what this ticket is
-    // about.
-    const surfaceTokens = ["surface_dim", "surface0", "surface1", "overlay0", "overlay1", "active_row_bg"];
+    // The whole scale, panel_bg included, must actually move away from
+    // ground and body, not just repeat one of them — otherwise "the row
+    // colours changed" is a name change with no visible effect, exactly what
+    // this ticket is about.
+    const surfaceTokens = ["panel_bg", "surface_dim", "surface0", "surface1", "overlay0", "overlay1", "active_row_bg"];
     for (const token of surfaceTokens) {
       const value = config.theme.custom[token];
       expect(value).not.toBe(expectedColorTable.ground);
@@ -1018,39 +1035,42 @@ describe("herdr adapter — overlay0 vs sidebar and active row (CHM-78)", () => 
   // up as a specific number moving rather than a boolean flipping. Unlike
   // subtext0-on-row, no bundled pack falls short of TEXT_MIN_RATIO here —
   // overlay0's own repair has ground and body's full distance to work with,
-  // never body's own narrower headroom over TEXT_MIN_RATIO. CHM-80 moves
-  // both columns for every pack: overlay0 is repaired against active_row_bg
-  // too (CHM-78), so a lower, closer-to-ground row changes the single
-  // repaired value both pairs below measure.
+  // never body's own narrower headroom over TEXT_MIN_RATIO. CHM-85 moves both
+  // columns for every pack where panel_bg is the harder of the three
+  // backgrounds overlay0 now answers to (sidebar_bg, active_row_bg and
+  // panel_bg — see repairOverlay0's own doc comment): a candidate that
+  // already cleared the first two sometimes has to move further to also
+  // clear panel_bg, which only ever raises both ratios below, never lowers
+  // them.
   const NAMED_FIXTURES = [
-    { slug: "ayu-dark-deep", overlay0VsSidebar: 6.2704, overlay0VsRow: 4.7422 },
-    { slug: "ayu-dark", overlay0VsSidebar: 6.1991, overlay0VsRow: 4.7057 },
+    { slug: "ayu-dark-deep", overlay0VsSidebar: 6.5131, overlay0VsRow: 4.9257 },
+    { slug: "ayu-dark", overlay0VsSidebar: 7.1264, overlay0VsRow: 5.4097 },
     { slug: "ayu-light", overlay0VsSidebar: 6.2784, overlay0VsRow: 4.777 },
-    { slug: "catppuccin-dark", overlay0VsSidebar: 6.2528, overlay0VsRow: 4.7439 },
+    { slug: "catppuccin-dark", overlay0VsSidebar: 7.2027, overlay0VsRow: 5.4647 },
     { slug: "catppuccin-light", overlay0VsSidebar: 6.2987, overlay0VsRow: 4.7695 },
-    { slug: "dracula-dark", overlay0VsSidebar: 6.7918, overlay0VsRow: 5.1509 },
-    { slug: "everforest-dark", overlay0VsSidebar: 6.2796, overlay0VsRow: 4.7587 },
+    { slug: "dracula-dark", overlay0VsSidebar: 7.9106, overlay0VsRow: 5.9994 },
+    { slug: "everforest-dark", overlay0VsSidebar: 6.9569, overlay0VsRow: 5.2719 },
     { slug: "everforest-light", overlay0VsSidebar: 6.192, overlay0VsRow: 4.7125 },
     { slug: "github-dark", overlay0VsSidebar: 7.5198, overlay0VsRow: 5.6676 },
     { slug: "github-light", overlay0VsSidebar: 9.6061, overlay0VsRow: 4.7187 },
-    { slug: "gruvbox-dark", overlay0VsSidebar: 6.25, overlay0VsRow: 4.7581 },
-    { slug: "gruvbox-light", overlay0VsSidebar: 6.1455, overlay0VsRow: 4.6548 },
-    { slug: "jellybeans", overlay0VsSidebar: 6.6575, overlay0VsRow: 5.0318 },
-    { slug: "kanagawa-dark", overlay0VsSidebar: 6.2124, overlay0VsRow: 4.7112 },
+    { slug: "gruvbox-dark", overlay0VsSidebar: 7.3239, overlay0VsRow: 5.5757 },
+    { slug: "gruvbox-light", overlay0VsSidebar: 6.2415, overlay0VsRow: 4.7275 },
+    { slug: "jellybeans", overlay0VsSidebar: 7.164, overlay0VsRow: 5.4146 },
+    { slug: "kanagawa-dark", overlay0VsSidebar: 7.2407, overlay0VsRow: 5.491 },
     { slug: "kanagawa-light", overlay0VsSidebar: 6.211, overlay0VsRow: 4.7249 },
-    { slug: "monokai-dark", overlay0VsSidebar: 7.3312, overlay0VsRow: 5.5837 },
-    { slug: "night-owl-dark", overlay0VsSidebar: 6.4931, overlay0VsRow: 4.9438 },
-    { slug: "night-owl-light", overlay0VsSidebar: 6.1724, overlay0VsRow: 4.6981 },
-    { slug: "nord-dark", overlay0VsSidebar: 6.2037, overlay0VsRow: 4.7137 },
+    { slug: "monokai-dark", overlay0VsSidebar: 8.1711, overlay0VsRow: 6.2233 },
+    { slug: "night-owl-dark", overlay0VsSidebar: 7.0719, overlay0VsRow: 5.3845 },
+    { slug: "night-owl-light", overlay0VsSidebar: 6.2672, overlay0VsRow: 4.7702 },
+    { slug: "nord-dark", overlay0VsSidebar: 7.2853, overlay0VsRow: 5.5356 },
     { slug: "nord-light", overlay0VsSidebar: 6.2378, overlay0VsRow: 4.7216 },
-    { slug: "one-half-dark", overlay0VsSidebar: 6.2247, overlay0VsRow: 4.7031 },
-    { slug: "one-half-light", overlay0VsSidebar: 6.1969, overlay0VsRow: 4.72 },
-    { slug: "rose-pine-dark", overlay0VsSidebar: 6.5818, overlay0VsRow: 5.0134 },
+    { slug: "one-half-dark", overlay0VsSidebar: 7.3564, overlay0VsRow: 5.5581 },
+    { slug: "one-half-light", overlay0VsSidebar: 6.3906, overlay0VsRow: 4.8675 },
+    { slug: "rose-pine-dark", overlay0VsSidebar: 7.3293, overlay0VsRow: 5.5827 },
     { slug: "rose-pine-light", overlay0VsSidebar: 6.117, overlay0VsRow: 4.6584 },
     { slug: "shades-of-purple", overlay0VsSidebar: 7.8327, overlay0VsRow: 5.9572 },
     { slug: "solarized-dark", overlay0VsSidebar: 6.261, overlay0VsRow: 4.751 },
     { slug: "solarized-light", overlay0VsSidebar: 6.2439, overlay0VsRow: 4.7497 },
-    { slug: "tokyo-night-dark", overlay0VsSidebar: 6.3153, overlay0VsRow: 4.7684 },
+    { slug: "tokyo-night-dark", overlay0VsSidebar: 6.9513, overlay0VsRow: 5.2486 },
     { slug: "tokyo-night-light", overlay0VsSidebar: 6.1793, overlay0VsRow: 4.6821 },
   ];
 
@@ -1063,6 +1083,116 @@ describe("herdr adapter — overlay0 vs sidebar and active row (CHM-78)", () => 
       expect(contrastRatio(overlay0, activeRowBg)).toBeCloseTo(overlay0VsRow, 3);
     },
   );
+});
+
+// CHM-85: panel_bg used to be written identical to sidebar_bg (both the
+// pack's own ground) — Herdr's own selection_palette_background
+// (src/ui/panes.rs, v0.8.2) paints panel_bg as the automatic selection
+// highlight's own fallback whenever it cannot read the host terminal's
+// background over OSC 11, which Windows Terminal does not reliably answer,
+// so a panel_bg indistinguishable from ground painted that fallback
+// highlight in the exact colour of the pane it was meant to stand out
+// from — Monokai Classic's own ground and old panel_bg, both #272822,
+// measured 1.00. These tests pin the fix directly, against real written
+// output, for every one of the 29 bundled packs.
+describe("herdr adapter — panel_bg (CHM-85)", () => {
+  function panelBackgroundTokensFor(slug: string): { sidebarBg: string; panelBg: string } {
+    const packs = loadCuratedThemePacks();
+    const pack = packs.find((candidate) => candidate.manifest.slug === slug);
+    if (!pack) throw new Error(`fixture pack not found: ${slug}`);
+
+    const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-panel-bg-"));
+    const configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+    try {
+      createHerdrAdapter(configPath).apply(pack.payloads["windows-terminal"], pack.manifest.slug);
+      const customTokens = createHerdrAdapter(configPath).read().theme.custom;
+      const sidebarBg = customTokens["sidebar_bg"];
+      const panelBg = customTokens["panel_bg"];
+      if (!sidebarBg || !panelBg) {
+        throw new Error(`"${slug}" wrote no sidebar_bg/panel_bg tokens`);
+      }
+      return { sidebarBg, panelBg };
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  }
+
+  it("is never written identical to sidebar_bg, and clears PANEL_MIN_VISIBLE_RATIO against it, for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBe(29);
+
+    for (const pack of packs) {
+      const { sidebarBg, panelBg } = panelBackgroundTokensFor(pack.manifest.slug);
+      expect(panelBg, pack.manifest.slug).not.toBe(sidebarBg);
+      expect(contrastRatio(panelBg, sidebarBg), pack.manifest.slug).toBeGreaterThanOrEqual(PANEL_MIN_VISIBLE_RATIO);
+    }
+  });
+
+  // Acceptance criterion: panel_bg stays dark enough on dark packs, and
+  // light enough on light packs, to still read as a panel surface rather
+  // than a highlight — checked as "closer to sidebar_bg than to text" (see
+  // resolvePanelBackground's own PANEL_MAX_FRACTION), for every bundled
+  // pack, dark and light alike.
+  it("stays closer to sidebar_bg than to text — a lifted ground tone, not a colour drifting toward body — for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+    for (const pack of packs) {
+      const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-panel-bg-"));
+      const configPath = path.join(configDir, "config.toml");
+      writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+      try {
+        createHerdrAdapter(configPath).apply(pack.payloads["windows-terminal"], pack.manifest.slug);
+        const customTokens = createHerdrAdapter(configPath).read().theme.custom;
+        const sidebarBg = customTokens["sidebar_bg"];
+        const panelBg = customTokens["panel_bg"];
+        const text = customTokens["text"];
+        if (!sidebarBg || !panelBg || !text) {
+          throw new Error(`"${pack.manifest.slug}" wrote no sidebar_bg/panel_bg/text tokens`);
+        }
+        expect(contrastRatio(panelBg, sidebarBg), pack.manifest.slug).toBeLessThanOrEqual(contrastRatio(panelBg, text));
+      } finally {
+        rmSync(configDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  // Acceptance criterion: body text clears TEXT_MIN_RATIO against panel_bg,
+  // so selected text painted with it (Herdr's own fallback highlight) stays
+  // readable — already implied by CHM-79's own full inventory suite below,
+  // asserted here directly and by name against the reported pack.
+  it("keeps text readable against panel_bg for monokai-dark — this ticket's own reported pack", () => {
+    const { panelBg } = panelBackgroundTokensFor("monokai-dark");
+    const packs = loadCuratedThemePacks();
+    const pack = packs.find((candidate) => candidate.manifest.slug === "monokai-dark");
+    if (!pack) throw new Error("fixture pack not found: monokai-dark");
+
+    const configDir = mkdtempSync(path.join(tmpdir(), "chameleon-herdr-panel-bg-"));
+    const configPath = path.join(configDir, "config.toml");
+    writeFileSync(configPath, '[theme]\nname = "builtin"\n', "utf8");
+    try {
+      createHerdrAdapter(configPath).apply(pack.payloads["windows-terminal"], pack.manifest.slug);
+      const customTokens = createHerdrAdapter(configPath).read().theme.custom;
+      const text = customTokens["text"];
+      if (!text) throw new Error("monokai-dark wrote no text token");
+      expect(contrastRatio(text, panelBg)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  // Monokai Classic's own real, resolved value — pinned so a future change
+  // that regresses it back toward ground shows up as a specific number
+  // moving rather than a boolean flipping, the same "own exact numbers"
+  // shape the CHM-50/75/80 and CHM-78 suites above already use. #272822 is
+  // the ground this pack shares with panel_bg before this fix; #4b4c45 is
+  // what it resolves to today.
+  it("resolves monokai-dark's own panel_bg to a real, measured value, not the reported #272822", () => {
+    const { sidebarBg, panelBg } = panelBackgroundTokensFor("monokai-dark");
+
+    expect(sidebarBg).toBe("#272822");
+    expect(panelBg).toBe("#4b4c45");
+    expect(contrastRatio(panelBg, sidebarBg)).toBeCloseTo(1.712, 3);
+  });
 });
 
 // CHM-79: the declared contrast inventory (see palette/surfaces.ts's
@@ -1161,7 +1291,7 @@ describe("herdr adapter — duplicate key dedup", () => {
     createHerdrAdapter(configPath).apply(ZEROX96F_SCHEME, MAPPED_DARK_SLUG);
 
     const config = createHerdrAdapter(configPath).read();
-    const expectedColorTable = resolveRoleHexes(ZEROX96F_SCHEME);
+    const expectedColorTable = expectedHerdrRoleHexes(ZEROX96F_SCHEME);
     expect(config.theme.custom["sidebar_bg"]).toBe(expectedColorTable.ground);
     expect(config.theme.custom["accent"]).toBe(expectedColorTable.accent);
     expect(config.theme.custom["green"]).toBe(expectedColorTable.success);

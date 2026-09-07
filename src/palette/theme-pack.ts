@@ -11,9 +11,11 @@ import {
   checkContrastPairs,
   herdrContrastPairs,
   OVERLAY_0_FRACTION,
+  repairHerdrAccentFamily,
   repairOverlay0,
   resolveActiveRowAndText,
   resolveHerdrBadgeTokens,
+  resolvePanelBackground,
   windowsTerminalContrastPairs,
   type ContrastFailure,
   type HerdrTokenSet,
@@ -62,13 +64,15 @@ export interface ThemePackManifest {
  * herdr's payload is the resolved, repaired role table those adapters key
  * their own blocks off — herdr's own `body` and `muted` are resolved a
  * second time against its selected-row background (see CHM-50's
- * resolveActiveRowAndText), so they can differ from oh-my-posh's copy of the
- * same two roles; every other role always matches. Every adapter's apply()
- * still takes a Scheme and derives what it needs itself — see adapters/*.ts
- * — so this is a precomputed, build-time-checkable copy of exactly what
- * apply() would derive live, not a second source of truth:
- * assignRolesByContrast, repairFailingRoles, resolveSelectionAndBody and
- * resolveActiveRowAndText are all pure, so the two can never disagree.
+ * resolveActiveRowAndText), and its `accent`/`success`/`error` a second time
+ * against panel_bg (see CHM-85's repairHerdrAccentFamily), so they can differ
+ * from oh-my-posh's copy of the same roles; `ground` always matches. Every
+ * adapter's apply() still takes a Scheme and derives what it needs itself —
+ * see adapters/*.ts — so this is a precomputed, build-time-checkable copy of
+ * exactly what apply() would derive live, not a second source of truth:
+ * assignRolesByContrast, repairFailingRoles, resolveSelectionAndBody,
+ * resolveActiveRowAndText, resolvePanelBackground and repairHerdrAccentFamily
+ * are all pure, so the two can never disagree.
  */
 export interface ThemePackPayloads {
   readonly "windows-terminal": Scheme;
@@ -252,16 +256,22 @@ export function buildThemePack(
   );
   assertSelectionReadableUnderBody(selection.hex, body.hex, scheme.name);
 
+  // panel_bg (CHM-85): Herdr's own selection_palette_background paints it as
+  // the automatic selection highlight's fallback, so it owes the same kind
+  // of visibility floor against ground that selection_bg does — resolved
+  // here, before the active row, so it can join selection_bg as one of the
+  // "other" surfaces text and subtext0 must clear their floors against
+  // below. See palette/surfaces.ts's resolvePanelBackground.
+  const panelBackground = resolvePanelBackground(resolvedPalette.ground.hex, body.hex);
+
   // Herdr's selected-row background and its text tokens, resolved together
   // (CHM-50) — see palette/surfaces.ts's own doc comment for why order and
-  // shared-value repair both matter. panel_bg is not passed as an "other"
-  // surface: it is definitionally ground (see adapters/herdr.ts's
-  // structuralTokenValues), so checking against ground already covers it.
+  // shared-value repair both matter.
   const rowAndText = resolveActiveRowAndText(
     resolvedPalette.ground.hex,
     body.hex,
     resolvedPalette.muted.hex,
-    [selection.hex],
+    [selection.hex, panelBackground.hex],
     ACTIVE_ROW_IDEAL_FRACTION,
   );
   assertActiveRowAndTextClearFloors(rowAndText.activeRowBackgroundHex, rowAndText.textHex, rowAndText.subtextHex, resolvedPalette.ground.hex, scheme.name);
@@ -278,11 +288,6 @@ export function buildThemePack(
   const repairedCursorHex = repairCursorColor(scheme.cursorColor, resolvedPalette.ground.hex);
 
   const roleHexes = roleHexTable(resolvedPalette);
-  // herdr's own body/muted differ from oh-my-posh's here (CHM-30's selection
-  // nudge, and now CHM-50's active-row repair) — see ThemePackPayloads for
-  // why this is the one payload allowed to disagree with the plain role
-  // table on these two roles.
-  const herdrRoleHexes = { ...roleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
 
   const windowsTerminalPayload: Scheme = {
     ...scheme,
@@ -292,26 +297,51 @@ export function buildThemePack(
     cursorColor: repairedCursorHex,
   };
 
+  // accent, green and red, and the four badge swatches, repaired a second
+  // time against panel_bg (CHM-85): only Herdr paints these against it, and
+  // moving panel_bg away from ground at all drops at least one of them below
+  // its floor for the majority of bundled packs — see
+  // repairHerdrAccentFamily's own doc comment.
+  const accentFamily = repairHerdrAccentFamily(roleHexes, resolveHerdrBadgeTokens(windowsTerminalPayload), resolvedPalette.ground.hex, panelBackground.hex);
+  // herdr's own body/muted differ from oh-my-posh's here (CHM-30's selection
+  // nudge, and now CHM-50's active-row repair), and now accent/success/error
+  // too (CHM-85's own accentFamily, above) — see ThemePackPayloads for why
+  // this is the one payload allowed to disagree with the plain role table on
+  // these roles.
+  const herdrRoleHexes = {
+    ...roleHexes,
+    body: rowAndText.textHex,
+    muted: rowAndText.subtextHex,
+    accent: accentFamily.accent,
+    success: accentFamily.green,
+    error: accentFamily.red,
+  };
+
   // CHM-79's own declared inventory, gated together: every pair Windows
   // Terminal and Herdr actually render, for this pack's own resolved
   // colours — see palette/surfaces.ts. overlay0 is repaired here exactly the
   // way adapters/herdr.ts's own surfaceScale repairs it (CHM-78) — same
   // fraction, same repair — so this gate can never pass a value the live
-  // adapter would not also ship. panel_bg is not passed separately: it is
-  // definitionally ground (see adapters/herdr.ts's structuralTokenValues).
-  const overlay0Hex = repairOverlay0(mix(resolvedPalette.ground.hex, body.hex, OVERLAY_0_FRACTION), resolvedPalette.ground.hex, rowAndText.activeRowBackgroundHex);
+  // adapter would not also ship. panel_bg and the accent family are
+  // resolvePanelBackground's and repairHerdrAccentFamily's own output
+  // (CHM-85), the same values adapters/herdr.ts's applyHerdrScheme resolves,
+  // so this gate can never validate a value the live adapter would not also
+  // ship.
+  const overlay0Hex = repairOverlay0(
+    mix(resolvedPalette.ground.hex, body.hex, OVERLAY_0_FRACTION),
+    resolvedPalette.ground.hex,
+    rowAndText.activeRowBackgroundHex,
+    panelBackground.hex,
+  );
   const herdrTokens: HerdrTokenSet = {
     sidebar_bg: resolvedPalette.ground.hex,
-    panel_bg: resolvedPalette.ground.hex,
+    panel_bg: panelBackground.hex,
     active_row_bg: rowAndText.activeRowBackgroundHex,
     selection_bg: selection.hex,
     text: rowAndText.textHex,
     subtext0: rowAndText.subtextHex,
     overlay0: overlay0Hex,
-    accent: roleHexes.accent,
-    green: roleHexes.success,
-    red: roleHexes.error,
-    ...resolveHerdrBadgeTokens(windowsTerminalPayload),
+    ...accentFamily,
   };
   assertContrastInventoryClearsFloors(
     [...checkContrastPairs(windowsTerminalContrastPairs(windowsTerminalPayload)), ...checkContrastPairs(herdrContrastPairs(herdrTokens))],

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, RATIO_CLEARANCE_MARGIN, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
+import {
+  ACTIVE_ROW_MIN_VISIBLE_RATIO,
+  ANSI_MIN_RATIO,
+  MUTED_MIN_RATIO,
+  PANEL_MIN_VISIBLE_RATIO,
+  RATIO_CLEARANCE_MARGIN,
+  SELECTION_MIN_VISIBLE_RATIO,
+  TEXT_MIN_RATIO,
+} from "../../src/constants.js";
 import { repairCursorColor } from "../../src/palette/ansi.js";
 import { contrastRatio, mix } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
@@ -10,10 +18,14 @@ import {
   checkContrastPairs,
   herdrContrastPairs,
   OVERLAY_0_FRACTION,
+  PANEL_IDEAL_FRACTION,
+  PANEL_MAX_FRACTION,
+  repairHerdrAccentFamily,
   repairOverlay0,
   resolveActiveRowAndText,
   resolveActiveRowBackground,
   resolveHerdrBadgeTokens,
+  resolvePanelBackground,
   windowsTerminalContrastPairs,
   type HerdrTokenSet,
 } from "../../src/palette/surfaces.js";
@@ -165,11 +177,110 @@ describe("resolveActiveRowBackground", () => {
   });
 });
 
+// CHM-85: the fix this ticket exists for. Chameleon used to write panel_bg
+// identical to ground; Herdr paints panel_bg as the automatic selection
+// highlight's own fallback whenever it cannot read the host terminal's
+// background over OSC 11 (Windows Terminal does not reliably answer), so a
+// panel_bg indistinguishable from ground painted that fallback highlight in
+// the exact colour of the pane it was meant to stand out from. Monokai
+// Classic's own ground and old panel_bg, both #272822, measured 1.00 against
+// each other — the reported bug.
+describe("resolvePanelBackground", () => {
+  it("keeps the ideal ground/body blend unchanged when it already clears the visibility floor", () => {
+    const panel = resolvePanelBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body);
+
+    expect(panel.wasRepaired).toBe(false);
+    expect(panel.hex).toBe(mix(MONOKAI_DARK.ground, MONOKAI_DARK.body, PANEL_IDEAL_FRACTION));
+    expect(contrastRatio(panel.hex, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(PANEL_MIN_VISIBLE_RATIO);
+    // Never the byte-identical colour CHM-85 reports — the fix this test
+    // exists to pin.
+    expect(panel.hex).not.toBe(MONOKAI_DARK.ground);
+  });
+
+  // Ayu Light's own resolved ground/body: the ideal fraction's own blend
+  // measures 1.27 against ground, short of PANEL_MIN_VISIBLE_RATIO (1.25)
+  // once RATIO_CLEARANCE_MARGIN is folded in, so the search pushes further
+  // toward body — the same "smallest fraction that clears the floor" shape
+  // resolveActiveRowBackground already uses (CHM-80), reused directly via
+  // fractionClearingVisibilityFloor.
+  it("pushes panel_bg further toward body when the ideal blend falls short of the visibility floor", () => {
+    const idealHex = mix(AYU_LIGHT.ground, AYU_LIGHT.body, PANEL_IDEAL_FRACTION);
+    expect(contrastRatio(idealHex, AYU_LIGHT.ground)).toBeLessThan(PANEL_MIN_VISIBLE_RATIO * RATIO_CLEARANCE_MARGIN);
+
+    const panel = resolvePanelBackground(AYU_LIGHT.ground, AYU_LIGHT.body);
+
+    expect(panel.wasRepaired).toBe(true);
+    expect(contrastRatio(panel.hex, AYU_LIGHT.ground)).toBeGreaterThanOrEqual(PANEL_MIN_VISIBLE_RATIO);
+    expect(panel.hex).not.toBe(idealHex);
+    expect(panel.hex).not.toBe(AYU_LIGHT.ground);
+    // Still a plain blend of this theme's own ground and body — every
+    // channel sits between the two source colours' own matching channels,
+    // never a colour invented from nowhere (CHM-38's own guarantee, held
+    // here for the surface this ticket introduces) — and never past
+    // PANEL_MAX_FRACTION's own ceiling.
+    const maxHex = mix(AYU_LIGHT.ground, AYU_LIGHT.body, PANEL_MAX_FRACTION);
+    for (const channelOffset of [1, 3, 5]) {
+      const groundChannel = Number.parseInt(AYU_LIGHT.ground.slice(channelOffset, channelOffset + 2), 16);
+      const maxChannel = Number.parseInt(maxHex.slice(channelOffset, channelOffset + 2), 16);
+      const panelChannel = Number.parseInt(panel.hex.slice(channelOffset, channelOffset + 2), 16);
+      expect(panelChannel).toBeGreaterThanOrEqual(Math.min(groundChannel, maxChannel));
+      expect(panelChannel).toBeLessThanOrEqual(Math.max(groundChannel, maxChannel));
+    }
+  });
+
+  // CHM-85's own "stays dark enough on dark packs, light enough on light
+  // packs" acceptance criterion: panel_bg never crosses the midpoint between
+  // ground and body, so it still reads as ground's own tone lifted slightly
+  // rather than drifting toward a colour of its own — checked against every
+  // one of the 606 vendored library's own resolved ground/body pairs, not
+  // just the 29 curated packs, the same "positive evidence across the whole
+  // library" shape resolveActiveRowBackground's own describe block above
+  // uses.
+  it("never sits closer to body than to ground, for any of the 606 vendored library's own resolved ground/body pairs", () => {
+    for (const fileName of listVendoredSchemeFileNames()) {
+      const scheme = readVendoredScheme(fileName);
+      const roleHexes = resolveRoleHexes(scheme);
+      const { body } = resolveSelectionAndBody(
+        scheme.selectionBackground,
+        roleHexes.ground,
+        roleHexes.body,
+        roleHexes.accent,
+        [roleHexes.success, roleHexes.error],
+      );
+      const panel = resolvePanelBackground(roleHexes.ground, body.hex);
+      expect(contrastRatio(panel.hex, roleHexes.ground), fileName).toBeLessThanOrEqual(contrastRatio(panel.hex, body.hex));
+    }
+  });
+
+  it("clears the visibility floor for every one of the 606 vendored library's own resolved ground/body pairs", () => {
+    for (const fileName of listVendoredSchemeFileNames()) {
+      const scheme = readVendoredScheme(fileName);
+      const roleHexes = resolveRoleHexes(scheme);
+      const { body } = resolveSelectionAndBody(
+        scheme.selectionBackground,
+        roleHexes.ground,
+        roleHexes.body,
+        roleHexes.accent,
+        [roleHexes.success, roleHexes.error],
+      );
+      const panel = resolvePanelBackground(roleHexes.ground, body.hex);
+      expect(contrastRatio(panel.hex, roleHexes.ground), fileName).toBeGreaterThanOrEqual(PANEL_MIN_VISIBLE_RATIO);
+      expect(panel.hex, fileName).not.toBe(roleHexes.ground);
+    }
+  });
+});
+
 // CHM-78: adapters/herdr.ts's surfaceScale mixes overlay0 at 4/6 of the way
 // from ground to body — duplicated here rather than imported, the same way
 // this file's own ground/body/muted fixtures already stand in for herdr.ts's
 // real inputs.
 const OVERLAY_0_FRACTION = 4 / 6;
+
+// MONOKAI_DARK's own panel_bg (CHM-85): the ideal fraction already clears
+// PANEL_MIN_VISIBLE_RATIO with margin for this pack, so resolvePanelBackground
+// ships it unrepaired — see resolvePanelBackground's own describe block below
+// for that claim itself.
+const MONOKAI_DARK_PANEL_BG = "#4b4c45";
 
 describe("repairOverlay0", () => {
   // The exact pair CHM-78's own ticket body measured on the reporter's live
@@ -181,29 +292,32 @@ describe("repairOverlay0", () => {
   // output for this fixture to #3a3b34, which no longer reproduces the
   // failure (the candidate below already clears TEXT_MIN_RATIO against it).
   // repairOverlay0 itself is unchanged by CHM-80; this proves it still
-  // repairs a genuinely failing pair when handed one.
+  // repairs a genuinely failing pair when handed one. panel_bg is CHM-85's
+  // own addition to this same repair — see the third argument below.
   it("repairs the plain ramp value when it fails TEXT_MIN_RATIO against the active row — CHM-78's own reported case", () => {
     const preCHM80ActiveRowHex = "#585a52";
     const candidateHex = mix(MONOKAI_DARK.ground, MONOKAI_DARK.body, OVERLAY_0_FRACTION);
     expect(candidateHex).toBe("#b6b7ac");
     expect(contrastRatio(candidateHex, preCHM80ActiveRowHex)).toBeLessThan(TEXT_MIN_RATIO);
 
-    const repaired = repairOverlay0(candidateHex, MONOKAI_DARK.ground, preCHM80ActiveRowHex);
+    const repaired = repairOverlay0(candidateHex, MONOKAI_DARK.ground, preCHM80ActiveRowHex, MONOKAI_DARK_PANEL_BG);
 
     expect(repaired).not.toBe(candidateHex);
     expect(contrastRatio(repaired, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     expect(contrastRatio(repaired, preCHM80ActiveRowHex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(repaired, MONOKAI_DARK_PANEL_BG)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
   });
 
   it("leaves an already-readable candidate unchanged", () => {
     // body itself always clears TEXT_MIN_RATIO against ground (see
-    // repairFailingRoles) and, here, against the settled row too — a stand-in
-    // for a candidate that needs no repair at all.
+    // repairFailingRoles) and, here, against the settled row and panel_bg
+    // too — a stand-in for a candidate that needs no repair at all.
     const activeRow = resolveActiveRowBackground(MONOKAI_DARK.ground, MONOKAI_DARK.body, MONOKAI_DARK.muted, ACTIVE_ROW_IDEAL_FRACTION);
     expect(contrastRatio(MONOKAI_DARK.body, MONOKAI_DARK.ground)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
     expect(contrastRatio(MONOKAI_DARK.body, activeRow.hex)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(MONOKAI_DARK.body, MONOKAI_DARK_PANEL_BG)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
 
-    expect(repairOverlay0(MONOKAI_DARK.body, MONOKAI_DARK.ground, activeRow.hex)).toBe(MONOKAI_DARK.body);
+    expect(repairOverlay0(MONOKAI_DARK.body, MONOKAI_DARK.ground, activeRow.hex, MONOKAI_DARK_PANEL_BG)).toBe(MONOKAI_DARK.body);
   });
 });
 
@@ -402,19 +516,21 @@ describe("herdrContrastPairs", () => {
     monokaiRoleHexes.accent,
     [monokaiRoleHexes.success, monokaiRoleHexes.error],
   );
+  const monokaiPanelBackground = resolvePanelBackground(monokaiRoleHexes.ground, monokaiSelectionAndBody.body.hex);
   const monokaiRowAndText = resolveActiveRowAndText(
     monokaiRoleHexes.ground,
     monokaiSelectionAndBody.body.hex,
     monokaiRoleHexes.muted,
-    [monokaiSelectionAndBody.selection.hex],
+    [monokaiSelectionAndBody.selection.hex, monokaiPanelBackground.hex],
     ACTIVE_ROW_IDEAL_FRACTION,
   );
   const monokaiBadgeTokens = resolveHerdrBadgeTokens(monokaiScheme);
+  const monokaiAccentFamily = repairHerdrAccentFamily(monokaiRoleHexes, monokaiBadgeTokens, monokaiRoleHexes.ground, monokaiPanelBackground.hex);
 
   function monokaiTokens(overrides: Partial<HerdrTokenSet> = {}): HerdrTokenSet {
     return {
       sidebar_bg: monokaiRoleHexes.ground,
-      panel_bg: monokaiRoleHexes.ground,
+      panel_bg: monokaiPanelBackground.hex,
       active_row_bg: monokaiRowAndText.activeRowBackgroundHex,
       selection_bg: monokaiSelectionAndBody.selection.hex,
       text: monokaiRowAndText.textHex,
@@ -423,11 +539,9 @@ describe("herdrContrastPairs", () => {
         mix(monokaiRoleHexes.ground, monokaiSelectionAndBody.body.hex, OVERLAY_0_FRACTION),
         monokaiRoleHexes.ground,
         monokaiRowAndText.activeRowBackgroundHex,
+        monokaiPanelBackground.hex,
       ),
-      accent: monokaiRoleHexes.accent,
-      green: monokaiRoleHexes.success,
-      red: monokaiRoleHexes.error,
-      ...monokaiBadgeTokens,
+      ...monokaiAccentFamily,
       ...overrides,
     };
   }
@@ -481,6 +595,40 @@ describe("herdrContrastPairs", () => {
     expect(checkContrastPairs(herdrContrastPairs(monokaiTokens()))).not.toContainEqual(
       expect.objectContaining({ pair: expect.objectContaining({ label: "herdr selection_bg on sidebar_bg" }) }),
     );
+  });
+
+  it("holds panel_bg against sidebar_bg to PANEL_MIN_VISIBLE_RATIO, as a highlight-visibility pair rather than text", () => {
+    const pairs = herdrContrastPairs(monokaiTokens());
+    const panelPair = pairs.find((pair) => pair.label === "herdr panel_bg on sidebar_bg");
+
+    expect(panelPair?.minRatio).toBe(PANEL_MIN_VISIBLE_RATIO);
+    expect(panelPair?.kind).toBe("visibility");
+    expect(checkContrastPairs(herdrContrastPairs(monokaiTokens()))).not.toContainEqual(
+      expect.objectContaining({ pair: expect.objectContaining({ label: "herdr panel_bg on sidebar_bg" }) }),
+    );
+  });
+
+  // CHM-85's own reported bug, reproduced here as the regression proof this
+  // ticket adds to CHM-79's own inventory: Monokai Classic's own ground,
+  // #272822, measured 1.00 against a panel_bg Chameleon used to write
+  // identical to it — no highlight at all when Herdr fell back to painting
+  // panel_bg as the automatic selection, not merely a dull one. This proves
+  // the gate catches that regression outright, the same "fails on the old
+  // shipped value" shape the CHM-78 overlay0 proof below already uses.
+  it("fails panel_bg-on-sidebar_bg when panel_bg is written identical to ground — proving the gate catches the bug it exists for", () => {
+    const groundHex = monokaiRoleHexes.ground;
+    expect(contrastRatio(groundHex, groundHex)).toBe(1);
+
+    const failures = checkContrastPairs(herdrContrastPairs(monokaiTokens({ panel_bg: groundHex })));
+    const panelOnSidebar = failures.find((failure) => failure.pair.label === "herdr panel_bg on sidebar_bg");
+
+    expect(panelOnSidebar).toBeDefined();
+    expect(panelOnSidebar?.ratio).toBe(1);
+
+    // The real, resolved value (what adapters/herdr.ts and theme-pack.ts both
+    // actually ship today) clears the same pair.
+    const failuresAfterFix = checkContrastPairs(herdrContrastPairs(monokaiTokens()));
+    expect(failuresAfterFix.some((failure) => failure.pair.label === "herdr panel_bg on sidebar_bg")).toBe(false);
   });
 
   // CHM-78's own reported bug, reproduced here as the regression proof CHM-79
