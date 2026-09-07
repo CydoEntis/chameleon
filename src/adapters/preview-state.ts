@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { stateDir } from "./platform.js";
+import { writeFileAtomically } from "./atomic-write.js";
 
 /**
  * File name of the marker the picker writes the moment it opens and clears
@@ -47,7 +48,7 @@ export function readPreviewState(previewStatePath: string = defaultPreviewStateP
 export function writePreviewState(originalSlug: string | undefined, previewStatePath: string = defaultPreviewStatePath()): void {
   mkdirSync(path.dirname(previewStatePath), { recursive: true });
   const state: PreviewState = originalSlug === undefined ? { updatedAtMs: Date.now() } : { originalSlug, updatedAtMs: Date.now() };
-  writeFileSync(previewStatePath, JSON.stringify(state, null, 2), "utf8");
+  writeFileAtomically(previewStatePath, JSON.stringify(state, null, 2));
 }
 
 /** Removes the marker, if one exists — a no-op otherwise, so every caller can call this unconditionally on every real, authoritative apply or undo. */
