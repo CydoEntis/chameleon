@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readPaperColorScheme, readTangoTangoScheme } from "../../tools/external-scheme-sources.js";
+import { readBambooScheme, readCyberdreamScheme, readPaperColorScheme, readTangoTangoScheme } from "../../tools/external-scheme-sources.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 /**
@@ -118,5 +118,54 @@ describe("readTangoTangoScheme", () => {
     // #6ac214 vs #4e9a06: the two palettes share a bright row but not a
     // normal one, which is why only the bright row is borrowed.
     expect(tangoTango.green).not.toBe(tangoBright.green);
+  });
+});
+
+describe("readAlacrittyScheme", () => {
+  it("reads Cyberdream's own export, including the selection colour it sets", () => {
+    const cyberdream = readCyberdreamScheme("cyberdream.toml", "Cyberdream");
+
+    expect(cyberdream.name).toBe("Cyberdream");
+    expect(cyberdream.background).toBe("#16181a");
+    expect(cyberdream.foreground).toBe("#ffffff");
+    expect(cyberdream.selectionBackground).toBe("#3c4048");
+  });
+
+  it("maps Alacritty's magenta onto the scheme's purple, the one name that differs", () => {
+    const cyberdream = readCyberdreamScheme("cyberdream.toml", "Cyberdream");
+
+    expect(cyberdream.purple).toBe("#bd5eff");
+    expect(cyberdream.brightPurple).toBe("#bd5eff");
+  });
+
+  it("keeps the normal and bright rows apart, which differ only in black here", () => {
+    const cyberdream = readCyberdreamScheme("cyberdream.toml", "Cyberdream");
+
+    // Reading a key from the wrong table would ship one row twice and go
+    // unnoticed on a theme whose rows are otherwise identical — which is
+    // exactly this theme.
+    expect(cyberdream.black).toBe("#16181a");
+    expect(cyberdream.brightBlack).toBe("#3c4048");
+  });
+
+  it("falls back to the background for a theme that sets no selection colour", () => {
+    const bamboo = readBambooScheme("bamboo.toml", "Bamboo");
+
+    expect(bamboo.background).toBe("#252623");
+    expect(bamboo.selectionBackground).toBe(bamboo.background);
+  });
+
+  it("falls back to the foreground for the cursor, which Alacritty carries only when a theme sets one", () => {
+    const bamboo = readBambooScheme("bamboo_light.toml", "Bamboo Light");
+
+    expect(bamboo.foreground).toBe("#3a4238");
+    expect(bamboo.cursorColor).toBe(bamboo.foreground);
+  });
+
+  it("reads single-quoted values, which Bamboo uses where Cyberdream uses double", () => {
+    const bamboo = readBambooScheme("bamboo.toml", "Bamboo");
+
+    expect(bamboo.red).toBe("#e75a7c");
+    expect(bamboo.green).toBe("#8fb573");
   });
 });

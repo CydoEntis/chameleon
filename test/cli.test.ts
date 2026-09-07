@@ -547,7 +547,7 @@ function findBundledPack(slug: string): LoadedThemePack {
  * list this large has no substring collisions between one entry's name and
  * another's. Only renderPickerFrame's *layout* is under test here (gutter
  * width, name column, row width, the footer's count): none of it depends on
- * which real pack a colour came from, and the 56 bundled packs are not
+ * which real pack a colour came from, and the 62 bundled packs are not
  * enough entries to reach the three-digit row numbers CHM-66's alignment
  * rule names.
  */
@@ -680,8 +680,8 @@ describe("renderPickerRow", () => {
     const allEntries = BUNDLED_PACKS.map(toPickerEntry);
     const SGR_BOLD = "\x1b[1m";
 
-    it("covers all 56 bundled packs", () => {
-      expect(allEntries.length).toBe(56);
+    it("covers all 62 bundled packs", () => {
+      expect(allEntries.length).toBe(62);
     });
 
     it.each(allEntries)("bolds $name's row when highlighted, and only when highlighted", (entry) => {
@@ -767,7 +767,7 @@ describe("renderPickerFrame", () => {
 
   // The acceptance criterion, directly: "1. and 10. and 100. all end at the
   // same column" — proved against a list long enough to actually reach
-  // three digits, not just the 56 bundled packs. The gutter is sized from
+  // three digits, not just the 62 bundled packs. The gutter is sized from
   // the whole filtered list, so the name column stays put across every
   // frame this list ever renders, no matter which rows have scrolled into
   // view — that is what lets each of these three frames be compared here.
@@ -1042,7 +1042,7 @@ describe("createSettledFileTargetPreview", () => {
   });
 
   // The acceptance criterion, directly: holding an arrow key through every
-  // one of the 56 bundled packs, with no pause between rows, must perform a
+  // one of the 62 bundled packs, with no pause between rows, must perform a
   // small, bounded number of file applies — not one per row. Scheduling 29
   // times in a row with no time advance between them, then settling once,
   // proves it is bounded to exactly one, superseding every row passed

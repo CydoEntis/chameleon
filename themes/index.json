@@ -334,5 +334,41 @@
     "name": "TangoTango",
     "family": "TangoTango",
     "appearance": "dark"
+  },
+  {
+    "slug": "cyberdream-dark",
+    "name": "Cyberdream",
+    "family": "Cyberdream",
+    "appearance": "dark"
+  },
+  {
+    "slug": "cyberdream-light",
+    "name": "Cyberdream Light",
+    "family": "Cyberdream",
+    "appearance": "light"
+  },
+  {
+    "slug": "cyberdream-muted",
+    "name": "Cyberdream Muted",
+    "family": "Cyberdream",
+    "appearance": "dark"
+  },
+  {
+    "slug": "bamboo-dark",
+    "name": "Bamboo",
+    "family": "Bamboo",
+    "appearance": "dark"
+  },
+  {
+    "slug": "bamboo-light",
+    "name": "Bamboo Light",
+    "family": "Bamboo",
+    "appearance": "light"
+  },
+  {
+    "slug": "bamboo-multiplex",
+    "name": "Bamboo Multiplex",
+    "family": "Bamboo",
+    "appearance": "dark"
   }
 ]

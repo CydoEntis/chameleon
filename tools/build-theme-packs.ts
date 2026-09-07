@@ -5,7 +5,7 @@ import { contrastRatio } from "../src/palette/color.js";
 import { buildThemePack, type PackAttribution, type ThemePack } from "../src/palette/theme-pack.js";
 import type { Appearance } from "../src/palette/palette.js";
 import type { Scheme } from "../src/palette/scheme.js";
-import { readPaperColorScheme, readTangoTangoScheme } from "./external-scheme-sources.js";
+import { readBambooScheme, readCyberdreamScheme, readPaperColorScheme, readTangoTangoScheme } from "./external-scheme-sources.js";
 import { readVendoredScheme } from "./vendor-scheme-library.js";
 
 // Resolved from process.cwd(), not import.meta.url — see the comment on
@@ -36,6 +36,22 @@ const TANGOTANGO_ATTRIBUTION: PackAttribution = {
   sourceUrl: "https://github.com/juba/color-theme-tangotango",
   commit: "6202d4a19ac1def1b2596f1906c4524dd7303563",
   license: "GPL-3.0-or-later",
+};
+
+/** Pinned to vendor/cyberdream-nvim/SOURCE.txt — the theme author's own Alacritty export, so no cross-check against another source is needed. */
+const CYBERDREAM_ATTRIBUTION: PackAttribution = {
+  source: "scottmckendry/cyberdream.nvim",
+  sourceUrl: "https://github.com/scottmckendry/cyberdream.nvim",
+  commit: "39e1fda12c0704e01029b286a4c7e77e33a0c5cd",
+  license: "MIT",
+};
+
+/** Pinned to vendor/bamboo-nvim/SOURCE.txt — see that file on why GitHub reports NOASSERTION for a verbatim MIT licence. */
+const BAMBOO_ATTRIBUTION: PackAttribution = {
+  source: "ribru17/bamboo.nvim",
+  sourceUrl: "https://github.com/ribru17/bamboo.nvim",
+  commit: "1309bc88bffcf1bedc3e84e7fa9004de93da774a",
+  license: "MIT",
 };
 
 /** What every pack declares about itself, whatever supplied its colours. */
@@ -202,6 +218,49 @@ const EXTERNAL_SCHEMES: readonly ExternalEntry[] = [
     slug: "tangotango",
     attribution: TANGOTANGO_ATTRIBUTION,
   },
+  // Cyberdream and Bamboo each publish their own Alacritty export, so both
+  // read through the one reader and neither needs the verification pass
+  // PaperColor does. Each ships a third variant alongside its light/dark
+  // pair — a second dark take whose derived slug would collide with the
+  // first, so it names its own.
+  {
+    readScheme: () => readCyberdreamScheme("cyberdream.toml", "Cyberdream"),
+    family: "Cyberdream",
+    appearance: "dark",
+    attribution: CYBERDREAM_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readCyberdreamScheme("cyberdream-light.toml", "Cyberdream Light"),
+    family: "Cyberdream",
+    appearance: "light",
+    attribution: CYBERDREAM_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readCyberdreamScheme("cyberdream-muted.toml", "Cyberdream Muted"),
+    family: "Cyberdream",
+    appearance: "dark",
+    slug: "cyberdream-muted",
+    attribution: CYBERDREAM_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readBambooScheme("bamboo.toml", "Bamboo"),
+    family: "Bamboo",
+    appearance: "dark",
+    attribution: BAMBOO_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readBambooScheme("bamboo_light.toml", "Bamboo Light"),
+    family: "Bamboo",
+    appearance: "light",
+    attribution: BAMBOO_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readBambooScheme("bamboo_multiplex.toml", "Bamboo Multiplex"),
+    family: "Bamboo",
+    appearance: "dark",
+    slug: "bamboo-multiplex",
+    attribution: BAMBOO_ATTRIBUTION,
+  },
 ];
 
 /**
@@ -213,8 +272,8 @@ const EXTERNAL_SCHEMES: readonly ExternalEntry[] = [
  */
 const EXPECTED_CURATED_COUNT = 53;
 
-/** PaperColor light + dark and TangoTango, the three built from outside the vendored collection. */
-const EXPECTED_EXTERNAL_COUNT = 3;
+/** PaperColor light + dark, TangoTango, and three variants each of Cyberdream and Bamboo — the nine built from outside the vendored collection. */
+const EXPECTED_EXTERNAL_COUNT = 9;
 
 /** A built pack alongside the source scheme it was built from — describeAnsiRepairs needs both, to diff shipped against upstream. */
 interface BuiltPack {
@@ -276,7 +335,7 @@ fails its contrast floor".
 
 ## Sources outside that collection
 
-Two families are not in it and come from their own pinned sources. Each pack's
+Four families are not in it and come from their own pinned sources. Each pack's
 own manifest carries the attribution it was built from, so nothing here is
 credited to a collection it did not come from.
 
@@ -294,6 +353,15 @@ foreground, cursor and selection from juba's Emacs theme, which is
 are the whole of what is used from it. Its bright 8, which the Emacs theme does
 not define, come from "Builtin Tango Dark" in the MIT collection above. See
 vendor/tangotango/SOURCE.txt.
+
+The Cyberdream and Bamboo packs are read from each theme's own Alacritty
+export, published by the theme itself rather than by a third party. That is
+why neither needs the kind of verification pass PaperColor does: the export
+*is* upstream, and its 16 ANSI slots are authoritative and correctly named.
+Alacritty carries no cursor colour unless a theme sets one and neither does,
+so the cursor is seeded from foreground; Bamboo sets no selection colour
+either, so that is seeded from its background and resolved from the accent.
+See vendor/cyberdream-nvim/SOURCE.txt and vendor/bamboo-nvim/SOURCE.txt.
 
 ## Families
 

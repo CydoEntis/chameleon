@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "bamboo-dark",
+    "name": "Bamboo",
+    "family": "Bamboo",
+    "appearance": "dark",
+    "attribution": {
+      "source": "ribru17/bamboo.nvim",
+      "sourceUrl": "https://github.com/ribru17/bamboo.nvim",
+      "commit": "1309bc88bffcf1bedc3e84e7fa9004de93da774a",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Bamboo",
+      "black": "#565855",
+      "red": "#e75a7c",
+      "green": "#8fb573",
+      "yellow": "#dbb651",
+      "blue": "#57a5e5",
+      "purple": "#aaaaff",
+      "cyan": "#70c2be",
+      "white": "#f1e9d2",
+      "brightBlack": "#5b5e5a",
+      "brightRed": "#e75a7c",
+      "brightGreen": "#8fb573",
+      "brightYellow": "#dbb651",
+      "brightBlue": "#57a5e5",
+      "brightPurple": "#aaaaff",
+      "brightCyan": "#70c2be",
+      "brightWhite": "#fff8f0",
+      "background": "#252623",
+      "foreground": "#f1e9d2",
+      "cursorColor": "#f1e9d2",
+      "selectionBackground": "#00716c"
+    },
+    "oh-my-posh": {
+      "ground": "#252623",
+      "body": "#f1e9d2",
+      "accent": "#70c2be",
+      "muted": "#70736f",
+      "success": "#8fb573",
+      "error": "#ed6082"
+    },
+    "herdr": {
+      "ground": "#252623",
+      "body": "#f1e9d2",
+      "accent": "#70c2be",
+      "muted": "#bebebe",
+      "success": "#9dc381",
+      "error": "#ff9cb3",
+      "selection_bg": "#00716c"
+    },
+    "statusline": {
+      "context": "#70c2be",
+      "fiveHour": "#dbb651",
+      "sevenDay": "#8fb573"
+    }
+  }
+}

@@ -23,6 +23,8 @@ const VENDOR_DIR = path.join(process.cwd(), "vendor");
 const PAPERCOLOR_DIR = path.join(VENDOR_DIR, "papercolor-terminal-app");
 const PAPERCOLOR_THEME_FILE = path.join(VENDOR_DIR, "papercolor-theme", "PaperColor.vim");
 const TANGOTANGO_FILE = path.join(VENDOR_DIR, "tangotango", "tangotango-theme.el");
+const CYBERDREAM_DIR = path.join(VENDOR_DIR, "cyberdream-nvim");
+const BAMBOO_DIR = path.join(VENDOR_DIR, "bamboo-nvim");
 
 /**
  * The vendored scheme supplying TangoTango's bright 8. Emacs' term-color-*
@@ -123,6 +125,18 @@ const X11_COLOR_NAMES: Readonly<Record<string, string>> = {
  */
 const ARCHIVED_COMPONENT_KEYS = ["NSComponents", "NSRGB"] as const;
 
+/** Alacritty `[colors.normal]` / `[colors.bright]` key -> the Scheme slot it supplies. Its "magenta" is the Scheme's "purple"; every other name matches. */
+const ALACRITTY_ANSI_KEY_TO_SLOT: Readonly<Record<string, string>> = {
+  black: "black",
+  red: "red",
+  green: "green",
+  yellow: "yellow",
+  blue: "blue",
+  magenta: "purple",
+  cyan: "cyan",
+  white: "white",
+};
+
 /** Matches the `r g b` float triple inside an archived component string; a trailing alpha, where present, is ignored. */
 const CHANNEL_COMPONENTS = /([01](?:\.\d+)?)\s+([01](?:\.\d+)?)\s+([01](?:\.\d+)?)/;
 
@@ -178,6 +192,86 @@ export function readPaperColorScheme(appearance: "dark" | "light"): Scheme {
     cursorColor: slots.foreground,
     selectionBackground: slots.background,
   });
+}
+
+/**
+ * Reads one theme author's own Alacritty export as a Scheme. Both themes
+ * read this way publish these files themselves, so unlike the PaperColor
+ * port there is no upstream to cross-check them against — the export *is*
+ * upstream, and its ANSI slots are authoritative and correctly named.
+ *
+ * Alacritty's format carries the 16 slots as two tables of eight, plus
+ * `[colors.primary]` for background and foreground. The two optional pieces
+ * are handled the way the Terminal.app profiles' missing ones are:
+ *
+ * - No `[colors.cursor]` in any file here, so the cursor is seeded from
+ *   foreground. Alacritty's own documented default is to draw the cursor in
+ *   the inverse of the cell, which is foreground on a normal cell, so this
+ *   is the format's own fallback rather than an invention. repairCursorColor
+ *   takes it from there.
+ * - `[colors.selection]` where the theme sets one; where it does not, the
+ *   background is the seed, which measures 1.0 against ground and hands the
+ *   choice to resolveSelectionAndBody's repair path (CHM-38) — the same
+ *   route readPaperColorScheme relies on, and for the same reason.
+ */
+export function readAlacrittyScheme(themeDir: string, fileName: string, schemeName: string): Scheme {
+  const tomlPath = path.join(themeDir, fileName);
+  const toml = readFileSync(tomlPath, "utf8");
+
+  const slots: Record<string, string> = {};
+  for (const [alacrittyKey, slotName] of Object.entries(ALACRITTY_ANSI_KEY_TO_SLOT)) {
+    slots[slotName] = readAlacrittyColor(toml, "colors.normal", alacrittyKey, tomlPath);
+    slots[`bright${slotName[0]!.toUpperCase()}${slotName.slice(1)}`] = readAlacrittyColor(toml, "colors.bright", alacrittyKey, tomlPath);
+  }
+
+  const background = readAlacrittyColor(toml, "colors.primary", "background", tomlPath);
+  const foreground = readAlacrittyColor(toml, "colors.primary", "foreground", tomlPath);
+
+  return parseScheme({
+    ...slots,
+    name: schemeName,
+    background,
+    foreground,
+    cursorColor: foreground,
+    selectionBackground: readOptionalAlacrittyColor(toml, "colors.selection", "background") ?? background,
+  });
+}
+
+/** Reads Cyberdream's own Alacritty export for one variant. */
+export function readCyberdreamScheme(fileName: string, schemeName: string): Scheme {
+  return readAlacrittyScheme(CYBERDREAM_DIR, fileName, schemeName);
+}
+
+/** Reads Bamboo's own Alacritty export for one variant. */
+export function readBambooScheme(fileName: string, schemeName: string): Scheme {
+  return readAlacrittyScheme(BAMBOO_DIR, fileName, schemeName);
+}
+
+/**
+ * One key from one table of an Alacritty theme. The files are flat tables of
+ * `key = "0xRRGGBB"` (single or double quoted), so the table is sliced out by
+ * its own header and the key read from within it — a key read from the wrong
+ * table would silently ship the bright row as the normal one, which is
+ * exactly what slicing first prevents.
+ */
+function readOptionalAlacrittyColor(toml: string, tableName: string, key: string): string | undefined {
+  const tableAt = toml.indexOf(`[${tableName}]`);
+  if (tableAt < 0) return undefined;
+
+  const rest = toml.slice(tableAt + tableName.length + 2);
+  const nextTableAt = rest.search(/^\s*\[/m);
+  const table = nextTableAt < 0 ? rest : rest.slice(0, nextTableAt);
+
+  const authored = new RegExp(`^\\s*${key}\\s*=\\s*['"]0x([0-9a-fA-F]{6})['"]`, "m").exec(table);
+  return authored ? `#${authored[1]!.toLowerCase()}` : undefined;
+}
+
+function readAlacrittyColor(toml: string, tableName: string, key: string, tomlPath: string): string {
+  const authored = readOptionalAlacrittyColor(toml, tableName, key);
+  if (authored === undefined) {
+    throw new Error(`"${tomlPath}" has no ${key} in [${tableName}]`);
+  }
+  return authored;
 }
 
 /**

@@ -1,0 +1,17 @@
+Source:  https://github.com/ribru17/bamboo.nvim
+Commit:  1309bc88bffcf1bedc3e84e7fa9004de93da774a
+License: MIT (LICENSE in this directory, copied from upstream)
+
+The three .toml files are copied unmodified from that commit's
+extras/alacritty/. As with vendor/cyberdream-nvim, these are the theme
+author's own Alacritty exports rather than a third-party port, so the 16 ANSI
+slots are authoritative and need no cross-check against another source.
+
+GitHub's licence detector reports NOASSERTION for this repository because its
+LICENSE carries two copyright lines — bamboo.nvim is derived from
+navarasu/onedark.nvim — but the text itself is the MIT licence verbatim. Both
+copyright holders are named in the LICENSE copied here.
+
+Read at build time by readAlacrittyScheme in tools/external-scheme-sources.ts.
+These files set neither a cursor nor a selection colour; see
+external-scheme-sources.ts for what each is seeded with and why.
