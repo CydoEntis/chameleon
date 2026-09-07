@@ -80,8 +80,14 @@ export function formatThemeLine(loaded: LoadedThemePack): string {
  * or a pipe falls back to automatically.
  */
 function printThemeList(packs: readonly LoadedThemePack[]): void {
-  for (const loaded of packs) {
-    process.stdout.write(`${formatThemeLine(loaded)}\n`);
+  // Grouped the same way the picker groups, so the two never disagree about
+  // what order the themes come in. The headings are not printed: this is the
+  // scriptable form, and a line that is not a theme would have to be filtered
+  // back out by whatever is reading it.
+  const loadedBySlug = new Map(packs.map((loaded) => [loaded.pack.manifest.slug, loaded]));
+  for (const entry of groupedByAppearance(packs.map(toPickerEntry))) {
+    const loaded = loadedBySlug.get(entry.slug);
+    if (loaded !== undefined) process.stdout.write(`${formatThemeLine(loaded)}\n`);
   }
 }
 
@@ -1080,6 +1086,14 @@ export interface PickerEntry {
    * reaches all of them.
    */
   readonly scheme: Scheme;
+  /**
+   * Which group this entry sits under. Measured from the scheme by the
+   * contrast engine rather than declared by whoever packaged it — see
+   * palette/palette.ts — so the grouping is the same judgement `chm dark`
+   * and `chm light` already act on, not a second label that could disagree
+   * with it.
+   */
+  readonly appearance: Appearance;
 }
 
 export function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
@@ -1093,7 +1107,30 @@ export function toPickerEntry(loaded: LoadedThemePack): PickerEntry {
     errorHex: roleHexes.error,
     mutedHex: roleHexes.muted,
     scheme: loaded.pack.payloads["windows-terminal"],
+    appearance: loaded.pack.manifest.appearance,
   };
+}
+
+/** The order the groups are shown in, and the label each carries. */
+const APPEARANCE_GROUP_ORDER = ["dark", "light"] as const;
+
+/**
+ * Entries with all the dark packs before all the light ones, each group
+ * otherwise in the order it already arrived in — so a family's own packs
+ * stay where their curated order put them, and only the split is new.
+ * Sorting rather than filtering keeps every pack one arrow key away, which a
+ * mode toggle would not: 63 packs is past the point where a flat list scans,
+ * but it is not a reason to hide half of them behind a keystroke nobody
+ * discovers.
+ */
+export function groupedByAppearance(entries: readonly PickerEntry[]): PickerEntry[] {
+  return APPEARANCE_GROUP_ORDER.flatMap((appearance) => entries.filter((entry) => entry.appearance === appearance));
+}
+
+/** The header drawn above the first row of each group — "Dark (41)", counted across the whole list rather than the visible window. */
+export function appearanceGroupHeading(appearance: Appearance, entries: readonly PickerEntry[]): string {
+  const label = `${appearance[0]!.toUpperCase()}${appearance.slice(1)}`;
+  return `  ${label} (${entries.filter((entry) => entry.appearance === appearance).length})`;
 }
 
 // --- Live terminal preview (CHM-52) -----------------------------------------
@@ -1495,6 +1532,13 @@ function pickerWindowStart(totalCount: number, highlightedIndex: number, maxVisi
  * runInteractivePicker's own `originalSlug`), never the one merely
  * previewed by the highlight, so the `*` marker does not chase the cursor
  * around the list.
+ *
+ * `entries` must already be grouped by appearance — groupedByAppearance is
+ * what does it, once, where the list is built. This cannot sort them itself:
+ * `highlightedIndex` indexes the caller's own array, so reordering here would
+ * point the highlight at a different entry than the one the caller thinks is
+ * selected. Passing an ungrouped list is not a crash, just a heading above
+ * every row where the appearance changes.
  */
 export function renderPickerFrame(
   entries: readonly PickerEntry[],
@@ -1508,13 +1552,21 @@ export function renderPickerFrame(
   const layout = computePickerRowLayout(entries);
   const windowStart = pickerWindowStart(entries.length, highlightedIndex, PICKER_VISIBLE_ROW_COUNT);
   const windowEnd = Math.min(entries.length, windowStart + PICKER_VISIBLE_ROW_COUNT);
-  const rowLines = entries.slice(windowStart, windowEnd).map((entry, windowIndex) => {
+  const rowLines = entries.slice(windowStart, windowEnd).flatMap((entry, windowIndex) => {
     const index = windowStart + windowIndex;
-    return renderPickerRow(
+    const row = renderPickerRow(
       entry,
       { displayNumber: index + 1, isHighlighted: index === highlightedIndex, isApplied: entry.slug === appliedSlug },
       layout,
     );
+    // A heading above the window's own first row as well as at each group
+    // boundary, so a window scrolled into the middle of a group still says
+    // which one it is rather than leaving the reader to infer it. Headings
+    // are drawn here rather than being entries, so the arrow keys never land
+    // on one and the numbering never skips.
+    const isGroupBoundary = index === 0 || entries[index - 1]?.appearance !== entry.appearance;
+    const needsHeading = windowIndex === 0 || isGroupBoundary;
+    return needsHeading ? [appearanceGroupHeading(entry.appearance, entries), row] : [row];
   });
   const hiddenBelowCount = entries.length - windowEnd;
   const footerLine = hiddenBelowCount > 0 ? [`${PICKER_FOOTER_ARROW} ${hiddenBelowCount} more`] : [];
@@ -1574,7 +1626,7 @@ async function runInteractivePicker(
   originalSlug: string | undefined,
   releaseLock: () => void,
 ): Promise<string | undefined> {
-  const allEntries = packs.map(toPickerEntry);
+  const allEntries = groupedByAppearance(packs.map(toPickerEntry));
   const startIndex = originalSlug === undefined ? 0 : Math.max(0, allEntries.findIndex((entry) => entry.slug === originalSlug));
   const originalEntry = originalSlug === undefined ? undefined : allEntries.find((entry) => entry.slug === originalSlug);
 

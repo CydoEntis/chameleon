@@ -26,6 +26,7 @@ import {
   resolveThemeQuery,
   shouldRestoreOriginalSelectionOnExit,
   type StatuslinePayload,
+  groupedByAppearance,
   toPickerEntry,
   USAGE,
   wantsPlainThemeList,
@@ -560,12 +561,16 @@ function buildSyntheticEntries(count: number): PickerEntry[] {
   });
 }
 
-/** The rendered rows out of one renderPickerFrame call — the header and, when present, the footer stripped away. Assumes an empty filter, so there is no filter line to also strip. */
+/** Matches a group heading — "  Dark (41)" — which is chrome like the header and footer, not a selectable row. */
+const PICKER_GROUP_HEADING = /^ {2}(Dark|Light) \(\d+\)$/;
+
+/** The rendered rows out of one renderPickerFrame call — the header, the group headings and, when present, the footer stripped away. Assumes an empty filter, so there is no filter line to also strip. */
 function pickerFrameRowLines(frame: readonly string[]): string[] {
   const withoutHeader = frame.slice(1);
   const lastLine = withoutHeader[withoutHeader.length - 1];
   const hasFooter = lastLine !== undefined && /^↓ \d+ more$/.test(lastLine);
-  return hasFooter ? withoutHeader.slice(0, -1) : withoutHeader;
+  const withoutFooter = hasFooter ? withoutHeader.slice(0, -1) : withoutHeader;
+  return withoutFooter.filter((line) => !PICKER_GROUP_HEADING.test(line));
 }
 
 describe("normalizeThemeQuery", () => {
@@ -787,6 +792,63 @@ describe("renderPickerFrame", () => {
 
     expect(doubleDigitColumn).toBe(singleDigitColumn);
     expect(tripleDigitColumn).toBe(singleDigitColumn);
+  });
+
+  describe("appearance groups", () => {
+    it("puts every dark pack before every light one, without dropping or duplicating any", () => {
+      const entries = BUNDLED_PACKS.map(toPickerEntry);
+
+      const grouped = groupedByAppearance(entries);
+
+      const appearances = grouped.map((entry) => entry.appearance);
+      expect(appearances.indexOf("light")).toBeGreaterThan(-1);
+      expect(appearances.lastIndexOf("dark")).toBeLessThan(appearances.indexOf("light"));
+      expect(new Set(grouped.map((entry) => entry.slug))).toEqual(new Set(entries.map((entry) => entry.slug)));
+    });
+
+    it("leaves each group in the order it already arrived in", () => {
+      const entries = BUNDLED_PACKS.map(toPickerEntry);
+
+      const grouped = groupedByAppearance(entries);
+
+      const darkBefore = entries.filter((entry) => entry.appearance === "dark").map((entry) => entry.slug);
+      const darkAfter = grouped.filter((entry) => entry.appearance === "dark").map((entry) => entry.slug);
+      expect(darkAfter).toEqual(darkBefore);
+    });
+
+    it("counts the whole list in a heading, not just the rows currently on screen", () => {
+      const entries = groupedByAppearance(BUNDLED_PACKS.map(toPickerEntry));
+      const darkCount = entries.filter((entry) => entry.appearance === "dark").length;
+
+      const frame = renderPickerFrame(entries, 0, "", undefined);
+
+      // The window shows 15 rows; the heading must still say how many packs
+      // are in the group, which is the number a reader is actually asking.
+      expect(frame).toContain(`  Dark (${darkCount})`);
+      expect(darkCount).toBeGreaterThan(15);
+    });
+
+    it("heads the window's own first row even when it is scrolled into the middle of a group", () => {
+      const entries = groupedByAppearance(BUNDLED_PACKS.map(toPickerEntry));
+
+      const frame = renderPickerFrame(entries, 20, "", undefined);
+
+      // Scrolled past the top of the dark group, the frame must still name
+      // which group these rows belong to rather than leaving it inferred.
+      expect(frame.filter((line) => /^ {2}Dark \(\d+\)$/.test(line))).toHaveLength(1);
+    });
+
+    it("never puts a heading where the arrow keys could land on it", () => {
+      const entries = groupedByAppearance(BUNDLED_PACKS.map(toPickerEntry));
+
+      const frame = renderPickerFrame(entries, 0, "", undefined);
+
+      // Headings are drawn, not selectable: the numbered rows must run
+      // consecutively from 1 with no gap where a heading was inserted.
+      // Skips the highlight/applied marker a row can carry before its number.
+      const numbers = pickerFrameRowLines(frame).map((line) => Number(/^\D*?(\d+)\./.exec(stripAnsiEscapes(line))?.[1]));
+      expect(numbers).toEqual(numbers.map((_unused, index) => index + 1));
+    });
   });
 
   it("pads every rendered row to the same display width, measured excluding escape sequences", () => {
