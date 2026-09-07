@@ -6,13 +6,20 @@ palette. Everything reloads live except Claude Code, which needs a restart and
 says so.
 
 ```sh
-npm install -g @cydoentis/chameleon
+npm install -g CydoEntis/chameleon
 chm themes
 ```
 
-That is the whole install. `chm themes` opens a picker; arrow keys preview
-each theme live, enter applies it everywhere at once, esc puts back what you
-had.
+That is the whole install. npm clones the repository and builds it on the way
+in, so there is nothing to compile by hand. `chm themes` then opens a picker;
+arrow keys preview each theme live, enter applies it everywhere at once, esc
+puts back what you had.
+
+Chameleon is installed from this repository, not from the npm registry — the
+package is marked private, so it is not published there and will not be. To
+update, run the same command again. To remove it, `npm uninstall -g
+@cydoentis/chameleon`; run `chm original` first if you want your own colours
+back.
 
 ## Requirements
 

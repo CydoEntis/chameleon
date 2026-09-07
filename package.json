@@ -1,6 +1,7 @@
 {
   "name": "@cydoentis/chameleon",
   "version": "0.1.0",
+  "private": true,
   "description": "One command retints your whole terminal - Windows Terminal, Oh My Posh and Herdr - from a single palette.",
   "keywords": [
     "terminal",
@@ -35,6 +36,7 @@
     "themes"
   ],
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
