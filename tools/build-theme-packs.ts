@@ -5,7 +5,7 @@ import { contrastRatio } from "../src/palette/color.js";
 import { buildThemePack, type PackAttribution, type ThemePack } from "../src/palette/theme-pack.js";
 import type { Appearance } from "../src/palette/palette.js";
 import type { Scheme } from "../src/palette/scheme.js";
-import { readBambooScheme, readCyberdreamScheme, readPaperColorScheme, readTangoTangoScheme } from "./external-scheme-sources.js";
+import { readBambooScheme, readCyberdreamScheme, readPaperColorScheme, readTangoTangoScheme, readTurtlesScheme } from "./external-scheme-sources.js";
 import { readVendoredScheme } from "./vendor-scheme-library.js";
 
 // Resolved from process.cwd(), not import.meta.url — see the comment on
@@ -52,6 +52,20 @@ const BAMBOO_ATTRIBUTION: PackAttribution = {
   sourceUrl: "https://github.com/ribru17/bamboo.nvim",
   commit: "1309bc88bffcf1bedc3e84e7fa9004de93da774a",
   license: "MIT",
+};
+
+/**
+ * Pinned to vendor/turtles/SOURCE.txt. The licence here is not a value this
+ * table can state honestly: the repository declares none, and its README
+ * badge points at an unrelated project. Recorded as such so every pack's own
+ * manifest says what is actually known rather than implying a licence that
+ * was never granted — read that SOURCE.txt before depending on this pack.
+ */
+const TURTLES_ATTRIBUTION: PackAttribution = {
+  source: "kxzk/Turtles",
+  sourceUrl: "https://github.com/kxzk/Turtles",
+  commit: "eb228e49f98e8631bcbc84b8fe090e37a87fb3cf",
+  license: "no licence declared upstream",
 };
 
 /** What every pack declares about itself, whatever supplied its colours. */
@@ -261,6 +275,15 @@ const EXTERNAL_SCHEMES: readonly ExternalEntry[] = [
     slug: "bamboo-multiplex",
     attribution: BAMBOO_ATTRIBUTION,
   },
+  // The only source here that carries every field a Scheme needs, so nothing
+  // about this pack is seeded — and the only one whose licence is unknown.
+  {
+    readScheme: readTurtlesScheme,
+    family: "Turtles",
+    appearance: "dark",
+    slug: "turtles",
+    attribution: TURTLES_ATTRIBUTION,
+  },
 ];
 
 /**
@@ -272,8 +295,8 @@ const EXTERNAL_SCHEMES: readonly ExternalEntry[] = [
  */
 const EXPECTED_CURATED_COUNT = 53;
 
-/** PaperColor light + dark, TangoTango, and three variants each of Cyberdream and Bamboo — the nine built from outside the vendored collection. */
-const EXPECTED_EXTERNAL_COUNT = 9;
+/** PaperColor light + dark, TangoTango, Turtles, and three variants each of Cyberdream and Bamboo — the ten built from outside the vendored collection. */
+const EXPECTED_EXTERNAL_COUNT = 10;
 
 /** A built pack alongside the source scheme it was built from — describeAnsiRepairs needs both, to diff shipped against upstream. */
 interface BuiltPack {
@@ -335,7 +358,7 @@ fails its contrast floor".
 
 ## Sources outside that collection
 
-Four families are not in it and come from their own pinned sources. Each pack's
+Five families are not in it and come from their own pinned sources. Each pack's
 own manifest carries the attribution it was built from, so nothing here is
 credited to a collection it did not come from.
 

@@ -4,17 +4,25 @@ import { parseScheme, type Scheme } from "../src/palette/scheme.js";
 import { readVendoredScheme } from "./vendor-scheme-library.js";
 
 /**
- * Reads the two vendored sources that are not Windows Terminal scheme JSON —
- * a macOS Terminal.app profile and an Emacs theme — into Schemes the same
- * build pass consumes. Everything here is build-time only, like
- * vendor-scheme-library.ts; see each vendor directory's SOURCE.txt for the
- * pinned commit and why that source was chosen over the theme's own upstream.
+ * Reads the vendored sources that are not Windows Terminal scheme JSON — a
+ * macOS Terminal.app profile, an Emacs theme, two Alacritty exports and an
+ * iTerm2 one — into Schemes the same build pass consumes. Everything here is
+ * build-time only, like vendor-scheme-library.ts; see each vendor
+ * directory's SOURCE.txt for the pinned commit, the licence, and why that
+ * source was chosen over the theme's own upstream.
  *
- * These exist because two requested themes are absent from
+ * These exist because the themes they carry are absent from
  * mbadolato/iTerm2-Color-Schemes, which supplies every other pack. Adding a
  * source is deliberately more work than adding a curated entry: each one
- * needs its own provenance, licence and reader, so the cost of a second
+ * needs its own provenance, licence and reader, so the cost of another
  * colour source stays visible rather than accumulating quietly.
+ *
+ * How much a source has to be second-guessed varies, and each reader says
+ * which case it is. A theme's own export (Cyberdream, Bamboo, Turtles) is
+ * upstream and its ANSI slots are taken as authoritative. A third-party port
+ * (PaperColor) is verified against the theme it ports on every build. A
+ * theme that carries no ANSI slots at all (TangoTango) has them supplied
+ * from elsewhere, and what licenses that is asserted rather than assumed.
  */
 
 // Resolved from process.cwd() for the same reason VENDORED_SCHEME_DIR is —
@@ -25,6 +33,7 @@ const PAPERCOLOR_THEME_FILE = path.join(VENDOR_DIR, "papercolor-theme", "PaperCo
 const TANGOTANGO_FILE = path.join(VENDOR_DIR, "tangotango", "tangotango-theme.el");
 const CYBERDREAM_DIR = path.join(VENDOR_DIR, "cyberdream-nvim");
 const BAMBOO_DIR = path.join(VENDOR_DIR, "bamboo-nvim");
+const TURTLES_FILE = path.join(VENDOR_DIR, "turtles", "turtles.itermcolors");
 
 /**
  * The vendored scheme supplying TangoTango's bright 8. Emacs' term-color-*
@@ -137,6 +146,24 @@ const ALACRITTY_ANSI_KEY_TO_SLOT: Readonly<Record<string, string>> = {
   white: "white",
 };
 
+/**
+ * iTerm2 numbers its ANSI slots rather than naming them, in the standard
+ * order — 0-7 normal, 8-15 bright. Indexed here so a slot can never be read
+ * off by one from a name that happens to sit nearby in the file.
+ */
+const ITERM_ANSI_INDEX_TO_SLOT = [
+  "black", "red", "green", "yellow", "blue", "purple", "cyan", "white",
+  "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightPurple", "brightCyan", "brightWhite",
+] as const;
+
+/** The four named colours an .itermcolors file carries beyond the 16 slots -> the Scheme field each supplies. */
+const ITERM_NAMED_KEY_TO_FIELD: Readonly<Record<string, string>> = {
+  "Background Color": "background",
+  "Foreground Color": "foreground",
+  "Cursor Color": "cursorColor",
+  "Selection Color": "selectionBackground",
+};
+
 /** Matches the `r g b` float triple inside an archived component string; a trailing alpha, where present, is ignored. */
 const CHANNEL_COMPONENTS = /([01](?:\.\d+)?)\s+([01](?:\.\d+)?)\s+([01](?:\.\d+)?)/;
 
@@ -159,6 +186,9 @@ const PROFILE_KEY_TO_UPSTREAM_PALETTE_KEY: Readonly<Record<string, string>> = {
   ANSIBrightCyanColor: "color14",
   ANSIBrightWhiteColor: "color15",
 };
+
+/** Read in red-green-blue order regardless of the alphabetical order the plist writes them in. */
+const ITERM_CHANNEL_KEYS = ["Red", "Green", "Blue"] as const;
 
 const HEX_RADIX = 16;
 const MAX_CHANNEL_BYTE = 255;
@@ -192,6 +222,60 @@ export function readPaperColorScheme(appearance: "dark" | "light"): Scheme {
     cursorColor: slots.foreground,
     selectionBackground: slots.background,
   });
+}
+
+/**
+ * Reads Turtles' own iTerm2 export as a Scheme. This is the only vendored
+ * source outside the iTerm2 collection that carries every field a Scheme
+ * needs — 16 slots plus background, foreground, cursor *and* selection — so
+ * unlike readPaperColorScheme and readAlacrittyScheme, nothing here is seeded
+ * or falls back to another value.
+ *
+ * See vendor/turtles/SOURCE.txt before relying on this pack: the repository
+ * declares no licence, which is recorded there rather than glossed over.
+ */
+export function readTurtlesScheme(): Scheme {
+  const plist = readFileSync(TURTLES_FILE, "utf8");
+
+  const slots: Record<string, string> = {};
+  ITERM_ANSI_INDEX_TO_SLOT.forEach((slotName, index) => {
+    slots[slotName] = readItermColor(plist, `Ansi ${index} Color`);
+  });
+  for (const [plistKey, fieldName] of Object.entries(ITERM_NAMED_KEY_TO_FIELD)) {
+    slots[fieldName] = readItermColor(plist, plistKey);
+  }
+
+  return parseScheme({ ...slots, name: "Turtles" });
+}
+
+/**
+ * One colour from an .itermcolors plist. Each is a <dict> of components
+ * written in alphabetical order — Alpha, Blue, Color Space, Green, Red — so
+ * every channel is read by its own name rather than by position, and the
+ * dict is sliced out first so a key cannot pick up a neighbour's component.
+ */
+function readItermColor(plist: string, plistKey: string): string {
+  const keyAt = plist.indexOf(`<key>${plistKey}</key>`);
+  if (keyAt < 0) {
+    throw new Error(`"${TURTLES_FILE}" has no "${plistKey}"`);
+  }
+
+  const dictStart = plist.indexOf("<dict>", keyAt);
+  const dictEnd = plist.indexOf("</dict>", dictStart);
+  if (dictStart < 0 || dictEnd < 0) {
+    throw new Error(`"${TURTLES_FILE}" key "${plistKey}" is not followed by a colour dict`);
+  }
+
+  const dict = plist.slice(dictStart, dictEnd);
+  const channels = ITERM_CHANNEL_KEYS.map((channelKey) => {
+    const authored = new RegExp(`<key>${channelKey} Component</key>\\s*<real>([0-9.eE+-]+)</real>`).exec(dict);
+    if (!authored) {
+      throw new Error(`"${TURTLES_FILE}" key "${plistKey}" has no ${channelKey} Component`);
+    }
+    return toHexChannel(authored[1]!);
+  });
+
+  return `#${channels.join("")}`;
 }
 
 /**

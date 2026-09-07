@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readBambooScheme, readCyberdreamScheme, readPaperColorScheme, readTangoTangoScheme } from "../../tools/external-scheme-sources.js";
+import { readBambooScheme, readCyberdreamScheme, readPaperColorScheme, readTangoTangoScheme, readTurtlesScheme } from "../../tools/external-scheme-sources.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 /**
@@ -167,5 +167,41 @@ describe("readAlacrittyScheme", () => {
 
     expect(bamboo.red).toBe("#e75a7c");
     expect(bamboo.green).toBe("#8fb573");
+  });
+});
+
+describe("readTurtlesScheme", () => {
+  it("reads every field from the export, seeding none of them", () => {
+    const turtles = readTurtlesScheme();
+
+    expect(turtles.name).toBe("Turtles");
+    // The only vendored source outside the iTerm2 collection that authors a
+    // cursor and a selection of its own, so neither falls back to another
+    // field the way PaperColor's and Bamboo's do.
+    expect(turtles.cursorColor).not.toBe(turtles.foreground);
+    expect(turtles.selectionBackground).not.toBe(turtles.background);
+  });
+
+  it("reads channels by name, not by the alphabetical order the plist writes them in", () => {
+    const turtles = readTurtlesScheme();
+
+    // Ansi 0's components are authored Alpha, Blue, Color Space, Green, Red —
+    // so reading them positionally would yield #341f28 rather than #282c34.
+    expect(turtles.black).toBe("#282c34");
+  });
+
+  it("maps the numbered slots onto the named ones in ANSI order", () => {
+    const turtles = readTurtlesScheme();
+
+    // Ansi 1 is red and Ansi 9 its bright counterpart, and here the two rows
+    // are genuinely different palettes: the normal row is One Dark's, while
+    // the bright row carries the four mask colours the theme exists for
+    // (#dd4641 Raphael, #804b92 Donatello, #ec9e40 Michelangelo, #0a7cb6
+    // Leonardo). Reading a slot from the wrong row would swap one for the
+    // other and still look plausible, which is why both are asserted.
+    expect(turtles.red).toBe("#e06c75");
+    expect(turtles.brightRed).toBe("#dd4641");
+    expect(turtles.brightBlue).toBe("#804b92");
+    expect(turtles.brightGreen).toBe("#0a7cb6");
   });
 });
