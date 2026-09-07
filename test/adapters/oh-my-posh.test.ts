@@ -2007,18 +2007,28 @@ function literalHexOnlyConfigText(): string {
   });
 }
 
-describe("seeding refuses a config with no palette references (CHM-74)", () => {
+describe("a first apply seeds a config with no palette references automatically, then lifts it (CHM-87)", () => {
+  // CHM-74 taught recolorConfigInto how to lift a literal hex into a palette
+  // key, but only ever let a person reach that lift through an explicit
+  // `chm reseed`: the automatic seeding path a cold machine's very first
+  // `chm <theme>` runs through still refused a config shaped exactly like
+  // this one, since none of its segments reference a palette key yet. That
+  // refusal had nothing left to protect once the lift existed — this is the
+  // literal-hex-only config from CHM-87's own bug report, seeded and themed
+  // with no flag and no follow-up command, the path the CHM-74 tests below
+  // never actually exercised (they all reseed explicitly first).
   let stateDir: string;
   let ownedConfigPath: string;
   let profilePath: string;
   let sourceConfigPath: string;
 
   beforeEach(() => {
-    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm74-seed-"));
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm87-seed-"));
     ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
     profilePath = path.join(stateDir, "profile.ps1");
     sourceConfigPath = path.join(stateDir, "literal-hex-only.omp.json");
     writeFileSync(sourceConfigPath, literalHexOnlyConfigText(), "utf8");
+    vi.stubEnv("POSH_CONFIG", sourceConfigPath);
   });
 
   afterEach(() => {
@@ -2026,16 +2036,46 @@ describe("seeding refuses a config with no palette references (CHM-74)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("refuses to copy it in automatically, naming the config and pointing to chm reseed", () => {
-    vi.stubEnv("POSH_CONFIG", sourceConfigPath);
-    const seed = () => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
+  it("copies the discovered config in without throwing, even though none of its segments reference a palette key yet", () => {
+    expect(() => ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh")).not.toThrow();
+    // Seeding itself is still a byte-identical copy — the lift only ever
+    // happens on apply, same as an explicit chm reseed.
+    expect(readFileSync(ownedConfigPath, "utf8")).toBe(literalHexOnlyConfigText());
+  });
 
-    expect(seed).toThrow(sourceConfigPath);
-    expect(seed).toThrow(/palette key/);
-    expect(seed).toThrow(/chm reseed/);
-    // Refusing means refusing to write anything, not writing it and
-    // complaining afterwards — nothing here is silently accepted.
-    expect(existsSync(ownedConfigPath)).toBe(false);
+  it("a first `chm <theme>` — seed then apply, exactly what a cold machine runs — lifts every literal hex into a palette key and repoints the segments at it", () => {
+    ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
+    const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+
+    adapter.apply(ZEROX96F_SCHEME);
+
+    const parsed = parseWritten(readFileSync(ownedConfigPath, "utf8")) as {
+      palette: Record<string, string>;
+      blocks: Array<{ segments: Array<Record<string, unknown>> }>;
+    };
+    const segments = parsed.blocks[0]!.segments;
+    // "path" and "git" shared the same literal "#ff0000" — they share one
+    // lifted key, not two.
+    expect(segments[0]!["foreground"]).toBe("p:literal-ff0000");
+    expect(segments[1]!["foreground"]).toBe("p:literal-ff0000");
+    expect(segments[2]!["foreground"]).toBe("p:literal-00ff00");
+    expect(parsed.palette["literal-ff0000"]).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(parsed.palette["literal-00ff00"]).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it("is idempotent across that first apply and a second — the same file, with no keys accumulating", () => {
+    ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath, profilePath, "pwsh");
+    const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+
+    adapter.apply(ZEROX96F_SCHEME);
+    const afterFirstApply = readFileSync(ownedConfigPath, "utf8");
+    adapter.apply(ZEROX96F_SCHEME);
+    const afterSecondApply = readFileSync(ownedConfigPath, "utf8");
+
+    expect(afterSecondApply).toBe(afterFirstApply);
+    const palette = (parseWritten(afterSecondApply) as { palette: Record<string, string> }).palette;
+    const literalKeys = Object.keys(palette).filter((key) => key.startsWith("literal-"));
+    expect(literalKeys.sort()).toEqual(["literal-00ff00", "literal-ff0000"]);
   });
 });
 
