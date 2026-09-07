@@ -172,5 +172,209 @@
     "name": "Ayu Dark",
     "family": "Ayu",
     "appearance": "dark"
+  },
+  {
+    "slug": "flexoki-dark",
+    "name": "Flexoki Dark",
+    "family": "Flexoki",
+    "appearance": "dark"
+  },
+  {
+    "slug": "flexoki-light",
+    "name": "Flexoki Light",
+    "family": "Flexoki",
+    "appearance": "light"
+  },
+  {
+    "slug": "melange-dark",
+    "name": "Melange Dark",
+    "family": "Melange",
+    "appearance": "dark"
+  },
+  {
+    "slug": "melange-light",
+    "name": "Melange Light",
+    "family": "Melange",
+    "appearance": "light"
+  },
+  {
+    "slug": "zenbones-dark",
+    "name": "Zenbones Dark",
+    "family": "Zenbones",
+    "appearance": "dark"
+  },
+  {
+    "slug": "zenbones-light",
+    "name": "Zenbones Light",
+    "family": "Zenbones",
+    "appearance": "light"
+  },
+  {
+    "slug": "seoulbones-dark",
+    "name": "Seoulbones Dark",
+    "family": "Seoulbones",
+    "appearance": "dark"
+  },
+  {
+    "slug": "seoulbones-light",
+    "name": "Seoulbones Light",
+    "family": "Seoulbones",
+    "appearance": "light"
+  },
+  {
+    "slug": "nightfox-dark",
+    "name": "Nightfox",
+    "family": "Nightfox",
+    "appearance": "dark"
+  },
+  {
+    "slug": "nightfox-light",
+    "name": "Dawnfox",
+    "family": "Nightfox",
+    "appearance": "light"
+  },
+  {
+    "slug": "iceberg",
+    "name": "Iceberg Dark",
+    "family": "Iceberg",
+    "appearance": "dark"
+  },
+  {
+    "slug": "modus-vivendi",
+    "name": "Modus Vivendi",
+    "family": "Modus Vivendi",
+    "appearance": "dark"
+  },
+  {
+    "slug": "vesper",
+    "name": "Vesper",
+    "family": "Vesper",
+    "appearance": "dark"
+  },
+  {
+    "slug": "terafox",
+    "name": "Terafox",
+    "family": "Terafox",
+    "appearance": "dark"
+  },
+  {
+    "slug": "embark",
+    "name": "Embark",
+    "family": "Embark",
+    "appearance": "dark"
+  },
+  {
+    "slug": "cobalt2",
+    "name": "Cobalt2",
+    "family": "Cobalt2",
+    "appearance": "dark"
+  },
+  {
+    "slug": "synthwave",
+    "name": "Synthwave",
+    "family": "Synthwave",
+    "appearance": "dark"
+  },
+  {
+    "slug": "snazzy",
+    "name": "Snazzy",
+    "family": "Snazzy",
+    "appearance": "dark"
+  },
+  {
+    "slug": "challenger-deep",
+    "name": "Challenger Deep",
+    "family": "Challenger Deep",
+    "appearance": "dark"
+  },
+  {
+    "slug": "doom-one",
+    "name": "Doom One",
+    "family": "Doom One",
+    "appearance": "dark"
+  },
+  {
+    "slug": "everblush",
+    "name": "Everblush",
+    "family": "Everblush",
+    "appearance": "dark"
+  },
+  {
+    "slug": "sonokai",
+    "name": "Sonokai",
+    "family": "Sonokai",
+    "appearance": "dark"
+  },
+  {
+    "slug": "moonfly",
+    "name": "Moonfly",
+    "family": "Moonfly",
+    "appearance": "dark"
+  },
+  {
+    "slug": "aura",
+    "name": "Aura Dark",
+    "family": "Aura",
+    "appearance": "dark"
+  },
+  {
+    "slug": "papercolor-dark",
+    "name": "PaperColor Dark",
+    "family": "PaperColor",
+    "appearance": "dark"
+  },
+  {
+    "slug": "papercolor-light",
+    "name": "PaperColor Light",
+    "family": "PaperColor",
+    "appearance": "light"
+  },
+  {
+    "slug": "tangotango",
+    "name": "TangoTango",
+    "family": "TangoTango",
+    "appearance": "dark"
+  },
+  {
+    "slug": "cyberdream-dark",
+    "name": "Cyberdream",
+    "family": "Cyberdream",
+    "appearance": "dark"
+  },
+  {
+    "slug": "cyberdream-light",
+    "name": "Cyberdream Light",
+    "family": "Cyberdream",
+    "appearance": "light"
+  },
+  {
+    "slug": "cyberdream-muted",
+    "name": "Cyberdream Muted",
+    "family": "Cyberdream",
+    "appearance": "dark"
+  },
+  {
+    "slug": "bamboo-dark",
+    "name": "Bamboo",
+    "family": "Bamboo",
+    "appearance": "dark"
+  },
+  {
+    "slug": "bamboo-light",
+    "name": "Bamboo Light",
+    "family": "Bamboo",
+    "appearance": "light"
+  },
+  {
+    "slug": "bamboo-multiplex",
+    "name": "Bamboo Multiplex",
+    "family": "Bamboo",
+    "appearance": "dark"
+  },
+  {
+    "slug": "turtles",
+    "name": "Turtles",
+    "family": "Turtles",
+    "appearance": "dark"
   }
 ]

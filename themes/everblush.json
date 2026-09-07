@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "everblush",
+    "name": "Everblush",
+    "family": "Everblush",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Everblush",
+      "black": "#495053",
+      "red": "#e57474",
+      "green": "#8ccf7e",
+      "yellow": "#e5c76b",
+      "blue": "#67b0e8",
+      "purple": "#c47fd5",
+      "cyan": "#6cbfbf",
+      "white": "#b3b9b8",
+      "brightBlack": "#464e50",
+      "brightRed": "#ef7e7e",
+      "brightGreen": "#96d988",
+      "brightYellow": "#f4d67a",
+      "brightBlue": "#71baf2",
+      "brightPurple": "#ce89df",
+      "brightCyan": "#67cbe7",
+      "brightWhite": "#bdc3c2",
+      "background": "#141b1e",
+      "foreground": "#dadada",
+      "cursorColor": "#dadada",
+      "selectionBackground": "#bd0000"
+    },
+    "oh-my-posh": {
+      "ground": "#141b1e",
+      "body": "#dadada",
+      "accent": "#6cbfbf",
+      "muted": "#626a6c",
+      "success": "#8ccf7e",
+      "error": "#e57474"
+    },
+    "herdr": {
+      "ground": "#141b1e",
+      "body": "#dadada",
+      "accent": "#6cbfbf",
+      "muted": "#acb4b6",
+      "success": "#8ccf7e",
+      "error": "#f88787",
+      "selection_bg": "#bd0000"
+    },
+    "statusline": {
+      "context": "#6cbfbf",
+      "fiveHour": "#e5c76b",
+      "sevenDay": "#8ccf7e"
+    }
+  }
+}

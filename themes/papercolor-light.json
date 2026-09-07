@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "papercolor-light",
+    "name": "PaperColor Light",
+    "family": "PaperColor",
+    "appearance": "light",
+    "attribution": {
+      "source": "tomotargz/papercolor-terminal-app",
+      "sourceUrl": "https://github.com/tomotargz/papercolor-terminal-app",
+      "commit": "3b7a1c9ecc0642d355a2d73ba899a1ac2d18a0c7",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "PaperColor Light",
+      "black": "#a6a6a6",
+      "red": "#af0000",
+      "green": "#008700",
+      "yellow": "#5f8700",
+      "blue": "#0087af",
+      "purple": "#878787",
+      "cyan": "#005f87",
+      "white": "#444444",
+      "brightBlack": "#a6a6a6",
+      "brightRed": "#d70000",
+      "brightGreen": "#d70087",
+      "brightYellow": "#8700af",
+      "brightBlue": "#d75f00",
+      "brightPurple": "#d75f00",
+      "brightCyan": "#005faf",
+      "brightWhite": "#005f87",
+      "background": "#eeeeee",
+      "foreground": "#444444",
+      "cursorColor": "#444444",
+      "selectionBackground": "#2ec1ff"
+    },
+    "oh-my-posh": {
+      "ground": "#eeeeee",
+      "body": "#444444",
+      "accent": "#005f87",
+      "muted": "#868686",
+      "success": "#007a00",
+      "error": "#af0000"
+    },
+    "herdr": {
+      "ground": "#eeeeee",
+      "body": "#444444",
+      "accent": "#005f87",
+      "muted": "#575757",
+      "success": "#006600",
+      "error": "#af0000",
+      "selection_bg": "#2ec1ff"
+    },
+    "statusline": {
+      "context": "#005f87",
+      "fiveHour": "#517300",
+      "sevenDay": "#007a00"
+    }
+  }
+}

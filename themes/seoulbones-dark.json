@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "seoulbones-dark",
+    "name": "Seoulbones Dark",
+    "family": "Seoulbones",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Seoulbones Dark",
+      "black": "#7c7c7c",
+      "red": "#e388a3",
+      "green": "#98bd99",
+      "yellow": "#ffdf9b",
+      "blue": "#97bdde",
+      "purple": "#a5a6c5",
+      "cyan": "#6fbdbe",
+      "white": "#dddddd",
+      "brightBlack": "#7c7c7c",
+      "brightRed": "#eb99b1",
+      "brightGreen": "#8fcd92",
+      "brightYellow": "#ffe5b3",
+      "brightBlue": "#a2c8e9",
+      "brightPurple": "#b2b3da",
+      "brightCyan": "#6bcacb",
+      "brightWhite": "#a8a8a8",
+      "background": "#4b4b4b",
+      "foreground": "#dddddd",
+      "cursorColor": "#e2e2e2",
+      "selectionBackground": "#003d73"
+    },
+    "oh-my-posh": {
+      "ground": "#4b4b4b",
+      "body": "#dddddd",
+      "accent": "#9dc3e4",
+      "muted": "#a1999a",
+      "success": "#a3c8a4",
+      "error": "#ffdf9b"
+    },
+    "herdr": {
+      "ground": "#4b4b4b",
+      "body": "#e4e4e4",
+      "accent": "#cce7ff",
+      "muted": "#e1d9da",
+      "success": "#c8edc9",
+      "error": "#ffdf9b",
+      "selection_bg": "#003d73"
+    },
+    "statusline": {
+      "context": "#7ecccd",
+      "fiveHour": "#ffdf9b",
+      "sevenDay": "#a3c8a4"
+    }
+  }
+}

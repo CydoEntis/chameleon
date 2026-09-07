@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "embark",
+    "name": "Embark",
+    "family": "Embark",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Embark",
+      "black": "#525065",
+      "red": "#f0719b",
+      "green": "#a1efd3",
+      "yellow": "#ffe9aa",
+      "blue": "#57c7ff",
+      "purple": "#c792ea",
+      "cyan": "#87dfeb",
+      "white": "#f8f8f2",
+      "brightBlack": "#585273",
+      "brightRed": "#f02e6e",
+      "brightGreen": "#2ce592",
+      "brightYellow": "#ffb378",
+      "brightBlue": "#1da0e2",
+      "brightPurple": "#a742ea",
+      "brightCyan": "#63f2f1",
+      "brightWhite": "#a6b3cc",
+      "background": "#1e1c31",
+      "foreground": "#eeffff",
+      "cursorColor": "#a1efd3",
+      "selectionBackground": "#007b8c"
+    },
+    "oh-my-posh": {
+      "ground": "#1e1c31",
+      "body": "#eeffff",
+      "accent": "#87dfeb",
+      "muted": "#6e6889",
+      "success": "#a1efd3",
+      "error": "#ffe9aa"
+    },
+    "herdr": {
+      "ground": "#1e1c31",
+      "body": "#eeffff",
+      "accent": "#87dfeb",
+      "muted": "#cecece",
+      "success": "#a1efd3",
+      "error": "#ffe9aa",
+      "selection_bg": "#007b8c"
+    },
+    "statusline": {
+      "context": "#87dfeb",
+      "fiveHour": "#ffe9aa",
+      "sevenDay": "#a1efd3"
+    }
+  }
+}

@@ -266,6 +266,38 @@ function isSingleForegroundAchievable(backgroundHexes: readonly string[]): boole
   return clearsEveryBackground("#000000") || clearsEveryBackground("#ffffff");
 }
 
+/** The greys swept by bestAchievableWorstCaseContrast — every 8-bit luminance a colour can have. */
+const GREY_LEVELS = 256;
+
+/** Absorbs 8-bit rounding between the swept grey and whatever hue the repair actually shipped at that luminance. */
+const OPTIMUM_TOLERANCE = 0.01;
+
+/**
+ * The highest worst-case contrast any single colour can reach against every
+ * one of `backgroundHexes` at once. Contrast ratio depends only on relative
+ * luminance, so sweeping the 256 greys sweeps every luminance a colour of
+ * any hue or chroma could have — the best grey's worst case is therefore the
+ * best *any* colour can do, not merely the best grey.
+ *
+ * This is the floor for a segment whose backgrounds no single foreground can
+ * serve well. MUTED_MIN_RATIO is not always reachable there: papercolor-
+ * light's battery segment pairs seven light charge-level pastels with
+ * PaperColor's own dark red error background (#af0000), where the very best
+ * a shared foreground can manage is 2.82 — at black, which is what the
+ * repair picks. Holding the repair to the optimum is both stronger than a
+ * fixed ratio and always satisfiable, where a fixed 3.0 would be demanding
+ * something no colour exists to provide.
+ */
+function bestAchievableWorstCaseContrast(backgroundHexes: readonly string[]): number {
+  let best = 0;
+  for (let level = 0; level < GREY_LEVELS; level += 1) {
+    const greyHex = `#${level.toString(16).padStart(2, "0").repeat(3)}`;
+    const worstCase = Math.min(...backgroundHexes.map((backgroundHex) => contrastRatio(greyHex, backgroundHex)));
+    if (worstCase > best) best = worstCase;
+  }
+  return best;
+}
+
 function parseWritten(text: string): unknown {
   return parseJsonc(text, [], { allowTrailingComma: true });
 }
@@ -1245,9 +1277,14 @@ describe("recolouring a foreign palette on theme apply (CHM-31)", () => {
               expect(contrast, label).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
             } else {
               // Even where TEXT_MIN_RATIO itself is unreachable, the repair
-              // must still land at least at muted's own, lower floor —
-              // never something worse than a de-emphasised colour would be.
-              expect(contrast, label).toBeGreaterThanOrEqual(MUTED_MIN_RATIO);
+              // must still land at muted's own, lower floor — never
+              // something worse than a de-emphasised colour would be — or,
+              // on the background sets where even that is out of reach, at
+              // the best a single shared colour can do at all. See
+              // bestAchievableWorstCaseContrast for the pack that made the
+              // second case real.
+              const reachableFloor = Math.min(MUTED_MIN_RATIO, bestAchievableWorstCaseContrast(backgroundHexes));
+              expect(contrast, label).toBeGreaterThanOrEqual(reachableFloor - OPTIMUM_TOLERANCE);
             }
           }
         }
@@ -1363,7 +1400,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("leaves the palette key count identical after a second full pass through all 29 bundled themes — applied repeatedly, not once", () => {
+  it("leaves the palette key count identical after a second full pass through all 63 bundled themes — applied repeatedly, not once", () => {
     // The bug this ticket exists to fix only shows up on repeated applies —
     // the reporter's own measurement went from 47 keys to 418 after "a
     // handful of applies", never converging. Verified against the
@@ -1372,7 +1409,7 @@ describe("repeated applies converge instead of compounding (CHM-43)", () => {
     // way every other test in this file exercises it, is exactly what hid
     // this bug in the first place.
     const curatedPacks = loadCuratedThemePacks();
-    expect(curatedPacks.length).toBe(29);
+    expect(curatedPacks.length).toBe(63);
     const adapter = createOhMyPoshAdapter(configPath, profilePath);
 
     for (const pack of curatedPacks) {

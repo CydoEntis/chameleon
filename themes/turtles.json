@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "turtles",
+    "name": "Turtles",
+    "family": "Turtles",
+    "appearance": "dark",
+    "attribution": {
+      "source": "kxzk/Turtles",
+      "sourceUrl": "https://github.com/kxzk/Turtles",
+      "commit": "eb228e49f98e8631bcbc84b8fe090e37a87fb3cf",
+      "license": "no licence declared upstream"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Turtles",
+      "black": "#4a4e56",
+      "red": "#e06c75",
+      "green": "#98c379",
+      "yellow": "#e5c07b",
+      "blue": "#61afef",
+      "purple": "#c678dd",
+      "cyan": "#56b6c2",
+      "white": "#abb2bf",
+      "brightBlack": "#4d4d4d",
+      "brightRed": "#dd4641",
+      "brightGreen": "#0a7cb6",
+      "brightYellow": "#ec9e40",
+      "brightBlue": "#804b92",
+      "brightPurple": "#c678dd",
+      "brightCyan": "#6cb446",
+      "brightWhite": "#5c6370",
+      "background": "#191919",
+      "foreground": "#c0c0c0",
+      "cursorColor": "#ec9e40",
+      "selectionBackground": "#004d8c"
+    },
+    "oh-my-posh": {
+      "ground": "#191919",
+      "body": "#c0c0c0",
+      "accent": "#61afef",
+      "muted": "#676767",
+      "success": "#98c379",
+      "error": "#e06c75"
+    },
+    "herdr": {
+      "ground": "#191919",
+      "body": "#c0c0c0",
+      "accent": "#61afef",
+      "muted": "#9d9d9d",
+      "success": "#98c379",
+      "error": "#f17d86",
+      "selection_bg": "#004d8c"
+    },
+    "statusline": {
+      "context": "#56b6c2",
+      "fiveHour": "#e5c07b",
+      "sevenDay": "#98c379"
+    }
+  }
+}

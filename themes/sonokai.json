@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "sonokai",
+    "name": "Sonokai",
+    "family": "Sonokai",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Sonokai",
+      "black": "#5e5e5f",
+      "red": "#fc5d7c",
+      "green": "#9ed072",
+      "yellow": "#e7c664",
+      "blue": "#76cce0",
+      "purple": "#b39df3",
+      "cyan": "#f39660",
+      "white": "#e2e2e3",
+      "brightBlack": "#7f8490",
+      "brightRed": "#fc5d7c",
+      "brightGreen": "#9ed072",
+      "brightYellow": "#e7c664",
+      "brightBlue": "#76cce0",
+      "brightPurple": "#b39df3",
+      "brightCyan": "#f39660",
+      "brightWhite": "#e2e2e3",
+      "background": "#2c2e34",
+      "foreground": "#e2e2e3",
+      "cursorColor": "#e2e2e3",
+      "selectionBackground": "#006b83"
+    },
+    "oh-my-posh": {
+      "ground": "#2c2e34",
+      "body": "#e2e2e3",
+      "accent": "#76cce0",
+      "muted": "#7f8490",
+      "success": "#9ed072",
+      "error": "#fc5d7c"
+    },
+    "herdr": {
+      "ground": "#2c2e34",
+      "body": "#e2e2e3",
+      "accent": "#76cce0",
+      "muted": "#bababa",
+      "success": "#9ed072",
+      "error": "#ffa7b9",
+      "selection_bg": "#006b83"
+    },
+    "statusline": {
+      "context": "#f39660",
+      "fiveHour": "#e7c664",
+      "sevenDay": "#9ed072"
+    }
+  }
+}
