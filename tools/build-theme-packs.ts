@@ -120,6 +120,60 @@ const CURATED_SCHEMES: readonly CuratedEntry[] = [
   { fileName: "Jellybeans.json", family: "Jellybeans", appearance: "dark", slug: "jellybeans" },
   { fileName: "Shades Of Purple.json", family: "Shades Of Purple", appearance: "dark", slug: "shades-of-purple" },
   { fileName: "Ayu.json", family: "Ayu", appearance: "dark", slug: "ayu-dark-deep", displayName: "Ayu Dark" },
+  // Eight more two-appearance families, all already in the vendored
+  // collection. Each was measured through buildThemePack before being listed
+  // here rather than picked by reputation: Horizon Bright, Poimandres White,
+  // Noctis Lux and Tomorrow all build, but land muted within about one point
+  // of body, which clears the floor's letter while failing what muted is for
+  // — so they are deliberately absent. Atom One Light is absent for a harder
+  // reason: its green and cyan slots are the same colour (#3f953a), so two
+  // statusline meters collapse onto one value and buildThemePack rejects it.
+  { fileName: "Flexoki Dark.json", family: "Flexoki", appearance: "dark" },
+  { fileName: "Flexoki Light.json", family: "Flexoki", appearance: "light" },
+  { fileName: "Melange Dark.json", family: "Melange", appearance: "dark" },
+  { fileName: "Melange Light.json", family: "Melange", appearance: "light" },
+  { fileName: "Zenbones Dark.json", family: "Zenbones", appearance: "dark" },
+  { fileName: "Zenbones Light.json", family: "Zenbones", appearance: "light" },
+  { fileName: "Seoulbones Dark.json", family: "Seoulbones", appearance: "dark" },
+  { fileName: "Seoulbones Light.json", family: "Seoulbones", appearance: "light" },
+  // Nightfox's own light sibling is named Dawnfox rather than "Nightfox
+  // Light", so the pack keeps that name and only the slug carries the family
+  // — the same split between name and slug ayu-dark-deep already relies on.
+  { fileName: "Nightfox.json", family: "Nightfox", appearance: "dark" },
+  { fileName: "Dawnfox.json", family: "Nightfox", appearance: "light" },
+  // Fourteen dark-only additions. Each takes an explicit slug for the reason
+  // jellybeans and shades-of-purple do: with no light sibling to distinguish
+  // them from, the derived "-dark" suffix says nothing.
+  // Iceberg ships dark-only: Iceberg Light builds, but recolouring chips
+  // with it lands c-badge-text on its resolved error background at 1.97,
+  // under CHM-37's own ANSI_MIN_RATIO, and CHM-40's repair cannot reach even
+  // the best a single shared foreground could manage there. Carbonfox and
+  // Oxocarbon are absent for a related reason: both are deliberately minimal
+  // palettes, and both collapse chips's 47 keys to 33 distinct colours where
+  // CHM-37 requires 34. All three fail guards that protect a user's own
+  // prompt, so they are left out rather than the guards loosened.
+  { fileName: "Iceberg Dark.json", family: "Iceberg", appearance: "dark", slug: "iceberg" },
+  // Modus Vivendi ships without its light sibling, and Selenized not at all.
+  // Modus Operandi and iceberg-light both land CHM-40's repair below the best
+  // a single shared foreground could reach against their own segment
+  // backgrounds — repairForegroundAgainstBackgrounds picks the better of two
+  // directions, which is what it documents, but on these the optimum sits
+  // between them. Selenized Dark misses CHM-80's subtext0-on-row floor by
+  // 0.078, past the 0.06 band that test holds its own exceptions to, and a
+  // light-only family is not a shape anything here supports.
+  { fileName: "Modus Vivendi.json", family: "Modus Vivendi", appearance: "dark", slug: "modus-vivendi" },
+  { fileName: "Vesper.json", family: "Vesper", appearance: "dark", slug: "vesper" },
+  { fileName: "Terafox.json", family: "Terafox", appearance: "dark", slug: "terafox" },
+  { fileName: "Embark.json", family: "Embark", appearance: "dark", slug: "embark" },
+  { fileName: "Cobalt2.json", family: "Cobalt2", appearance: "dark", slug: "cobalt2" },
+  { fileName: "Synthwave.json", family: "Synthwave", appearance: "dark", slug: "synthwave" },
+  { fileName: "Snazzy.json", family: "Snazzy", appearance: "dark", slug: "snazzy" },
+  { fileName: "Challenger Deep.json", family: "Challenger Deep", appearance: "dark", slug: "challenger-deep" },
+  { fileName: "Doom One.json", family: "Doom One", appearance: "dark", slug: "doom-one" },
+  { fileName: "Everblush.json", family: "Everblush", appearance: "dark", slug: "everblush" },
+  { fileName: "Sonokai.json", family: "Sonokai", appearance: "dark", slug: "sonokai" },
+  { fileName: "Moonfly.json", family: "Moonfly", appearance: "dark", slug: "moonfly" },
+  { fileName: "Aura Dark.json", family: "Aura", appearance: "dark", slug: "aura" },
 ];
 
 /**
@@ -150,8 +204,14 @@ const EXTERNAL_SCHEMES: readonly ExternalEntry[] = [
   },
 ];
 
-/** The twelve two-appearance families plus Dracula, Monokai, Jellybeans, Shades Of Purple and Ayu Dark (all five dark-only) — see CHM-6's "What" and CHM-62. */
-const EXPECTED_CURATED_COUNT = 29;
+/**
+ * Seventeen two-appearance families plus nineteen dark-only ones. The original
+ * twelve pairs and five dark-only are CHM-6's "What" and CHM-62; the five
+ * pairs and fourteen dark-only after them were each measured through
+ * buildThemePack before being curated, not chosen by reputation — see the
+ * note in CURATED_SCHEMES on the ones that were measured and rejected.
+ */
+const EXPECTED_CURATED_COUNT = 53;
 
 /** PaperColor light + dark and TangoTango, the three built from outside the vendored collection. */
 const EXPECTED_EXTERNAL_COUNT = 3;

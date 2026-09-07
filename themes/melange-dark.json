@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "melange-dark",
+    "name": "Melange Dark",
+    "family": "Melange",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Melange Dark",
+      "black": "#5b5753",
+      "red": "#bd8183",
+      "green": "#78997a",
+      "yellow": "#e49b5d",
+      "blue": "#7f91b2",
+      "purple": "#b380b0",
+      "cyan": "#7b9695",
+      "white": "#c1a78e",
+      "brightBlack": "#867462",
+      "brightRed": "#d47766",
+      "brightGreen": "#85b695",
+      "brightYellow": "#ebc06d",
+      "brightBlue": "#a3a9ce",
+      "brightPurple": "#cf9bc2",
+      "brightCyan": "#89b3b6",
+      "brightWhite": "#ece1d7",
+      "background": "#292522",
+      "foreground": "#ece1d7",
+      "cursorColor": "#ece1d7",
+      "selectionBackground": "#006e6a"
+    },
+    "oh-my-posh": {
+      "ground": "#292522",
+      "body": "#ece1d7",
+      "accent": "#7b9695",
+      "muted": "#867462",
+      "success": "#78997a",
+      "error": "#bd8183"
+    },
+    "herdr": {
+      "ground": "#292522",
+      "body": "#ece1d7",
+      "accent": "#a1bcbb",
+      "muted": "#cab8a6",
+      "success": "#9ebfa0",
+      "error": "#e2a6a8",
+      "selection_bg": "#006e6a"
+    },
+    "statusline": {
+      "context": "#7b9695",
+      "fiveHour": "#e49b5d",
+      "sevenDay": "#78997a"
+    }
+  }
+}
