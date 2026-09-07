@@ -51,6 +51,11 @@
       "success": "#9ece6a",
       "error": "#f7768e",
       "selection_bg": "#00578a"
+    },
+    "statusline": {
+      "context": "#7dcfff",
+      "fiveHour": "#e0af68",
+      "sevenDay": "#9ece6a"
     }
   }
 }

@@ -48,7 +48,7 @@ import {
 import { toPalette, type Appearance } from "./palette/palette.js";
 import type { Scheme } from "./palette/scheme.js";
 import { loadCuratedThemePacks, mergeThemePacksBySlug, type LoadedThemePack } from "./palette/theme-pack-library.js";
-import type { ThemePackPayloads } from "./palette/theme-pack.js";
+import type { StatuslineMeterHexes, ThemePackPayloads } from "./palette/theme-pack.js";
 
 export const VERSION = "0.0.0";
 
@@ -72,6 +72,7 @@ export type { Scheme } from "./palette/scheme.js";
 export { parseScheme, SchemeSchema } from "./palette/scheme.js";
 export type {
   PackAttribution,
+  StatuslineMeterHexes,
   ThemePack,
   ThemePackManifest,
   ThemePackPayloads,
@@ -857,6 +858,18 @@ export function currentPack(userThemeDir?: string, statePath?: string, previewSt
  */
 export function activePackRoleHexes(userThemeDir?: string, statePath?: string): Readonly<Record<Role, string>> | undefined {
   return loadedActivePack(userThemeDir, statePath)?.loaded?.pack.payloads["oh-my-posh"];
+}
+
+/**
+ * The active pack's own three statusline meter colours — context, 5-hour and
+ * 7-day (CHM-89) — or undefined under the same two conditions
+ * activePackRoleHexes is undefined for. Reads the same recorded-active pack
+ * activePackRoleHexes does, so the two can never disagree about which
+ * pack's colours a rendered statusline is showing. `userThemeDir` and
+ * `statePath` are only ever overridden by tests.
+ */
+export function activePackStatuslineMeterHexes(userThemeDir?: string, statePath?: string): Readonly<StatuslineMeterHexes> | undefined {
+  return loadedActivePack(userThemeDir, statePath)?.loaded?.pack.payloads.statusline;
 }
 
 /**
