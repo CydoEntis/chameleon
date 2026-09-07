@@ -6,7 +6,15 @@ import { ROLES, type Role } from "../constants.js";
 import { mix, rgbDistance } from "../palette/color.js";
 import { resolveRoleHexes } from "../palette/repair.js";
 import { resolveSelectionAndBody } from "../palette/selection.js";
-import { ACTIVE_ROW_IDEAL_FRACTION, OVERLAY_0_FRACTION, repairOverlay0, resolveActiveRowAndText, resolveHerdrBadgeTokens } from "../palette/surfaces.js";
+import {
+  ACTIVE_ROW_IDEAL_FRACTION,
+  OVERLAY_0_FRACTION,
+  repairHerdrAccentFamily,
+  repairOverlay0,
+  resolveActiveRowAndText,
+  resolveHerdrBadgeTokens,
+  resolvePanelBackground,
+} from "../palette/surfaces.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
 import { herdrConfigPath } from "./platform.js";
@@ -310,16 +318,17 @@ const OVERLAY_1_FRACTION = 5 / 6;
 /**
  * Herdr's neutral surface scale, walking from ground toward body — see
  * SURFACE_DIM_FRACTION and friends. `activeRowBackgroundHex` is
- * `resolveActiveRowAndText`'s own settled row (CHM-50) — overlay0's subtitle
- * line renders on both an ordinary sidebar row (`groundHex`) and a selected
- * one, so its repair, like text and subtext0's own, has to answer to both.
+ * `resolveActiveRowAndText`'s own settled row (CHM-50) and `panelBackgroundHex`
+ * is `resolvePanelBackground`'s own settled panel_bg (CHM-85) — overlay0's
+ * subtitle line renders on an ordinary sidebar row (`groundHex`), a selected
+ * one and panel_bg alike, so its repair has to answer to all three.
  */
-function surfaceScale(groundHex: string, bodyHex: string, activeRowBackgroundHex: string): Record<string, string> {
+function surfaceScale(groundHex: string, bodyHex: string, activeRowBackgroundHex: string, panelBackgroundHex: string): Record<string, string> {
   return {
     surface_dim: mix(groundHex, bodyHex, SURFACE_DIM_FRACTION),
     surface0: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
     surface1: mix(groundHex, bodyHex, SURFACE_1_FRACTION),
-    overlay0: repairOverlay0(mix(groundHex, bodyHex, OVERLAY_0_FRACTION), groundHex, activeRowBackgroundHex),
+    overlay0: repairOverlay0(mix(groundHex, bodyHex, OVERLAY_0_FRACTION), groundHex, activeRowBackgroundHex, panelBackgroundHex),
     overlay1: mix(groundHex, bodyHex, OVERLAY_1_FRACTION),
   };
 }
@@ -342,13 +351,22 @@ function surfaceScale(groundHex: string, bodyHex: string, activeRowBackgroundHex
  * `bodyHex`/`mutedHex` (this file's `text`/`subtext0`) were just repaired
  * against, or the two could disagree about what the selected row's own
  * background is.
+ *
+ * `panelBackgroundHex` is `resolvePanelBackground`'s own output (CHM-85), not
+ * `groundHex` itself: Herdr's own selection_palette_background paints
+ * panel_bg as the automatic selection highlight's fallback whenever it
+ * cannot read the host terminal's background over OSC 11 — which Windows
+ * Terminal does not reliably answer — so a panel_bg identical to ground
+ * painted that fallback highlight in the exact colour of the pane it was
+ * meant to stand out from. See palette/surfaces.ts's own doc comment for the
+ * reported bug this fixes.
  */
-function structuralTokenValues(groundHex: string, activeRowBackgroundHex: string, bodyHex: string, selectionHex: string): Record<string, string> {
+function structuralTokenValues(groundHex: string, activeRowBackgroundHex: string, bodyHex: string, selectionHex: string, panelBackgroundHex: string): Record<string, string> {
   return {
-    panel_bg: groundHex,
+    panel_bg: panelBackgroundHex,
     active_row_bg: activeRowBackgroundHex,
     selection_bg: selectionHex,
-    ...surfaceScale(groundHex, bodyHex, activeRowBackgroundHex),
+    ...surfaceScale(groundHex, bodyHex, activeRowBackgroundHex, panelBackgroundHex),
   };
 }
 
@@ -626,24 +644,30 @@ function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenV
 /**
  * Every [theme.custom] token value Chameleon writes: the six roles under
  * Herdr's own token names (see ROLE_TO_HERDR_TOKEN), the resolved selection
- * highlight (see structuralTokenValues), plus the structural and
- * badge-swatch tokens derived straight from `scheme` and `colorTable`'s
- * ground/body — see structuralTokenValues and palette/surfaces.ts's
- * resolveHerdrBadgeTokens. Every key is asserted against
- * HERDR_ACCEPTED_CUSTOM_TOKENS before it reaches the config, so a future
- * addition that invents a token fails immediately instead of shipping a key
- * Herdr silently ignores (CHM-21).
+ * highlight (see structuralTokenValues), plus the structural tokens derived
+ * from `scheme` and `colorTable`'s ground/body — see structuralTokenValues.
+ * accent, green, red and the four badge swatches are then overridden by
+ * repairHerdrAccentFamily's own output (CHM-85): panel_bg is a second
+ * background these render against that Windows Terminal and oh-my-posh never
+ * do, and moving panel_bg away from ground at all drops at least one of them
+ * below its floor for the majority of bundled packs (see that function's own
+ * doc comment). Every key is asserted against HERDR_ACCEPTED_CUSTOM_TOKENS
+ * before it reaches the config, so a future addition that invents a token
+ * fails immediately instead of shipping a key Herdr silently ignores
+ * (CHM-21).
  */
 function customTokenValues(
   scheme: Scheme,
   colorTable: Readonly<Record<Role, string>>,
   activeRowBackgroundHex: string,
   selectionHex: string,
+  panelBackgroundHex: string,
 ): Record<string, string> {
+  const accentFamily = repairHerdrAccentFamily(colorTable, resolveHerdrBadgeTokens(scheme), colorTable.ground, panelBackgroundHex);
   const tokenValues = {
     ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
-    ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, selectionHex),
-    ...resolveHerdrBadgeTokens(scheme),
+    ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, selectionHex, panelBackgroundHex),
+    ...accentFamily,
   };
   assertOnlyAcceptedHerdrTokens(tokenValues);
   return tokenValues;
@@ -657,8 +681,9 @@ function upsertCustomBlock(
   colorTable: Readonly<Record<Role, string>>,
   activeRowBackgroundHex: string,
   selectionHex: string,
+  panelBackgroundHex: string,
 ): string {
-  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable, activeRowBackgroundHex, selectionHex));
+  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable, activeRowBackgroundHex, selectionHex, panelBackgroundHex));
 }
 
 /**
@@ -678,10 +703,14 @@ function upsertUiAccent(text: string, eol: string, accentHex: string): string {
  *
  * The selection highlight — and, on the rare pack where ground and body
  * leave no room for a visible one, body itself — is resolved once here via
- * resolveSelectionAndBody (CHM-30). The active row's own background and its
- * text/subtext0 tokens are then resolved together via resolveActiveRowAndText
- * (CHM-50). Both are the exact pipeline buildThemePack runs at build time, so
- * a pack's live apply can never disagree with its own shipped payload.
+ * resolveSelectionAndBody (CHM-30). panel_bg is resolved next via
+ * resolvePanelBackground (CHM-85), since Herdr paints it as the automatic
+ * selection highlight's own fallback and it must clear the same kind of
+ * visibility floor selection_bg does. The active row's own background and
+ * its text/subtext0 tokens are then resolved together via
+ * resolveActiveRowAndText (CHM-50), against both selection_bg and panel_bg.
+ * All three are the exact pipeline buildThemePack runs at build time, so a
+ * pack's live apply can never disagree with its own shipped payload.
  */
 function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
   const resolvedConfigPath = requireConfigPath(configPath);
@@ -701,15 +730,24 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
     resolvedRoleHexes.accent,
     [resolvedRoleHexes.success, resolvedRoleHexes.error],
   );
-  // panel_bg is not passed as an "other" surface here: it is definitionally
-  // ground (see structuralTokenValues), so checking against ground already
-  // covers it.
-  const rowAndText = resolveActiveRowAndText(resolvedRoleHexes.ground, body.hex, resolvedRoleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
+  // panel_bg is resolved here too (CHM-85), before the active row: it is one
+  // of the "other" surfaces text and subtext0 must clear their floors
+  // against below, exactly like selection_bg already is, so it has to exist
+  // before resolveActiveRowAndText runs rather than being derived from
+  // ground afterward.
+  const panelBackground = resolvePanelBackground(resolvedRoleHexes.ground, body.hex);
+  const rowAndText = resolveActiveRowAndText(
+    resolvedRoleHexes.ground,
+    body.hex,
+    resolvedRoleHexes.muted,
+    [selection.hex, panelBackground.hex],
+    ACTIVE_ROW_IDEAL_FRACTION,
+  );
   const colorTable = { ...resolvedRoleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
   const themeName = herdrThemeNameFor(slug, colorTable.ground);
 
   const withName = upsertThemeName(originalText, eol, themeName);
-  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable, rowAndText.activeRowBackgroundHex, selection.hex);
+  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable, rowAndText.activeRowBackgroundHex, selection.hex, panelBackground.hex);
   const withUiAccent = upsertUiAccent(withCustom, eol, colorTable.accent);
 
   writeFileSync(resolvedConfigPath, withUiAccent, "utf8");
