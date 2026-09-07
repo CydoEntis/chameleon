@@ -29,6 +29,7 @@ import {
 import { isWindows, resetPlatformProbeCache } from "../../src/adapters/platform.js";
 import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { contrastRatio, rgbDistance } from "../../src/palette/color.js";
+import { promptPaletteFor } from "../../src/palette/role-mapping.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
@@ -2289,13 +2290,23 @@ describe("a lifted literal key adopts each pack's own colours, never the hue fam
 
     const palette = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> }).palette;
     const roleHexes = resolveRoleHexes(ZEROX96F_SCHEME);
-    // "#ff0000" (pure red, hue 0°) lands in error's own hue band; "#00ff00"
-    // (pure green, hue 120°) lands in success's — see role-mapping.ts's
-    // nearestRoleByHue. A hue-family retint of the colour it was lifted with
-    // (the pre-CHM-90 behaviour) would produce some other, merely
-    // reddish/greenish shade here, never these exact role hexes.
+    const promptPalette = promptPaletteFor(ZEROX96F_SCHEME, roleHexes);
+    // Both keys land on a colour the destination pack actually ships, rather
+    // than a hue-family retint of the colour they were lifted with, which is
+    // CHM-90's point. Which colour comes from the segment doing the
+    // referencing rather than from the literal's own hue: a lifted literal's
+    // hue says only which prompt the user copied, so keying off it left a red
+    // segment red under all 63 packs.
+    //
+    // "#00ff00" is referenced only by the text segment — the separators
+    // between segments — which the table paints green. Note it is not chosen
+    // for being green itself: a literal of any hue on a text segment lands
+    // here.
+    expect(palette["literal-00ff00"]).toBe(promptPalette.green);
+    // "#ff0000" is referenced by both path and git, which want different
+    // colours. A key two segment types disagree over gets neither, and falls
+    // back to the hue snap — which for pure red is the error role.
     expect(palette["literal-ff0000"]).toBe(roleHexes.error);
-    expect(palette["literal-00ff00"]).toBe(roleHexes.success);
   });
 
   it("recolours a lifted literal key recognisably differently across at least three real, bundled packs applied in sequence", () => {

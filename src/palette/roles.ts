@@ -38,7 +38,7 @@ export type RoleAssignment = Readonly<Record<Role, RoleColor>>;
  */
 export const BASE_COLOR_SLOTS: readonly SlotName[] = ["blue", "cyan", "purple", "green", "red", "yellow"];
 
-type HueCategory = "red" | "green" | "cool" | "other";
+export type HueCategory = "red" | "green" | "cool" | "other";
 
 /**
  * Classifies a slot's *measured* hue, not its name. Rosé Pine Dawn's
@@ -46,7 +46,7 @@ type HueCategory = "red" | "green" | "cool" | "other";
  * pink (hue ~3°, "red") — a role built from the slot named `green` would be
  * wrong in that theme.
  */
-function hueCategoryOf(hex: string): HueCategory {
+export function hueCategoryOf(hex: string): HueCategory {
   const { hue, saturation } = toHsl(hex);
   if (saturation === 0) return "other";
   if (hue < RED_HUE_MAX_DEGREES || hue >= RED_HUE_WRAP_MIN_DEGREES) return "red";
