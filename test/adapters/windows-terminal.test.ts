@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,12 +6,24 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createWindowsTerminalAdapter,
+  removeDeadWindowsTerminalSchemeForks,
   selectedFontFace,
   selectWindowsTerminalFont,
   undoWindowsTerminal,
   windowsTerminalMatchesScheme,
 } from "../../src/adapters/windows-terminal.js";
 import { parseScheme, type Scheme } from "../../src/palette/scheme.js";
+
+/**
+ * The name Chameleon actually writes to Windows Terminal's schemes[] and
+ * colorScheme for a scheme named `schemeName` — mirrors
+ * CHAMELEON_SCHEME_NAME_PREFIX in src/adapters/windows-terminal.ts, so a
+ * future change to that prefix only needs updating in one place here. See
+ * CHM-91.
+ */
+function chameleonSchemeName(schemeName: string): string {
+  return `Chameleon: ${schemeName}`;
+}
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = path.join(currentDir, "fixtures", "settings.jsonc");
@@ -43,6 +55,60 @@ const ZEROX96F_SCHEME: Scheme = parseScheme({
   foreground: "#fcfcfa",
   cursorColor: "#fcfcfa",
   selectionBackground: "#fcfcfa",
+});
+
+// CHM-91: "One Half Dark" is also the name of a Windows Terminal built-in
+// scheme, which is exactly the collision that used to make Windows Terminal
+// fork every apply of the bundled one-half-dark pack. Real vendored values —
+// see vendor/iterm2-color-schemes/windows-terminal/"One Half Dark".json.
+const ONE_HALF_DARK_SCHEME: Scheme = parseScheme({
+  name: "One Half Dark",
+  black: "#282c34",
+  red: "#e06c75",
+  green: "#98c379",
+  yellow: "#e5c07b",
+  blue: "#61afef",
+  purple: "#c678dd",
+  cyan: "#56b6c2",
+  white: "#dcdfe4",
+  brightBlack: "#5d677a",
+  brightRed: "#e06c75",
+  brightGreen: "#98c379",
+  brightYellow: "#e5c07b",
+  brightBlue: "#61afef",
+  brightPurple: "#c678dd",
+  brightCyan: "#56b6c2",
+  brightWhite: "#dcdfe4",
+  background: "#282c34",
+  foreground: "#dcdfe4",
+  cursorColor: "#a3b3cc",
+  selectionBackground: "#474e5d",
+});
+
+// "Campbell" is Windows Terminal's own default built-in scheme — real values,
+// matching the fixture's own pre-existing "Campbell" entry below.
+const CAMPBELL_SCHEME: Scheme = parseScheme({
+  name: "Campbell",
+  black: "#0c0c0c",
+  red: "#c50f1f",
+  green: "#13a10e",
+  yellow: "#c19c00",
+  blue: "#0037da",
+  purple: "#881798",
+  cyan: "#3a96dd",
+  white: "#cccccc",
+  brightBlack: "#767676",
+  brightRed: "#e74856",
+  brightGreen: "#16c60c",
+  brightYellow: "#f9f1a5",
+  brightBlue: "#3b78ff",
+  brightPurple: "#b4009e",
+  brightCyan: "#61d6d6",
+  brightWhite: "#f2f2f2",
+  background: "#0c0c0c",
+  foreground: "#cccccc",
+  cursorColor: "#ffffff",
+  selectionBackground: "#ffffff",
 });
 
 const AARDVARK_BLUE_SCHEME: Scheme = parseScheme({
@@ -187,7 +253,7 @@ describe.each([
     const resultText = readFileSync(settingsPath, "utf8");
     expect(countOccurrences(resultText, '"colorScheme"')).toBe(1);
     const parsed = parseWritten(resultText) as { profiles?: { defaults?: { colorScheme?: unknown } } };
-    expect(parsed.profiles?.defaults?.colorScheme).toBe("0x96f");
+    expect(parsed.profiles?.defaults?.colorScheme).toBe(chameleonSchemeName("0x96f"));
   });
 
   it("preserves unrelated comments, key order and settings untouched by any edit", () => {
@@ -214,10 +280,39 @@ describe.each([
     const afterSecondApply = readFileSync(settingsPath, "utf8");
 
     expect(afterSecondApply).toBe(afterFirstApply);
-    // "0x96f" is already in schemes[] after the first apply — re-applying it
-    // must not add a second entry under the same name.
+    // "Chameleon: 0x96f" is already in schemes[] after the first apply —
+    // re-applying it must not add a second entry under the same name.
     const parsed = parseWritten(afterSecondApply) as { schemes: Array<{ name: string }> };
-    expect(parsed.schemes.filter((s) => s.name === "0x96f")).toHaveLength(1);
+    expect(parsed.schemes.filter((s) => s.name === chameleonSchemeName("0x96f"))).toHaveLength(1);
+  });
+
+  it("applying the same pack ten times adds no schemes beyond the first (CHM-91)", () => {
+    const adapter = createWindowsTerminalAdapter(settingsPath);
+    const REPEATED_APPLY_COUNT = 10;
+
+    for (let applyIndex = 0; applyIndex < REPEATED_APPLY_COUNT; applyIndex += 1) {
+      adapter.apply(ZEROX96F_SCHEME);
+    }
+
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as { schemes: Array<{ name: string }> };
+    expect(parsed.schemes.filter((s) => s.name === chameleonSchemeName("0x96f"))).toHaveLength(1);
+  });
+
+  it("names a scheme that collides with a Windows Terminal built-in so Windows Terminal will never fork it (CHM-91)", () => {
+    createWindowsTerminalAdapter(settingsPath).apply(CAMPBELL_SCHEME);
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    const parsed = parseWritten(resultText) as {
+      schemes: Array<{ name: string }>;
+      profiles: { defaults: { colorScheme?: unknown } };
+    };
+    // The fixture's own pre-existing "Campbell" — Windows Terminal's real
+    // built-in — survives untouched, and Chameleon's own entry never
+    // collides with it, so Windows Terminal has no built-in of that exact
+    // name to fork.
+    expect(parsed.schemes.filter((s) => s.name === "Campbell")).toHaveLength(1);
+    expect(parsed.schemes.filter((s) => s.name === chameleonSchemeName("Campbell"))).toHaveLength(1);
+    expect(parsed.profiles.defaults.colorScheme).toBe(chameleonSchemeName("Campbell"));
   });
 
   it("upserts in place when a different theme is applied later, instead of accumulating marked blocks", () => {
@@ -232,12 +327,63 @@ describe.each([
       profiles: { defaults: { colorScheme?: unknown } };
       schemes: Array<{ name: string }>;
     };
-    expect(parsed.profiles.defaults.colorScheme).toBe("Aardvark Blue");
-    expect(parsed.schemes.filter((s) => s.name === "Aardvark Blue")).toHaveLength(1);
-    expect(parsed.schemes.filter((s) => s.name === "0x96f")).toHaveLength(0); // replaced, not accumulated
+    expect(parsed.profiles.defaults.colorScheme).toBe(chameleonSchemeName("Aardvark Blue"));
+    expect(parsed.schemes.filter((s) => s.name === chameleonSchemeName("Aardvark Blue"))).toHaveLength(1);
+    expect(parsed.schemes.filter((s) => s.name === chameleonSchemeName("0x96f"))).toHaveLength(0); // replaced, not accumulated
     expect(parsed.schemes.some((s) => s.name === "Campbell")).toBe(true); // truly unrelated, still there
     // One marked block each for schemes, profiles.defaults and the top-level theme — never more.
     expect(countOccurrences(resultText, "// ch:begin")).toBe(3);
+  });
+
+  it("finds and replaces its own scheme entry even after Windows Terminal has stripped the ch:begin/ch:end markers (CHM-91)", () => {
+    const adapter = createWindowsTerminalAdapter(settingsPath);
+    adapter.apply(ZEROX96F_SCHEME);
+
+    // Simulates Windows Terminal's own parse-and-reserialise (CHM-91): it
+    // does not know what a marker comment is, so its own rewrite drops every
+    // comment, markers included, while leaving every JSON value untouched.
+    const strippedText = readFileSync(settingsPath, "utf8")
+      .split(eol)
+      .filter((line) => !/\/\/ ch:(begin|end) /.test(line))
+      .join(eol);
+    writeFileSync(settingsPath, strippedText, "utf8");
+
+    // Reapplying the same pack is exactly what CHM-91's reporter did every
+    // time drift told them to — with the markers gone, only a name match
+    // (findSchemeEntryNode) can tell this run its own entry is already
+    // there to replace, rather than accumulate a second one.
+    adapter.apply(ZEROX96F_SCHEME);
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    const parsed = parseWritten(resultText) as {
+      schemes: Array<{ name: string }>;
+      profiles: { defaults: { colorScheme?: unknown } };
+    };
+    expect(parsed.profiles.defaults.colorScheme).toBe(chameleonSchemeName("0x96f"));
+    expect(parsed.schemes.filter((s) => s.name === chameleonSchemeName("0x96f"))).toHaveLength(1);
+  });
+
+  it("preserves every setting outside Chameleon's own keys, even after Windows Terminal has stripped the markers (CHM-91)", () => {
+    const adapter = createWindowsTerminalAdapter(settingsPath);
+    adapter.apply(ZEROX96F_SCHEME);
+
+    const strippedText = readFileSync(settingsPath, "utf8")
+      .split(eol)
+      .filter((line) => !/\/\/ ch:(begin|end) /.test(line))
+      .join(eol);
+    writeFileSync(settingsPath, strippedText, "utf8");
+
+    adapter.apply(ZEROX96F_SCHEME);
+
+    const resultText = readFileSync(settingsPath, "utf8");
+    expect(resultText).toContain("// Windows Terminal user configuration");
+    expect(resultText).toContain('"name": "Campbell"');
+    expect(resultText).toContain('"fontFace": "Cascadia Mono"');
+    expect(resultText).toContain("// keep the tab bar out of the way");
+    expect(resultText).toContain("// I like this off");
+
+    const parsed = parseWritten(resultText) as Record<string, unknown>;
+    expect(parsed["alwaysShowTabs"]).toBe(true);
   });
 
   it("writes a backup before every apply, and undo restores it exactly", () => {
@@ -276,7 +422,7 @@ describe("windows terminal adapter — edge cases", () => {
     const resultText = readFileSync(minimalPath, "utf8");
     const parsed = parseWritten(resultText) as { theme?: unknown; profiles: { defaults: { colorScheme?: unknown } } };
     expect(parsed.theme).toBe("dark");
-    expect(parsed.profiles.defaults.colorScheme).toBe("0x96f");
+    expect(parsed.profiles.defaults.colorScheme).toBe(chameleonSchemeName("0x96f"));
     // A trailing comma right before a closing bracket would still parse under
     // allowTrailingComma — assert directly that this adapter never writes one.
     expect(resultText).not.toMatch(/,\s*[\]}]/);
@@ -354,6 +500,13 @@ describe("windowsTerminalMatchesScheme", () => {
 
   it("does not match a config that was never themed by Chameleon at all", () => {
     expect(windowsTerminalMatchesScheme(createWindowsTerminalAdapter(settingsPath).read(), ZEROX96F_SCHEME)).toBe(false);
+  });
+
+  it("matches right after applying a scheme whose name collides with a Windows Terminal built-in (CHM-91)", () => {
+    const adapter = createWindowsTerminalAdapter(settingsPath);
+    adapter.apply(CAMPBELL_SCHEME);
+
+    expect(windowsTerminalMatchesScheme(adapter.read(), CAMPBELL_SCHEME)).toBe(true);
   });
 });
 
@@ -446,6 +599,93 @@ describe("selectWindowsTerminalFont", () => {
 
     selectWindowsTerminalFont("CaskaydiaCove NF", settingsPath);
     expect(readFileSync(settingsPath, "utf8")).not.toBe(originalText);
+    expect(readFileSync(`${settingsPath}.chameleon-backup`, "utf8")).toBe(originalText);
+
+    undoWindowsTerminal(settingsPath);
+    expect(readFileSync(settingsPath, "utf8")).toBe(originalText);
+  });
+});
+
+// CHM-91: the supported way to remove the dead "<name> (modified N)" scheme
+// forks an earlier version of Chameleon could leave behind — see
+// `runClean` in src/cli.ts, which this backs.
+describe("removeDeadWindowsTerminalSchemeForks", () => {
+  let settingsDir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(path.join(tmpdir(), "chameleon-windows-terminal-clean-"));
+    settingsPath = path.join(settingsDir, "settings.json");
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  /**
+   * A settings.json shaped like CHM-91's own reporter: Windows Terminal's
+   * real, untouched "One Half Dark" built-in, two dead forks it created
+   * applying that pack twice before this ticket's fix, and one genuinely
+   * unrelated scheme. `activeForkName` is whichever fork
+   * profiles.defaults.colorScheme currently names — the one a clean run
+   * must never remove, even though it is shaped exactly like the others.
+   */
+  function writeForkedSettings(activeForkName: string): void {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify(
+        {
+          profiles: { defaults: { colorScheme: activeForkName } },
+          schemes: [
+            ONE_HALF_DARK_SCHEME,
+            { ...ONE_HALF_DARK_SCHEME, name: "One Half Dark (modified)" },
+            { ...ONE_HALF_DARK_SCHEME, name: "One Half Dark (modified 2)" },
+            CAMPBELL_SCHEME,
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
+
+  it("removes every dead fork but the one profiles.defaults.colorScheme currently names", () => {
+    writeForkedSettings("One Half Dark (modified 2)");
+
+    const removedCount = removeDeadWindowsTerminalSchemeForks(settingsPath);
+
+    expect(removedCount).toBe(1);
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as { schemes: Array<{ name: string }> };
+    expect(parsed.schemes.map((s) => s.name)).toEqual(["One Half Dark", "One Half Dark (modified 2)", "Campbell"]);
+  });
+
+  it("removes nothing, and leaves the file untouched, when there are no dead forks", () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ profiles: { defaults: { colorScheme: "Campbell" } }, schemes: [CAMPBELL_SCHEME] }, null, 2),
+      "utf8",
+    );
+    const originalText = readFileSync(settingsPath, "utf8");
+
+    expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(0);
+
+    expect(readFileSync(settingsPath, "utf8")).toBe(originalText);
+    expect(existsSync(`${settingsPath}.chameleon-backup`)).toBe(false);
+  });
+
+  it("is idempotent — running it again after a clean finds nothing left to remove", () => {
+    writeForkedSettings("One Half Dark (modified 2)");
+    removeDeadWindowsTerminalSchemeForks(settingsPath);
+
+    expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(0);
+  });
+
+  it("backs up before writing, and undo restores the removed forks", () => {
+    writeForkedSettings("One Half Dark (modified 2)");
+    const originalText = readFileSync(settingsPath, "utf8");
+
+    removeDeadWindowsTerminalSchemeForks(settingsPath);
     expect(readFileSync(`${settingsPath}.chameleon-backup`, "utf8")).toBe(originalText);
 
     undoWindowsTerminal(settingsPath);
