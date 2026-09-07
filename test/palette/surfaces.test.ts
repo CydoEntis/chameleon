@@ -9,7 +9,7 @@ import {
   TEXT_MIN_RATIO,
 } from "../../src/constants.js";
 import { repairCursorColor } from "../../src/palette/ansi.js";
-import { contrastRatio, mix } from "../../src/palette/color.js";
+import { contrastRatio, mix, relativeLuminance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
@@ -22,6 +22,7 @@ import {
   PANEL_MAX_FRACTION,
   repairHerdrAccentFamily,
   repairOverlay0,
+  repairSurface0,
   resolveActiveRowAndText,
   resolveActiveRowBackground,
   resolveHerdrBadgeTokens,
@@ -775,5 +776,32 @@ describe("subtext0-on-row clears TEXT_MIN_RATIO, dark and light packs alike (CHM
       const resolved = resolveActiveRowAndText(roleHexes.ground, body.hex, roleHexes.muted, [selection.hex], ACTIVE_ROW_IDEAL_FRACTION);
       expect(contrastRatio(resolved.activeRowBackgroundHex, roleHexes.ground), pack.manifest.slug).toBeGreaterThanOrEqual(ACTIVE_ROW_MIN_VISIBLE_RATIO);
     }
+  });
+});
+
+// jellybeans' own bundled pack values (themes/jellybeans.json), the pack live
+// on the reporter's machine when this bug was measured. Its accent and its
+// purple ANSI slot are the same colour byte for byte, which is why the active
+// tab chip reads identically whichever of the two Herdr paints it with.
+const JELLYBEANS = { ground: "#121212", body: "#dedede", accent: "#e1c0fa" };
+
+describe("repairSurface0", () => {
+  // Herdr paints the inactive tab chip with surface0 and the active one with
+  // the accent family, then draws the same fixed dark tab number on both —
+  // a colour that is Herdr's own, not any token Chameleon writes (probing
+  // sidebar_bg, active_row_bg, panel_bg and surface_dim left the number
+  // unchanged). So the chip is floored by lightness against the active chip
+  // rather than by a contrast pair against a foreground Chameleon can name.
+  it("raises the plain ramp value to the active tab chip's own lightness — the reported unreadable inactive tab", () => {
+    const candidateHex = mix(JELLYBEANS.ground, JELLYBEANS.body, ACTIVE_ROW_IDEAL_FRACTION);
+    expect(relativeLuminance(candidateHex)).toBeLessThan(relativeLuminance(JELLYBEANS.accent));
+
+    const repaired = repairSurface0(candidateHex, JELLYBEANS.ground, JELLYBEANS.body, JELLYBEANS.accent);
+
+    expect(relativeLuminance(repaired)).toBeGreaterThanOrEqual(relativeLuminance(JELLYBEANS.accent));
+  });
+
+  it("leaves a candidate that already reaches the active chip's lightness untouched", () => {
+    expect(repairSurface0(JELLYBEANS.body, JELLYBEANS.ground, JELLYBEANS.body, JELLYBEANS.accent)).toBe(JELLYBEANS.body);
   });
 });

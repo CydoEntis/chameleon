@@ -289,6 +289,57 @@ export function repairOverlay0(candidateHex: string, groundHex: string, activeRo
   return repairForegroundAgainstBackgrounds(candidateHex, [groundHex, activeRowBackgroundHex, panelBackgroundHex], TEXT_MIN_RATIO) ?? candidateHex;
 }
 
+/**
+ * The smallest fraction along `groundHex` -> `bodyHex` whose blend is at
+ * least as light as `minLuminance` — the same bisection
+ * fractionClearingVisibilityFloor runs, measuring luminance directly rather
+ * than a contrast ratio against ground.
+ */
+function fractionReachingLuminance(groundHex: string, bodyHex: string, minLuminance: number): number {
+  let low = 0;
+  let high = 1;
+  for (let iteration = 0; iteration < SEARCH_ITERATIONS; iteration += 1) {
+    const midFraction = (low + high) / 2;
+    if (relativeLuminance(mix(groundHex, bodyHex, midFraction)) < minLuminance) {
+      low = midFraction;
+    } else {
+      high = midFraction;
+    }
+  }
+  return high;
+}
+
+/**
+ * Raises surface0 — Herdr's own inactive tab chip — until it is at least as
+ * light as the active chip beside it.
+ *
+ * Herdr draws one fixed dark tab number on both chips, and that colour is
+ * Herdr's own, not a token Chameleon writes: probing sidebar_bg,
+ * active_row_bg, panel_bg and surface_dim each left the number unchanged
+ * while the chip under it moved. So there is no (foreground, background)
+ * pair to hold surface0 to the way herdrContrastPairs holds every other
+ * token — the chip is floored by lightness instead, against the accent
+ * family Herdr paints the active chip with, which already carries that
+ * number legibly.
+ *
+ * CHM-78's own probe concluded surface0 "appeared nowhere" and exempted it
+ * from every floor on that basis; it only ever looked at the sidebar.
+ * surface0 paints the tab strip, where jellybeans shipped it at 1.70:1
+ * against panel_bg with a tab number on it no one could read.
+ *
+ * Mixed further along the same ground/body ramp surfaceScale already uses,
+ * so the chip stays a neutral tone of the theme rather than becoming a
+ * colour of its own — and clamped at body, that ramp's own light end, for a
+ * pack whose accent is lighter than its body.
+ */
+export function repairSurface0(candidateHex: string, groundHex: string, bodyHex: string, accentHex: string): string {
+  const minChipLuminance = relativeLuminance(accentHex);
+  if (relativeLuminance(candidateHex) >= minChipLuminance) return candidateHex;
+  if (relativeLuminance(bodyHex) <= minChipLuminance) return bodyHex;
+
+  return mix(groundHex, bodyHex, fractionReachingLuminance(groundHex, bodyHex, minChipLuminance));
+}
+
 export interface ResolvedRowAndText {
   readonly activeRowBackgroundHex: string;
   readonly textHex: string;
@@ -695,12 +746,18 @@ export interface HerdrTokenSet {
 }
 
 /**
- * Herdr tokens that paint no text at all, and so owe no pair below: the
- * separator rule (surface_dim) and three ramp steps that appeared nowhere in
- * the sidebar under CHM-78's own probe (surface0, surface1, overlay1) — see
- * adapters/herdr.ts's surfaceScale. Named explicitly, not just left off the
- * lists below, so assertHerdrTokensAccountedFor can tell "never checked
- * because it carries no text" apart from "forgotten".
+ * Herdr tokens that owe no pair below: the separator rule (surface_dim),
+ * two ramp steps that appeared nowhere under CHM-78's own probe (surface1,
+ * overlay1), and the inactive tab chip (surface0) — see adapters/herdr.ts's
+ * surfaceScale. Named explicitly, not just left off the lists below, so
+ * assertHerdrTokensAccountedFor can tell "never checked" apart from
+ * "forgotten".
+ *
+ * surface0 is the one here that does carry text, and is exempt for a
+ * different reason than the rest: the tab number Herdr draws on it is
+ * Herdr's own fixed colour, not a token Chameleon writes, so there is no
+ * foreground here to name in a pair. repairSurface0 floors it by lightness
+ * against the active tab chip instead.
  */
 const HERDR_TOKENS_CARRYING_NO_TEXT: ReadonlySet<string> = new Set(["surface_dim", "surface0", "surface1", "overlay1"]);
 
