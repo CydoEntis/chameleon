@@ -24,6 +24,7 @@
  */
 
 import {
+  ANSI_MIN_RATIO,
   GREEN_HUE_MAX_DEGREES,
   GREEN_HUE_MIN_DEGREES,
   MIN_REPAIRED_CHROMA,
@@ -31,9 +32,10 @@ import {
   RED_HUE_WRAP_MIN_DEGREES,
   type Role,
 } from "../constants.js";
-import { chromaOf, fromHueChromaMatch, hueDistanceDegrees, relativeLuminance, toHsl } from "./color.js";
+import { chromaOf, contrastRatio, fromHueChromaMatch, hueDistanceDegrees, relativeLuminance, toHsl } from "./color.js";
 import { matchValueForLuminance, poleWithMoreHeadroom } from "./repair.js";
-import { BASE_COLOR_SLOTS } from "./roles.js";
+import { ANSI_SLOT_NAMES } from "./ansi.js";
+import { BASE_COLOR_SLOTS, hueCategoryOf } from "./roles.js";
 import type { Scheme } from "./scheme.js";
 
 /**
@@ -213,4 +215,277 @@ function nearestRoleByHue(hex: string): Exclude<Role, "ground"> {
  */
 export function recoloredLiteralHexFor(hex: string, resolvedRoleHexes: Readonly<Record<Role, string>>): string {
   return resolvedRoleHexes[nearestRoleByHue(hex)];
+}
+
+
+/**
+ * The six colours a prompt paints its segments in, drawn from what the
+ * scheme actually ships rather than from the six resolved roles.
+ *
+ * assignRolesByContrast picks accent, success and error by measured contrast
+ * against ground. That is the right rule for text that must stay readable on
+ * every surface, and the wrong one for a prompt: it touches only 6 of the
+ * scheme's 16 slots and prefers whichever is safest, so a prompt ends up
+ * paler and flatter than the theme it is supposed to be wearing. Monokai is
+ * the clearest case — its signature #f92672 sits at hue 337, just short of
+ * the red band's 345, so it is classified cool, loses the accent contest to
+ * #66d9ef on contrast, and never reaches the prompt at all.
+ *
+ * These six are picked by hue instead: for each, whichever slot sits nearest
+ * that hue while still clearing ANSI_MIN_RATIO against ground, with chroma
+ * breaking ties so the vivid member of a family wins over its washed-out
+ * sibling. A scheme with nothing near a given hue falls back to the resolved
+ * role, which is safe by construction.
+ */
+export interface PromptPalette {
+  readonly blue: string;
+  readonly cyan: string;
+  readonly green: string;
+  readonly purple: string;
+  readonly yellow: string;
+  readonly red: string;
+}
+
+/** The hue each prompt colour aims at. Sampled from where these families actually sit across the bundled schemes, not from the RGB primaries. */
+const PROMPT_COLOR_TARGET_HUES: Readonly<Record<keyof PromptPalette, number>> = {
+  blue: 230,
+  cyan: 180,
+  green: 110,
+  purple: 295,
+  yellow: 50,
+  red: 0,
+};
+
+/** Which resolved role stands in for each prompt colour when the scheme carries nothing near that hue. */
+const PROMPT_COLOR_FALLBACK_ROLE: Readonly<Record<keyof PromptPalette, Role>> = {
+  blue: "accent",
+  cyan: "accent",
+  green: "success",
+  purple: "accent",
+  yellow: "success",
+  red: "error",
+};
+
+/**
+ * The order colours are handed out. Earlier entries get first pick, so the
+ * three segments a prompt always shows — identity, separators, path — are
+ * the ones guaranteed to look different from each other.
+ */
+const PROMPT_COLOR_ASSIGNMENT_ORDER = ["blue", "green", "cyan", "purple", "yellow", "red"] as const;
+
+/**
+ * Anchors the first colour so a prompt's identity segment stays broadly cool
+ * across themes rather than landing on whatever a given palette happens to
+ * offer first. Everything after it is chosen for separation, not for hue.
+ */
+const PROMPT_ANCHOR_HUE = 220;
+
+/**
+ * Which of the theme's own resolved roles each prompt colour prefers, before
+ * falling back to searching the scheme's slots. These are the three the
+ * picker draws its per-theme dots from, so the prompt and the list a person
+ * chose from agree about what the theme looks like. muted is deliberately
+ * absent — a grey separator reads as unthemed however correct it is.
+ */
+const PROMPT_COLOR_FROM_ROLE: Readonly<Partial<Record<keyof PromptPalette, Role>>> = {
+  blue: "accent",
+  green: "success",
+  yellow: "error",
+};
+
+export function promptPaletteFor(scheme: Scheme, resolvedRoleHexes: Readonly<Record<Role, string>>): PromptPalette {
+  const claimed: string[] = [];
+  const assigned: Partial<Record<keyof PromptPalette, string>> = {};
+
+  for (const name of PROMPT_COLOR_ASSIGNMENT_ORDER) {
+    // Every colour but red refuses a red-hued slot outright. A prompt paints
+    // hostnames and branch names with these, and red on either reads as
+    // something being broken — so a theme with no real purple gives up its
+    // purple rather than borrowing its red, which is how Nord's git segment
+    // came out #bf616a.
+    // Every slot a theme ships is a candidate, red family included. Reds are
+    // simply far from most of the target hues below, so they win only where a
+    // theme has nothing closer — which is exactly the case that used to leave
+    // two prompt segments the same colour on cool-dominant palettes like Rosé
+    // Pine and Terafox. A theme with a real purple still gets its purple.
+    const usable = visiblePromptSlots(scheme, resolvedRoleHexes.ground).filter((hex) => !claimed.includes(hex));
+
+    // Targeting a fixed hue per name was the mistake: blue and cyan sit close
+    // enough that most palettes answer both with the same colour, and a
+    // prompt whose identity and path are technically different reads as
+    // unthemed anyway — Dracula's #8be9fd beside #a4ffff. Only the first
+    // colour aims at a hue; every one after it is simply the candidate
+    // furthest from everything already taken, so a palette's own spread
+    // decides the colours rather than a table written against no theme in
+    // particular.
+    // The theme's own role colour first, where it is good enough to use.
+    // These three are the colours the picker paints each theme's dots with,
+    // so a prompt built on them reads as the same theme the list showed —
+    // Monokai's #66d9ef identity, Dracula's #ff5555 state.
+    //
+    // The one role that gets skipped is one the theme itself clearly beats:
+    // TangoTango's accent is #e0ffff, a near-white cyan chosen for contrast,
+    // while the same scheme ships #34e2e2 five times as saturated in the same
+    // family. Taking the role there would put the palest thing the theme owns
+    // on the segment naming the user.
+    const roleColour = PROMPT_COLOR_FROM_ROLE[name];
+    const fromRole = roleColour === undefined ? undefined : resolvedRoleHexes[roleColour];
+    const isRoleUsable =
+      fromRole !== undefined &&
+      !claimed.includes(fromRole) &&
+      !hasFarMoreVividSibling(fromRole, scheme, resolvedRoleHexes.ground) &&
+      claimed.every((taken) => isTellableApart(fromRole, taken));
+    if (isRoleUsable) {
+      assigned[name] = fromRole;
+      claimed.push(fromRole);
+      continue;
+    }
+
+    // The target hue first, but only among candidates that will not read as
+    // a colour already taken. TangoTango's blue identity and cyan path sit
+    // 30 degrees apart and look right; Dracula's #8be9fd beside #a4ffff does
+    // not. So the bar is "tellable apart", and only when nothing clears it
+    // does the target hue get abandoned for whatever sits furthest from
+    // everything already claimed — a colour of its own beats a near-duplicate
+    // of the one before it.
+    const distinct = usable.filter((hex) => claimed.every((taken) => isTellableApart(hex, taken)));
+    const picked =
+      nearestToHue(distinct, resolvedRoleHexes.ground, PROMPT_COLOR_TARGET_HUES[name]) ??
+      furthestFromClaimed(usable, claimed);
+
+    // The role fallback is shared between names — blue and cyan both stand
+    // in with accent — so it is only taken when nothing has claimed it yet.
+    // Otherwise two segments end up literally the same colour, which is the
+    // one outcome none of this is allowed to produce.
+    const fallback = resolvedRoleHexes[PROMPT_COLOR_FALLBACK_ROLE[name]];
+    const resolved = picked ?? (claimed.includes(fallback) ? undefined : fallback);
+    assigned[name] = resolved ?? furthestFromClaimed(visiblePromptSlots(scheme, resolvedRoleHexes.ground), claimed) ?? fallback;
+    if (assigned[name] !== undefined) claimed.push(assigned[name]!);
+  }
+
+  return assigned as PromptPalette;
+}
+
+/**
+ * Two hues this close are the same colour to a person, so the choice between
+ * them should be settled by something they can actually see. Without it a
+ * slot 1.4 degrees nearer the target wins over one with two and a half times
+ * the chroma — which is how TangoTango's prompt ended up wearing #729fcf
+ * instead of the dodger blue sitting next to it in the same scheme.
+ */
+const SAME_HUE_TOLERANCE_DEGREES = 15;
+
+/**
+ * The scheme's own slot closest to `targetHue` that a person could actually
+ * see against ground. Ties inside SAME_HUE_TOLERANCE_DEGREES go to the more
+ * chromatic candidate, and then to the one that stands out further from
+ * ground — so a family's vivid member beats its washed-out sibling, and
+ * between two equally vivid ones the more visible wins.
+ */
+/**
+ * How much colour a slot needs before a prompt will use it. Deliberately
+ * below MIN_REPAIRED_CHROMA, which is a floor for *repairing* a colour into
+ * something recognisably tinted — a different question from whether a colour
+ * a theme author already chose is worth painting with. Nord is the case that
+ * settles it: its own green and purple measure 0.196 and 0.149, so the
+ * repair floor excluded a deliberately muted theme's entire palette and left
+ * the prompt borrowing Nord's red for its git segment. This admits those two
+ * while still rejecting the greys — Nord's own black and white measure 0.09
+ * and 0.04.
+ */
+const PROMPT_MIN_CHROMA = 0.12;
+
+/**
+ * How far a prompt colour has to stand off the background. Higher than
+ * ANSI_MIN_RATIO, which asks only whether a colour is visible at all: at 2.0
+ * the muddy near-background slots stayed eligible, and night-owl-dark's
+ * #384d5e and tokyo-night-dark's #474e6e were picked for a path that a person
+ * then had to look for.
+ */
+const PROMPT_MIN_GROUND_RATIO = 3;
+
+function visiblePromptSlots(scheme: Scheme, groundHex: string): string[] {
+  return [...new Set(ANSI_SLOT_NAMES.map((slot) => scheme[slot]))]
+    .filter((hex) => chromaOf(hex) >= PROMPT_MIN_CHROMA)
+    .filter((hex) => contrastRatio(hex, groundHex) >= ANSI_MIN_RATIO);
+}
+
+function nearestToHue(visible: readonly string[], groundHex: string, targetHue: number): string | undefined {
+  if (visible.length === 0) return undefined;
+
+  return visible.reduce((best, candidate) => {
+    const candidateDistance = hueDistanceDegrees(toHsl(candidate).hue, targetHue);
+    const bestDistance = hueDistanceDegrees(toHsl(best).hue, targetHue);
+    if (Math.abs(candidateDistance - bestDistance) > SAME_HUE_TOLERANCE_DEGREES) {
+      return candidateDistance < bestDistance ? candidate : best;
+    }
+    if (chromaOf(candidate) !== chromaOf(best)) return chromaOf(candidate) > chromaOf(best) ? candidate : best;
+    return contrastRatio(candidate, groundHex) > contrastRatio(best, groundHex) ? candidate : best;
+  });
+}
+
+/**
+ * Whether two prompt colours would actually read as different colours side by
+ * side. Either a clear hue separation, or — for two colours of the same
+ * family — enough of a lightness gap that one is obviously the paler.
+ */
+function isTellableApart(hex: string, other: string): boolean {
+  // A near-grey has no meaningful hue — the number HSL reports for one is
+  // noise, and comparing against it says nothing about whether two colours
+  // look different. TangoTango's #e0ffff measured 120 degrees from body
+  // #eeeeec on that basis and was called distinct, which is how the identity
+  // segment ended up all but invisible against the path beside it. When
+  // either side is that close to grey, only lightness counts.
+  const isEitherNearGrey = chromaOf(hex) < PROMPT_MIN_CHROMA || chromaOf(other) < PROMPT_MIN_CHROMA;
+  if (!isEitherNearGrey && hueDistanceDegrees(toHsl(hex).hue, toHsl(other).hue) >= DISTINCT_HUE_DEGREES) return true;
+  return contrastRatio(hex, other) >= DISTINCT_LIGHTNESS_RATIO;
+}
+
+/** Hue separation at which two prompt colours stop reading as the same one. */
+const DISTINCT_HUE_DEGREES = 25;
+
+/** How far apart two same-hue prompt colours must sit in lightness to still be told apart. */
+const DISTINCT_LIGHTNESS_RATIO = 1.6;
+
+/**
+ * The candidate that comes closest to reading as its own colour against
+ * everything already taken — the last resort when nothing clears
+ * isTellableApart outright.
+ *
+ * Scored on the same two axes that function tests, rather than on hue alone:
+ * ranking by hue distance by itself once returned colours that were no more
+ * distinguishable than the ones they beat, because a large hue gap between
+ * two near-greys is worth nothing. Each axis is measured as a fraction of its
+ * own bar, so a candidate half way to clearing on lightness ranks above one a
+ * quarter of the way there on hue.
+ */
+function furthestFromClaimed(candidates: readonly string[], claimed: readonly string[]): string | undefined {
+  if (candidates.length === 0) return undefined;
+  if (claimed.length === 0) return candidates[0];
+
+  const distinctness = (hex: string, taken: string): number =>
+    Math.max(
+      hueDistanceDegrees(toHsl(hex).hue, toHsl(taken).hue) / DISTINCT_HUE_DEGREES,
+      (contrastRatio(hex, taken) - 1) / (DISTINCT_LIGHTNESS_RATIO - 1),
+    );
+  const worstCase = (hex: string): number => Math.min(...claimed.map((taken) => distinctness(hex, taken)));
+
+  return candidates.reduce((best, candidate) => (worstCase(candidate) > worstCase(best) ? candidate : best));
+}
+
+/**
+ * How much more saturated a sibling has to be before it displaces a role
+ * colour. Well clear of the difference between two ordinary members of a
+ * family, so this only fires on a role that was picked for contrast at the
+ * cost of nearly all its colour.
+ */
+const VIVID_SIBLING_CHROMA_FACTOR = 2;
+
+/** Whether the scheme carries a colour of the same family as `hex` that is far more saturated — see the note in promptPaletteFor. */
+function hasFarMoreVividSibling(hex: string, scheme: Scheme, groundHex: string): boolean {
+  return visiblePromptSlots(scheme, groundHex).some(
+    (candidate) =>
+      hueDistanceDegrees(toHsl(candidate).hue, toHsl(hex).hue) < DISTINCT_HUE_DEGREES &&
+      chromaOf(candidate) >= chromaOf(hex) * VIVID_SIBLING_CHROMA_FACTOR,
+  );
 }

@@ -6,7 +6,7 @@ import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
 import { isKnownRole, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
 import { repairForegroundAgainstBackgrounds, resolveRoleHexes } from "../palette/repair.js";
-import { recoloredHexFor, recoloredLiteralHexFor } from "../palette/role-mapping.js";
+import { promptPaletteFor, recoloredHexFor, recoloredLiteralHexFor, type PromptPalette } from "../palette/role-mapping.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
   buildPropertyBlockContent,
@@ -333,7 +333,10 @@ function upsertPaletteTable(configPath: string, text: string, paletteTable: Reco
  */
 function recoloredForeignHex(key: string, hex: string, resolvedRoleHexes: Record<Role, string>, targetScheme: Scheme): string {
   if (isKnownRole(key)) return resolvedRoleHexes[key];
-  if (isLiteralLiftedKey(key)) return recoloredLiteralHexFor(hex, resolvedRoleHexes);
+  // From the hex in the key's own name, not from `hex` — see
+  // literalHexFromKey for why recolouring from the current value cannot be
+  // undone once two literals have collapsed onto the same role.
+  if (isLiteralLiftedKey(key)) return recoloredLiteralHexFor(literalHexFromKey(key) ?? hex, resolvedRoleHexes);
   return recoloredHexFor(key, hex, resolvedRoleHexes, targetScheme);
 }
 
@@ -360,9 +363,23 @@ function recoloredForeignHex(key: string, hex: string, resolvedRoleHexes: Record
  * the same generated-key-free value both recolours this apply and becomes
  * next apply's own recorded original.
  */
-function recoloredPaletteTable(existingPalette: Record<string, string> | undefined, resolvedRoleHexes: Record<Role, string>, targetScheme: Scheme): Record<string, string> {
+function recoloredPaletteTable(
+  existingPalette: Record<string, string> | undefined,
+  resolvedRoleHexes: Record<Role, string>,
+  targetScheme: Scheme,
+  colorsByLiteralKey: Readonly<Record<string, keyof PromptPalette>> = {},
+): Record<string, string> {
+  // Coloured prompt segments draw on the scheme's own slots by hue rather
+  // than on the six contrast-picked roles — see promptPaletteFor for why the
+  // roles alone leave a prompt paler and flatter than the theme it wears.
+  const promptPalette = promptPaletteFor(targetScheme, resolvedRoleHexes);
   const recoloredExisting = Object.fromEntries(
-    Object.entries(existingPalette ?? {}).map(([key, hex]) => [key, recoloredForeignHex(key, hex, resolvedRoleHexes, targetScheme)]),
+    Object.entries(existingPalette ?? {}).map(([key, hex]) => [
+      key,
+      colorsByLiteralKey[key] !== undefined
+        ? promptPalette[colorsByLiteralKey[key]]
+        : recoloredForeignHex(key, hex, resolvedRoleHexes, targetScheme),
+    ]),
   );
   const missingRoles = ROLES.filter((role) => !(role in recoloredExisting));
   const additions = Object.fromEntries(missingRoles.map((role) => [role, resolvedRoleHexes[role]]));
@@ -527,6 +544,99 @@ function literalColorPaletteKeyFor(hex: string): string {
 /** Whether `key` is one this file's own literal-hex lift minted (see literalColorPaletteKeyFor), rather than one a theme author or `ch edit` wrote. Recoloured differently — see recoloredForeignHex and role-mapping.ts's recoloredLiteralHexFor — because a lifted key carries no relationship to any other key worth protecting the way a real semantic key does (CHM-90). */
 function isLiteralLiftedKey(key: string): boolean {
   return key.startsWith(LITERAL_COLOR_PALETTE_KEY_PREFIX);
+}
+
+/**
+ * The hex a lifted key was minted from, read back out of the key's own name.
+ *
+ * This is the colour the user's prompt actually shipped with, and it is the
+ * only stable thing to reclassify from. Recolouring from the key's *current*
+ * value instead makes every apply depend on the one before it: a literal that
+ * once landed on a role keeps re-deriving from that role's colour, so it can
+ * never reach a different one, and two literals that ever landed on the same
+ * role are fused for good. A prompt switched between packs a few times ends up
+ * with fewer distinct colours than it started with, and no way back — which
+ * reads as the prompt having stopped responding to the theme at all.
+ *
+ * Returns undefined for a key whose suffix is not a plain 6-digit hex, so a
+ * key that merely begins with the prefix is left to the caller's own
+ * fallback rather than being forced through this path.
+ */
+function literalHexFromKey(key: string): string | undefined {
+  const suffix = key.slice(LITERAL_COLOR_PALETTE_KEY_PREFIX.length);
+  return /^[0-9a-f]{6}$/i.test(suffix) ? `#${suffix.toLowerCase()}` : undefined;
+}
+
+/**
+ * Which colour each kind of Oh My Posh segment takes, when its own colour was
+ * a bare literal rather than a key someone named.
+ *
+ * A lifted literal's hue says nothing about the segment — it is whichever
+ * colour the prompt the user copied happened to use, so retinting from it
+ * meant a segment authored red stayed red under all 63 packs. What the
+ * segment *is* carries the meaning instead, and Oh My Posh already states it.
+ *
+ * The assignment keeps the shape most prompts already use — identity, then
+ * path, then repository state — and gives every segment a colour of its own.
+ * Nothing is left grey or white: a prompt whose separators are grey and whose
+ * path is plain white looks unthemed however good the palette behind it is.
+ *
+ * Red is deliberately absent. It reads as something being broken, which is
+ * wrong for a hostname or a branch name, and it is the one colour a prompt
+ * genuinely needs in reserve — a segment that reports a failed command still
+ * reaches it through the prompt's own foreground_templates, which Chameleon
+ * never rewrites.
+ *
+ * Only literals go through this. A key a theme author named — chips's
+ * c-git-ahead — keeps carrying its own relationships (CHM-37, CHM-53); a
+ * segment type not listed here falls back to the hue snap.
+ */
+const PROMPT_COLOR_BY_SEGMENT_TYPE: Readonly<Record<string, keyof PromptPalette>> = {
+  session: "blue",
+  root: "blue",
+  os: "blue",
+  shell: "blue",
+  text: "green",
+  path: "cyan",
+  git: "purple",
+  status: "yellow",
+  exit: "yellow",
+  time: "yellow",
+  battery: "yellow",
+  node: "green",
+  python: "green",
+  go: "green",
+  rust: "green",
+  dotnet: "green",
+};
+
+/**
+ * The prompt colour each lifted literal key should take, worked out from the
+ * segments that reference it. A key two segment types disagree over is left
+ * out rather than given one of them arbitrarily — it falls back to the hue
+ * snap, which at least treats both the same.
+ */
+function promptColorsByLiteralForegroundKey(rawBlocks: readonly unknown[]): Record<string, keyof PromptPalette> {
+  const colorsSeenByKey = new Map<string, Set<keyof PromptPalette>>();
+
+  for (const rawBlock of rawBlocks) {
+    for (const rawSegment of segmentsOf(rawBlock) ?? []) {
+      if (typeof rawSegment !== "object" || rawSegment === null) continue;
+      const segment = rawSegment as RawSegment;
+      const color = typeof segment["type"] === "string" ? PROMPT_COLOR_BY_SEGMENT_TYPE[segment["type"]] : undefined;
+      if (color === undefined) continue;
+
+      for (const key of segmentForegroundKeys(segment).filter(isLiteralLiftedKey)) {
+        const seen = colorsSeenByKey.get(key) ?? new Set<keyof PromptPalette>();
+        seen.add(color);
+        colorsSeenByKey.set(key, seen);
+      }
+    }
+  }
+
+  return Object.fromEntries(
+    [...colorsSeenByKey.entries()].filter(([, colors]) => colors.size === 1).map(([key, colors]) => [key, [...colors][0]!]),
+  );
 }
 
 /** What lifting every segment's own literal-hex foreground into a palette key produced: the blocks with each one repointed at its lifted key, the palette entries those keys need, and the segment type of every segment whose foreground could not be lifted — see liftLiteralForegroundsToPalette. */
@@ -1460,7 +1570,12 @@ function recolorConfigInto(configPath: string, profilePath: string, shell: Shell
   const knownOriginalHexes = readOhMyPoshSeedState(configPath)?.originalPaletteHexes ?? {};
   const originalPalette = originalForeignPalette(currentForeignPalette, knownOriginalHexes);
 
-  const paletteTable = recoloredPaletteTable(originalPalette, resolveRoleHexes(scheme), scheme);
+  const paletteTable = recoloredPaletteTable(
+    originalPalette,
+    resolveRoleHexes(scheme),
+    scheme,
+    promptColorsByLiteralForegroundKey(foregroundLift.blocks),
+  );
 
   // Segment repair reads the lifted blocks and the recoloured table above,
   // never the config's own original palette or blocks — a segment must be
