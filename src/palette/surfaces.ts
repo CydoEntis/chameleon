@@ -329,15 +329,61 @@ function fractionReachingLuminance(groundHex: string, bodyHex: string, minLumina
  *
  * Mixed further along the same ground/body ramp surfaceScale already uses,
  * so the chip stays a neutral tone of the theme rather than becoming a
- * colour of its own — and clamped at body, that ramp's own light end, for a
- * pack whose accent is lighter than its body.
+ * colour of its own.
+ *
+ * That reasoning was half right, and the half it got wrong is why this now
+ * caps as well as raises. surface0 does not only paint the tab chip: Herdr
+ * also fills the button and input surfaces in its dialogs with it, and draws
+ * their labels in `text`. So there was a (foreground, background) pair all
+ * along — the probe simply never opened a dialog, which is the same way
+ * CHM-78 reached the opposite wrong answer by only ever looking at the
+ * sidebar. Clamping at body made surface0 *equal* to text on four bundled
+ * packs and left 27 of 63 under 1.5:1, which renders every button, input and
+ * selected row in those dialogs as a blank slab.
+ *
+ * So the chip is raised toward the accent as before, but never past the
+ * lightest point on the ramp where text still clears TEXT_MIN_RATIO on it.
+ * A point satisfying that always exists: at fraction 0 surface0 is ground
+ * itself, and body-on-ground clearing TEXT_MIN_RATIO is one of the
+ * invariants every pack is already built to hold. Where the two demands
+ * compete, readable text wins and the chip keeps whatever lightness is left
+ * — a chip that is harder to pick out is a worse tab strip, while a button
+ * nobody can read the label of is a broken dialog.
  */
 export function repairSurface0(candidateHex: string, groundHex: string, bodyHex: string, accentHex: string): string {
   const minChipLuminance = relativeLuminance(accentHex);
-  if (relativeLuminance(candidateHex) >= minChipLuminance) return candidateHex;
-  if (relativeLuminance(bodyHex) <= minChipLuminance) return bodyHex;
+  if (relativeLuminance(candidateHex) >= minChipLuminance) return keepingTextReadable(candidateHex, groundHex, bodyHex);
+  if (relativeLuminance(bodyHex) <= minChipLuminance) return keepingTextReadable(bodyHex, groundHex, bodyHex);
 
-  return mix(groundHex, bodyHex, fractionReachingLuminance(groundHex, bodyHex, minChipLuminance));
+  const raisedHex = mix(groundHex, bodyHex, fractionReachingLuminance(groundHex, bodyHex, minChipLuminance));
+  return keepingTextReadable(raisedHex, groundHex, bodyHex);
+}
+
+/** `chipHex` where text still reads on it, and otherwise the lightest blend on the same ramp where it does. */
+function keepingTextReadable(chipHex: string, groundHex: string, bodyHex: string): string {
+  if (contrastRatio(bodyHex, chipHex) >= TEXT_MIN_RATIO) return chipHex;
+  return mix(groundHex, bodyHex, lightestFractionClearingTextOnSurface(groundHex, bodyHex));
+}
+
+/**
+ * The lightest fraction along ground -> body whose blend still lets body
+ * read on it at TEXT_MIN_RATIO. Contrast against body falls monotonically as
+ * the blend moves toward body, so the feasible fractions are a prefix and
+ * bisection finds its end; fraction 0 is always feasible, because it is
+ * ground, and body-on-ground is a floor every pack already clears.
+ */
+function lightestFractionClearingTextOnSurface(groundHex: string, bodyHex: string): number {
+  let low = 0;
+  let high = 1;
+  for (let iteration = 0; iteration < SEARCH_ITERATIONS; iteration += 1) {
+    const midFraction = (low + high) / 2;
+    if (contrastRatio(bodyHex, mix(groundHex, bodyHex, midFraction)) >= TEXT_MIN_RATIO) {
+      low = midFraction;
+    } else {
+      high = midFraction;
+    }
+  }
+  return low;
 }
 
 export interface ResolvedRowAndText {
@@ -753,11 +799,18 @@ export interface HerdrTokenSet {
  * assertHerdrTokensAccountedFor can tell "never checked" apart from
  * "forgotten".
  *
- * surface0 is the one here that does carry text, and is exempt for a
- * different reason than the rest: the tab number Herdr draws on it is
- * Herdr's own fixed colour, not a token Chameleon writes, so there is no
- * foreground here to name in a pair. repairSurface0 floors it by lightness
- * against the active tab chip instead.
+ * surface0 is the one here that does carry text, and its exemption is the
+ * narrowest of the four — narrow enough that it has already been wrong once.
+ * CHM-84 exempted it on the finding that the tab number Herdr draws on the
+ * inactive chip is Herdr's own fixed colour rather than a token Chameleon
+ * writes, so there was no foreground to name in a pair. True of the tab
+ * strip, and false everywhere else: Herdr also fills the button, input and
+ * selected-row surfaces in its dialogs with surface0 and draws their labels
+ * in `text`. repairSurface0 now caps the chip so that pair holds, and
+ * herdr.test.ts asserts it for every bundled pack, but it is asserted there
+ * rather than declared here — which is a gap, not a design. Naming it below
+ * would make surface0 a required token, which theme-pack.ts's build-time
+ * gate and the doctor both currently assume it is not.
  */
 const HERDR_TOKENS_CARRYING_NO_TEXT: ReadonlySet<string> = new Set(["surface_dim", "surface0", "surface1", "overlay1"]);
 

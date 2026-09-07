@@ -1256,6 +1256,27 @@ describe("herdr adapter — CHM-79's declared contrast inventory, every bundled 
     }
   }
 
+  // surface0 is not in herdrContrastPairs, on CHM-84's finding that the only
+  // thing drawn on the inactive tab chip is Herdr's own fixed tab number, so
+  // there was no Chameleon-written foreground to name in a pair. That probe
+  // never opened a dialog. Herdr also fills the button, input and selected-row
+  // surfaces there with surface0 and draws their labels in `text`, so the pair
+  // does exist — and clamping the chip at body made the two colours identical
+  // on four bundled packs, rendering every one of those widgets as a blank
+  // slab. Asserted here against real written output until surface0 earns its
+  // place in the declared inventory proper.
+  it("keeps text readable on surface0 for every bundled pack — the dialog surfaces CHM-84's own probe never opened", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const tokens = allCustomTokensFor(pack.manifest.slug);
+      const surface0 = (tokens as unknown as Record<string, string>)["surface0"];
+      expect(surface0, `${pack.manifest.slug} writes no surface0`).toBeDefined();
+      expect(contrastRatio(tokens.text, surface0!), `${pack.manifest.slug} text on surface0`).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    }
+  });
+
   it("clears every declared pair for every one of the 29 bundled packs — the gate this ticket adds, run against real written output", () => {
     const packs = loadCuratedThemePacks();
     expect(packs.length).toBe(29);
