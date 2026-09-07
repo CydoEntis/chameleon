@@ -1133,29 +1133,6 @@ function noConfigDiscoveredMessage(profilePath: string, shell: Shell): string {
   return `no active Oh My Posh config found — checked $POSH_CONFIG, $POSH_THEME, and ${profilePath} for an "oh-my-posh init" line naming --config;${initHint} or pass a config path directly`;
 }
 
-/** `chm`'s own supported way to seed (or re-seed) Chameleon's owned Oh My Posh config from a named file — see reseedOhMyPoshOwnedConfig and noPaletteReferencesMessage. */
-const RESEED_COMMAND_HINT = "chm reseed <path>";
-
-/**
- * `ensureOhMyPoshOwnedConfigSeeded`'s refusal message when the one config it
- * found has no "p:" reference anywhere in its own segments — CHM-74: the
- * `existsSync(ownedConfigPath)` guard above means whatever gets copied in
- * here is what Chameleon owns forever, so a config like this — real example:
- * a five-segment prompt with every foreground written as a literal hex,
- * copied in only because it happened to be what this one shell's profile
- * named — must not be accepted silently. Its colours genuinely can be
- * recoloured (liftLiteralForegroundsToPalette, run on every apply once this
- * file is seeded, lifts each literal hex into a palette key the same way
- * recoloredHexFor already retints a foreign one), but rewriting every
- * segment's own foreground field is a bigger change than a plain
- * palette-table swap, and automatic seeding — the one call site nobody
- * explicitly asked to run right now — is not the place to make it
- * unasked. RESEED_COMMAND_HINT is the explicit ask.
- */
-function noPaletteReferencesMessage(discoveredConfigPath: string): string {
-  return `found ${discoveredConfigPath} to seed Chameleon's owned config from, but stopped short of copying it in: none of its segments reference a palette key, so its colours are all literal hex, and a plain palette-table swap would recolour a table nothing reads. Run \`${RESEED_COMMAND_HINT}\` to seed from it anyway — its segments' own literal colours are lifted into palette keys first, then themed like any other config.`;
-}
-
 /**
  * File name of the state Chameleon's now-deleted prompt-layout switcher
  * recorded — `chm prompts` / `chm prompt <name>` / `chm prompt mine`,
@@ -1226,12 +1203,16 @@ export function discoverPreOwnedOhMyPoshConfig(profilePath: string, shell: Shell
  * prompt before this seeding check ever runs — see that function's own doc
  * comment.
  *
- * Refuses to copy a discovered config in when none of its own segments
- * reference a palette key at all — see noPaletteReferencesMessage. That
- * config's colours genuinely can be recoloured (recolorConfigInto lifts a
- * literal hex into a palette key the same as it would a foreign one, see
- * CHM-74), but only ever on an explicit `chm reseed`, never on whatever
- * config an automatic seed happened to land on.
+ * A discovered config whose segments reference no palette key at all — every
+ * foreground a literal hex, the norm among Oh My Posh's own bundled themes —
+ * is copied in exactly like any other: recolorConfigInto's own
+ * liftLiteralForegroundsToPalette lifts those literal hexes into palette
+ * keys on the very next apply, the same apply that seeded this file in the
+ * first place, so nothing further needs asking for. CHM-74 shipped that lift
+ * but only reachable through an explicit `chm reseed`, leaving this path
+ * refusing to seed a config the very next line was able to fix — see CHM-87.
+ * `chm reseed <path>` (reseedOhMyPoshOwnedConfig) still exists, for pointing
+ * Chameleon at a different config on purpose.
  */
 export function ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath: string, profilePath: string, shell: Shell): string {
   migrateAwayFromBundledPromptLayout(ownedConfigPath);
@@ -1240,9 +1221,6 @@ export function ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath: string, profile
   const discoveredConfigPath = resolveConfigPath(defaultConfigPath(), profilePath, shell);
   if (!discoveredConfigPath) {
     throw new Error(noConfigDiscoveredMessage(profilePath, shell));
-  }
-  if (palettesReferencedIn(readFileSync(discoveredConfigPath, "utf8")).size === 0) {
-    throw new Error(noPaletteReferencesMessage(discoveredConfigPath));
   }
   mkdirSync(path.dirname(ownedConfigPath), { recursive: true });
   copyFileSync(discoveredConfigPath, ownedConfigPath);
@@ -1255,16 +1233,16 @@ export function ensureOhMyPoshOwnedConfigSeeded(ownedConfigPath: string, profile
  * overwriting whatever it owned before — CHM-74's supported answer to "which
  * config gets seeded when several exist": rather than guessing again from
  * whichever shell happens to run `chm` next, a person names the file
- * outright. This is also the only way to accept a config
- * ensureOhMyPoshOwnedConfigSeeded refused on its own (see
- * noPaletteReferencesMessage) — an explicit, named call is exactly the "ask"
- * that refusal exists to require — and the supported alternative to
- * hand-deleting chameleon.omp.json and hoping the next apply discovers the
- * right thing on its own. Never themes the freshly seeded file itself: the
- * next `chm <theme>` (or a plain re-apply of whatever is already active)
- * does that, the same as any other apply — see recolorConfigInto's own
- * liftLiteralForegroundsToPalette for what makes that safe even for a config
- * with no palette reference at all.
+ * outright. This stays the supported alternative to hand-deleting
+ * chameleon.omp.json and hoping the next apply discovers the right thing on
+ * its own, even now that ensureOhMyPoshOwnedConfigSeeded seeds a literal-hex
+ * config automatically too (CHM-87) — the two answer different questions:
+ * automatic seeding picks up whatever config was already active, this
+ * points Chameleon at a different one on purpose. Never themes the freshly
+ * seeded file itself: the next `chm <theme>` (or a plain re-apply of
+ * whatever is already active) does that, the same as any other apply — see
+ * recolorConfigInto's own liftLiteralForegroundsToPalette for what makes
+ * that safe even for a config with no palette reference at all.
  */
 export function reseedOhMyPoshOwnedConfig(sourceConfigPath: string, ownedConfigPath: string = defaultOwnedConfigPath()): void {
   if (!existsSync(sourceConfigPath)) {

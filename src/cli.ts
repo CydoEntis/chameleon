@@ -887,15 +887,16 @@ function runOriginal(): number {
 }
 
 /**
- * `chm reseed <path>` — CHM-74: the supported way to change which config
- * Chameleon owns for Oh My Posh, or to accept a config `ensureOhMyPoshOwnedConfigSeeded`
- * refused to pick automatically because none of its segments reference a
- * palette key (see noPaletteReferencesMessage). The alternative is
- * hand-deleting chameleon.omp.json, which would also throw away every
- * recolour it already has. Never themes the freshly seeded file by itself —
- * the next `chm <theme>` does that, the same as any other apply, and is what
- * lifts a literal-hex config's own segments into palette keys the first
- * time (see recolorConfigInto).
+ * `chm reseed <path>` — CHM-74: the supported way to point Chameleon at a
+ * different Oh My Posh config on purpose, rather than whichever one a first
+ * apply discovers automatically (ensureOhMyPoshOwnedConfigSeeded, which
+ * since CHM-87 seeds a literal-hex-only config just as readily as one that
+ * already references a palette key). The alternative is hand-deleting
+ * chameleon.omp.json, which would also throw away every recolour it already
+ * has. Never themes the freshly seeded file by itself — the next `chm
+ * <theme>` does that, the same as any other apply, and is what lifts a
+ * literal-hex config's own segments into palette keys the first time (see
+ * recolorConfigInto).
  */
 function runReseed(args: readonly string[]): number {
   const [rawPath] = args;
