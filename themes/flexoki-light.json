@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "flexoki-light",
+    "name": "Flexoki Light",
+    "family": "Flexoki",
+    "appearance": "light",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Flexoki Light",
+      "black": "#100f0f",
+      "red": "#af3029",
+      "green": "#66800b",
+      "yellow": "#ad8301",
+      "blue": "#205ea6",
+      "purple": "#a02f6f",
+      "cyan": "#24837b",
+      "white": "#6f6e69",
+      "brightBlack": "#b3b1a8",
+      "brightRed": "#d14d41",
+      "brightGreen": "#879a39",
+      "brightYellow": "#d0a215",
+      "brightBlue": "#4385be",
+      "brightPurple": "#ce5d97",
+      "brightCyan": "#3aa99f",
+      "brightWhite": "#b2b1a7",
+      "background": "#fffcf0",
+      "foreground": "#100f0f",
+      "cursorColor": "#100f0f",
+      "selectionBackground": "#ff0090"
+    },
+    "oh-my-posh": {
+      "ground": "#fffcf0",
+      "body": "#100f0f",
+      "accent": "#a02f6f",
+      "muted": "#918f86",
+      "success": "#607a05",
+      "error": "#af3029"
+    },
+    "herdr": {
+      "ground": "#fffcf0",
+      "body": "#100f0f",
+      "accent": "#a02f6f",
+      "muted": "#383838",
+      "success": "#4c6200",
+      "error": "#a82922",
+      "selection_bg": "#ff0090"
+    },
+    "statusline": {
+      "context": "#207f77",
+      "fiveHour": "#906c00",
+      "sevenDay": "#607a05"
+    }
+  }
+}

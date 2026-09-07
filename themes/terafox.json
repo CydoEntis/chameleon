@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "terafox",
+    "name": "Terafox",
+    "family": "Terafox",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Terafox",
+      "black": "#51545b",
+      "red": "#e85c51",
+      "green": "#7aa4a1",
+      "yellow": "#fda47f",
+      "blue": "#5a93aa",
+      "purple": "#ad5c7c",
+      "cyan": "#a1cdd8",
+      "white": "#ebebeb",
+      "brightBlack": "#52555b",
+      "brightRed": "#eb746b",
+      "brightGreen": "#8eb2af",
+      "brightYellow": "#fdb292",
+      "brightBlue": "#73a3b7",
+      "brightPurple": "#b97490",
+      "brightCyan": "#afd4de",
+      "brightWhite": "#eeeeee",
+      "background": "#152528",
+      "foreground": "#e6eaea",
+      "cursorColor": "#e6eaea",
+      "selectionBackground": "#bb3700"
+    },
+    "oh-my-posh": {
+      "ground": "#152528",
+      "body": "#e6eaea",
+      "accent": "#a1cdd8",
+      "muted": "#6c6f75",
+      "success": "#aedae5",
+      "error": "#fda47f"
+    },
+    "herdr": {
+      "ground": "#152528",
+      "body": "#e6eaea",
+      "accent": "#a1cdd8",
+      "muted": "#c0c0c0",
+      "success": "#aedae5",
+      "error": "#fda47f",
+      "selection_bg": "#bb3700"
+    },
+    "statusline": {
+      "context": "#a1cdd8",
+      "fiveHour": "#fda47f",
+      "sevenDay": "#7aa4a1"
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "modus-vivendi",
+    "name": "Modus Vivendi",
+    "family": "Modus Vivendi",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Modus Vivendi",
+      "black": "#424242",
+      "red": "#ff5f59",
+      "green": "#44bc44",
+      "yellow": "#d0bc00",
+      "blue": "#2fafff",
+      "purple": "#feacd0",
+      "cyan": "#00d3d0",
+      "white": "#a6a6a6",
+      "brightBlack": "#595959",
+      "brightRed": "#ff7f9f",
+      "brightGreen": "#00c06f",
+      "brightYellow": "#fec43f",
+      "brightBlue": "#79a8ff",
+      "brightPurple": "#b6a0ff",
+      "brightCyan": "#6ae4b9",
+      "brightWhite": "#ffffff",
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "cursorColor": "#ffffff",
+      "selectionBackground": "#e20063"
+    },
+    "oh-my-posh": {
+      "ground": "#000000",
+      "body": "#ffffff",
+      "accent": "#feacd0",
+      "muted": "#5c5c5c",
+      "success": "#44bc44",
+      "error": "#ff5f59"
+    },
+    "herdr": {
+      "ground": "#000000",
+      "body": "#ffffff",
+      "accent": "#feacd0",
+      "muted": "#d3d3d3",
+      "success": "#44bc44",
+      "error": "#ff5f59",
+      "selection_bg": "#e20063"
+    },
+    "statusline": {
+      "context": "#00d3d0",
+      "fiveHour": "#d0bc00",
+      "sevenDay": "#44bc44"
+    }
+  }
+}

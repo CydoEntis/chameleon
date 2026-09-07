@@ -1,0 +1,19 @@
+Source:  https://github.com/NLKNguyen/papercolor-theme
+Commit:  0cfe64ffb24c21a6101b5f994ca342a74c977aef
+License: MIT (LICENSE in this directory, copied from upstream)
+
+colors/PaperColor.vim is copied unmodified from that commit. This is the
+PaperColor theme itself. It is vendored as a *reference*, not as a scheme
+source: it is a Vim theme with no usable ANSI mapping of its own (see
+vendor/papercolor-terminal-app/SOURCE.txt for why).
+
+What it is for: the shipped PaperColor packs are decoded from the
+Terminal.app port in vendor/papercolor-terminal-app, and
+assertPortMatchesUpstreamPalette in tools/external-scheme-sources.ts checks
+every one of the port's 16 slots against this file's own color00..color15
+for the matching variant. The port turns out to be exactly
+`ANSI slot N = colorNN`, so that check passes today and would fail the build
+the moment the port drifted from the theme it claims to be.
+
+That is what makes a third-party port acceptable here: its values are not
+taken on trust, they are verified against upstream at build time.

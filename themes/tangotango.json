@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "tangotango",
+    "name": "TangoTango",
+    "family": "TangoTango",
+    "appearance": "dark",
+    "attribution": {
+      "source": "juba/color-theme-tangotango",
+      "sourceUrl": "https://github.com/juba/color-theme-tangotango",
+      "commit": "6202d4a19ac1def1b2596f1906c4524dd7303563",
+      "license": "GPL-3.0-or-later"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "TangoTango",
+      "black": "#626262",
+      "red": "#ef2929",
+      "green": "#6ac214",
+      "yellow": "#edd400",
+      "blue": "#1e90ff",
+      "purple": "#cd00cd",
+      "cyan": "#e0ffff",
+      "white": "#eeeeec",
+      "brightBlack": "#626460",
+      "brightRed": "#ef2929",
+      "brightGreen": "#8ae234",
+      "brightYellow": "#fce94f",
+      "brightBlue": "#729fcf",
+      "brightPurple": "#ad7fa8",
+      "brightCyan": "#34e2e2",
+      "brightWhite": "#eeeeec",
+      "background": "#2e3434",
+      "foreground": "#eeeeec",
+      "cursorColor": "#fce94f",
+      "selectionBackground": "#d40000"
+    },
+    "oh-my-posh": {
+      "ground": "#2e3434",
+      "body": "#eeeeec",
+      "accent": "#e0ffff",
+      "muted": "#7e807c",
+      "success": "#6ac214",
+      "error": "#ff7171"
+    },
+    "herdr": {
+      "ground": "#2e3434",
+      "body": "#eeeeec",
+      "accent": "#e0ffff",
+      "muted": "#c4c4c4",
+      "success": "#87df31",
+      "error": "#ffb6b6",
+      "selection_bg": "#d40000"
+    },
+    "statusline": {
+      "context": "#e0ffff",
+      "fiveHour": "#edd400",
+      "sevenDay": "#6ac214"
+    }
+  }
+}

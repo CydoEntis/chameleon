@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "cobalt2",
+    "name": "Cobalt2",
+    "family": "Cobalt2",
+    "appearance": "dark",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Cobalt2",
+      "black": "#565656",
+      "red": "#ff0000",
+      "green": "#38de21",
+      "yellow": "#ffe50a",
+      "blue": "#1460d2",
+      "purple": "#ff005d",
+      "cyan": "#00bbbb",
+      "white": "#bbbbbb",
+      "brightBlack": "#555555",
+      "brightRed": "#f40e17",
+      "brightGreen": "#3bd01d",
+      "brightYellow": "#edc809",
+      "brightBlue": "#5555ff",
+      "brightPurple": "#ff55ff",
+      "brightCyan": "#6ae3fa",
+      "brightWhite": "#ffffff",
+      "background": "#132738",
+      "foreground": "#ffffff",
+      "cursorColor": "#f0cc09",
+      "selectionBackground": "#008080"
+    },
+    "oh-my-posh": {
+      "ground": "#132738",
+      "body": "#ffffff",
+      "accent": "#00bbbb",
+      "muted": "#717171",
+      "success": "#38de21",
+      "error": "#ff5050"
+    },
+    "herdr": {
+      "ground": "#132738",
+      "body": "#ffffff",
+      "accent": "#15d0d0",
+      "muted": "#d2d2d2",
+      "success": "#38de21",
+      "error": "#ffa2a2",
+      "selection_bg": "#008080"
+    },
+    "statusline": {
+      "context": "#00bbbb",
+      "fiveHour": "#ffe50a",
+      "sevenDay": "#38de21"
+    }
+  }
+}

@@ -5,6 +5,7 @@ import { contrastRatio } from "../src/palette/color.js";
 import { buildThemePack, type PackAttribution, type ThemePack } from "../src/palette/theme-pack.js";
 import type { Appearance } from "../src/palette/palette.js";
 import type { Scheme } from "../src/palette/scheme.js";
+import { readBambooScheme, readCyberdreamScheme, readPaperColorScheme, readTangoTangoScheme, readTurtlesScheme } from "./external-scheme-sources.js";
 import { readVendoredScheme } from "./vendor-scheme-library.js";
 
 // Resolved from process.cwd(), not import.meta.url — see the comment on
@@ -21,8 +22,54 @@ const ATTRIBUTION: PackAttribution = {
   license: "MIT",
 };
 
-interface CuratedEntry {
-  readonly fileName: string;
+/** Pinned to vendor/papercolor-terminal-app/SOURCE.txt — see that file for why a port supplies these two packs, and what verifies it against upstream. */
+const PAPERCOLOR_ATTRIBUTION: PackAttribution = {
+  source: "tomotargz/papercolor-terminal-app",
+  sourceUrl: "https://github.com/tomotargz/papercolor-terminal-app",
+  commit: "3b7a1c9ecc0642d355a2d73ba899a1ac2d18a0c7",
+  license: "MIT",
+};
+
+/** Pinned to vendor/tangotango/SOURCE.txt — see that file for which four values come from here and which come from the Tango scheme. */
+const TANGOTANGO_ATTRIBUTION: PackAttribution = {
+  source: "juba/color-theme-tangotango",
+  sourceUrl: "https://github.com/juba/color-theme-tangotango",
+  commit: "6202d4a19ac1def1b2596f1906c4524dd7303563",
+  license: "GPL-3.0-or-later",
+};
+
+/** Pinned to vendor/cyberdream-nvim/SOURCE.txt — the theme author's own Alacritty export, so no cross-check against another source is needed. */
+const CYBERDREAM_ATTRIBUTION: PackAttribution = {
+  source: "scottmckendry/cyberdream.nvim",
+  sourceUrl: "https://github.com/scottmckendry/cyberdream.nvim",
+  commit: "39e1fda12c0704e01029b286a4c7e77e33a0c5cd",
+  license: "MIT",
+};
+
+/** Pinned to vendor/bamboo-nvim/SOURCE.txt — see that file on why GitHub reports NOASSERTION for a verbatim MIT licence. */
+const BAMBOO_ATTRIBUTION: PackAttribution = {
+  source: "ribru17/bamboo.nvim",
+  sourceUrl: "https://github.com/ribru17/bamboo.nvim",
+  commit: "1309bc88bffcf1bedc3e84e7fa9004de93da774a",
+  license: "MIT",
+};
+
+/**
+ * Pinned to vendor/turtles/SOURCE.txt. The licence here is not a value this
+ * table can state honestly: the repository declares none, and its README
+ * badge points at an unrelated project. Recorded as such so every pack's own
+ * manifest says what is actually known rather than implying a licence that
+ * was never granted — read that SOURCE.txt before depending on this pack.
+ */
+const TURTLES_ATTRIBUTION: PackAttribution = {
+  source: "kxzk/Turtles",
+  sourceUrl: "https://github.com/kxzk/Turtles",
+  commit: "eb228e49f98e8631bcbc84b8fe090e37a87fb3cf",
+  license: "no licence declared upstream",
+};
+
+/** What every pack declares about itself, whatever supplied its colours. */
+interface PackEntry {
   readonly family: string;
   /** The variant this ticket's build must produce — cross-checked against the source scheme's own measured appearance, so a wrong entry here fails the build instead of shipping a mislabeled pack. */
   readonly appearance: Appearance;
@@ -42,6 +89,23 @@ interface CuratedEntry {
    * (CHM-62).
    */
   readonly displayName?: string;
+}
+
+/** A pack built from the vendored iTerm2 collection, named by its file there. */
+interface CuratedEntry extends PackEntry {
+  readonly fileName: string;
+}
+
+/**
+ * A pack built from one of the two sources outside that collection, which
+ * carry their own reader and their own provenance. See
+ * tools/external-scheme-sources.ts for why these exist and what verifies
+ * them; the attribution travels with the entry so no pack can ever be
+ * credited to a collection it did not come from.
+ */
+interface ExternalEntry extends PackEntry {
+  readonly readScheme: () => Scheme;
+  readonly attribution: PackAttribution;
 }
 
 /**
@@ -86,10 +150,153 @@ const CURATED_SCHEMES: readonly CuratedEntry[] = [
   { fileName: "Jellybeans.json", family: "Jellybeans", appearance: "dark", slug: "jellybeans" },
   { fileName: "Shades Of Purple.json", family: "Shades Of Purple", appearance: "dark", slug: "shades-of-purple" },
   { fileName: "Ayu.json", family: "Ayu", appearance: "dark", slug: "ayu-dark-deep", displayName: "Ayu Dark" },
+  // Eight more two-appearance families, all already in the vendored
+  // collection. Each was measured through buildThemePack before being listed
+  // here rather than picked by reputation: Horizon Bright, Poimandres White,
+  // Noctis Lux and Tomorrow all build, but land muted within about one point
+  // of body, which clears the floor's letter while failing what muted is for
+  // — so they are deliberately absent. Atom One Light is absent for a harder
+  // reason: its green and cyan slots are the same colour (#3f953a), so two
+  // statusline meters collapse onto one value and buildThemePack rejects it.
+  { fileName: "Flexoki Dark.json", family: "Flexoki", appearance: "dark" },
+  { fileName: "Flexoki Light.json", family: "Flexoki", appearance: "light" },
+  { fileName: "Melange Dark.json", family: "Melange", appearance: "dark" },
+  { fileName: "Melange Light.json", family: "Melange", appearance: "light" },
+  { fileName: "Zenbones Dark.json", family: "Zenbones", appearance: "dark" },
+  { fileName: "Zenbones Light.json", family: "Zenbones", appearance: "light" },
+  { fileName: "Seoulbones Dark.json", family: "Seoulbones", appearance: "dark" },
+  { fileName: "Seoulbones Light.json", family: "Seoulbones", appearance: "light" },
+  // Nightfox's own light sibling is named Dawnfox rather than "Nightfox
+  // Light", so the pack keeps that name and only the slug carries the family
+  // — the same split between name and slug ayu-dark-deep already relies on.
+  { fileName: "Nightfox.json", family: "Nightfox", appearance: "dark" },
+  { fileName: "Dawnfox.json", family: "Nightfox", appearance: "light" },
+  // Fourteen dark-only additions. Each takes an explicit slug for the reason
+  // jellybeans and shades-of-purple do: with no light sibling to distinguish
+  // them from, the derived "-dark" suffix says nothing.
+  // Iceberg ships dark-only: Iceberg Light builds, but recolouring chips
+  // with it lands c-badge-text on its resolved error background at 1.97,
+  // under CHM-37's own ANSI_MIN_RATIO, and CHM-40's repair cannot reach even
+  // the best a single shared foreground could manage there. Carbonfox and
+  // Oxocarbon are absent for a related reason: both are deliberately minimal
+  // palettes, and both collapse chips's 47 keys to 33 distinct colours where
+  // CHM-37 requires 34. All three fail guards that protect a user's own
+  // prompt, so they are left out rather than the guards loosened.
+  { fileName: "Iceberg Dark.json", family: "Iceberg", appearance: "dark", slug: "iceberg" },
+  // Modus Vivendi ships without its light sibling, and Selenized not at all.
+  // Modus Operandi and iceberg-light both land CHM-40's repair below the best
+  // a single shared foreground could reach against their own segment
+  // backgrounds — repairForegroundAgainstBackgrounds picks the better of two
+  // directions, which is what it documents, but on these the optimum sits
+  // between them. Selenized Dark misses CHM-80's subtext0-on-row floor by
+  // 0.078, past the 0.06 band that test holds its own exceptions to, and a
+  // light-only family is not a shape anything here supports.
+  { fileName: "Modus Vivendi.json", family: "Modus Vivendi", appearance: "dark", slug: "modus-vivendi" },
+  { fileName: "Vesper.json", family: "Vesper", appearance: "dark", slug: "vesper" },
+  { fileName: "Terafox.json", family: "Terafox", appearance: "dark", slug: "terafox" },
+  { fileName: "Embark.json", family: "Embark", appearance: "dark", slug: "embark" },
+  { fileName: "Cobalt2.json", family: "Cobalt2", appearance: "dark", slug: "cobalt2" },
+  { fileName: "Synthwave.json", family: "Synthwave", appearance: "dark", slug: "synthwave" },
+  { fileName: "Snazzy.json", family: "Snazzy", appearance: "dark", slug: "snazzy" },
+  { fileName: "Challenger Deep.json", family: "Challenger Deep", appearance: "dark", slug: "challenger-deep" },
+  { fileName: "Doom One.json", family: "Doom One", appearance: "dark", slug: "doom-one" },
+  { fileName: "Everblush.json", family: "Everblush", appearance: "dark", slug: "everblush" },
+  { fileName: "Sonokai.json", family: "Sonokai", appearance: "dark", slug: "sonokai" },
+  { fileName: "Moonfly.json", family: "Moonfly", appearance: "dark", slug: "moonfly" },
+  { fileName: "Aura Dark.json", family: "Aura", appearance: "dark", slug: "aura" },
 ];
 
-/** The twelve two-appearance families plus Dracula, Monokai, Jellybeans, Shades Of Purple and Ayu Dark (all five dark-only) — see CHM-6's "What" and CHM-62. */
-const EXPECTED_PACK_COUNT = 29;
+/**
+ * The two families absent from the vendored collection, each read from its
+ * own pinned source. PaperColor ships both appearances; TangoTango is
+ * dark-only, and takes an explicit slug for the same reason Jellybeans does
+ * — it has no light sibling to distinguish it from.
+ */
+const EXTERNAL_SCHEMES: readonly ExternalEntry[] = [
+  {
+    readScheme: () => readPaperColorScheme("dark"),
+    family: "PaperColor",
+    appearance: "dark",
+    attribution: PAPERCOLOR_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readPaperColorScheme("light"),
+    family: "PaperColor",
+    appearance: "light",
+    attribution: PAPERCOLOR_ATTRIBUTION,
+  },
+  {
+    readScheme: readTangoTangoScheme,
+    family: "TangoTango",
+    appearance: "dark",
+    slug: "tangotango",
+    attribution: TANGOTANGO_ATTRIBUTION,
+  },
+  // Cyberdream and Bamboo each publish their own Alacritty export, so both
+  // read through the one reader and neither needs the verification pass
+  // PaperColor does. Each ships a third variant alongside its light/dark
+  // pair — a second dark take whose derived slug would collide with the
+  // first, so it names its own.
+  {
+    readScheme: () => readCyberdreamScheme("cyberdream.toml", "Cyberdream"),
+    family: "Cyberdream",
+    appearance: "dark",
+    attribution: CYBERDREAM_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readCyberdreamScheme("cyberdream-light.toml", "Cyberdream Light"),
+    family: "Cyberdream",
+    appearance: "light",
+    attribution: CYBERDREAM_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readCyberdreamScheme("cyberdream-muted.toml", "Cyberdream Muted"),
+    family: "Cyberdream",
+    appearance: "dark",
+    slug: "cyberdream-muted",
+    attribution: CYBERDREAM_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readBambooScheme("bamboo.toml", "Bamboo"),
+    family: "Bamboo",
+    appearance: "dark",
+    attribution: BAMBOO_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readBambooScheme("bamboo_light.toml", "Bamboo Light"),
+    family: "Bamboo",
+    appearance: "light",
+    attribution: BAMBOO_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readBambooScheme("bamboo_multiplex.toml", "Bamboo Multiplex"),
+    family: "Bamboo",
+    appearance: "dark",
+    slug: "bamboo-multiplex",
+    attribution: BAMBOO_ATTRIBUTION,
+  },
+  // The only source here that carries every field a Scheme needs, so nothing
+  // about this pack is seeded — and the only one whose licence is unknown.
+  {
+    readScheme: readTurtlesScheme,
+    family: "Turtles",
+    appearance: "dark",
+    slug: "turtles",
+    attribution: TURTLES_ATTRIBUTION,
+  },
+];
+
+/**
+ * Seventeen two-appearance families plus nineteen dark-only ones. The original
+ * twelve pairs and five dark-only are CHM-6's "What" and CHM-62; the five
+ * pairs and fourteen dark-only after them were each measured through
+ * buildThemePack before being curated, not chosen by reputation — see the
+ * note in CURATED_SCHEMES on the ones that were measured and rejected.
+ */
+const EXPECTED_CURATED_COUNT = 53;
+
+/** PaperColor light + dark, TangoTango, Turtles, and three variants each of Cyberdream and Bamboo — the ten built from outside the vendored collection. */
+const EXPECTED_EXTERNAL_COUNT = 10;
 
 /** A built pack alongside the source scheme it was built from — describeAnsiRepairs needs both, to diff shipped against upstream. */
 interface BuiltPack {
@@ -97,14 +304,13 @@ interface BuiltPack {
   readonly pack: ThemePack;
 }
 
-function buildPackFor(entry: CuratedEntry): BuiltPack {
-  const scheme = readVendoredScheme(entry.fileName);
+function buildPackFor(scheme: Scheme, entry: PackEntry, attribution: PackAttribution): BuiltPack {
   const schemeToBuild = entry.displayName !== undefined ? { ...scheme, name: entry.displayName } : scheme;
-  const pack = buildThemePack(schemeToBuild, entry.family, ATTRIBUTION, entry.slug);
+  const pack = buildThemePack(schemeToBuild, entry.family, attribution, entry.slug);
 
   if (pack.manifest.appearance !== entry.appearance) {
     throw new Error(
-      `"${entry.fileName}" measures as ${pack.manifest.appearance}, but the curated table declares it ${entry.appearance}`,
+      `"${scheme.name}" measures as ${pack.manifest.appearance}, but its table entry declares it ${entry.appearance}`,
     );
   }
 
@@ -127,9 +333,20 @@ function buildAttributionDoc(packs: readonly ThemePack[]): string {
   );
   const familyLines = families.map((family) => `- ${family}`).join("\n");
 
+  const externalFamilies = EXTERNAL_SCHEMES.map((entry) => entry.family);
+  const externalLines = EXTERNAL_SCHEMES.filter(
+    (entry, index) => externalFamilies.indexOf(entry.family) === index,
+  )
+    .map(
+      (entry) =>
+        `- **${entry.family}** — [${entry.attribution.source}](${entry.attribution.sourceUrl}) ` +
+        `(${entry.attribution.license}), pinned to commit \`${entry.attribution.commit}\``,
+    )
+    .join("\n");
+
   return `# Attribution
 
-Every pack under themes/ is adapted from a scheme in
+Most packs under themes/ are adapted from a scheme in
 [${ATTRIBUTION.source}](${ATTRIBUTION.sourceUrl}) (${ATTRIBUTION.license}), pinned to
 commit \`${ATTRIBUTION.commit}\`. Copyright in each individual theme belongs to its
 own author; see LICENSE in this directory for the upstream collection's licence.
@@ -138,6 +355,36 @@ Colours here are not byte-for-byte the upstream scheme — Chameleon's contrast
 engine (src/palette/) measures every role against its own floor and repairs
 whatever fails before a pack ships. See CLAUDE.md, "Never ship a colour that
 fails its contrast floor".
+
+## Sources outside that collection
+
+Five families are not in it and come from their own pinned sources. Each pack's
+own manifest carries the attribution it was built from, so nothing here is
+credited to a collection it did not come from.
+
+${externalLines}
+
+The PaperColor packs are decoded from a Terminal.app port rather than from
+NLKNguyen's Vim theme, which has no usable ANSI mapping of its own. The port
+is not taken on trust: every one of its 16 slots is checked against the
+vendored PaperColor.vim's own \`color00\`..\`color15\` at build time. See
+vendor/papercolor-theme/SOURCE.txt and vendor/papercolor-terminal-app/SOURCE.txt.
+
+The TangoTango pack takes its normal 8 ANSI slots and its background,
+foreground, cursor and selection from juba's Emacs theme, which is
+**GPL-3.0-or-later** where Chameleon itself is MIT — those bare colour values
+are the whole of what is used from it. Its bright 8, which the Emacs theme does
+not define, come from "Builtin Tango Dark" in the MIT collection above. See
+vendor/tangotango/SOURCE.txt.
+
+The Cyberdream and Bamboo packs are read from each theme's own Alacritty
+export, published by the theme itself rather than by a third party. That is
+why neither needs the kind of verification pass PaperColor does: the export
+*is* upstream, and its 16 ANSI slots are authoritative and correctly named.
+Alacritty carries no cursor colour unless a theme sets one and neither does,
+so the cursor is seeded from foreground; Bamboo sets no selection colour
+either, so that is seeded from its background and resolved from the accent.
+See vendor/cyberdream-nvim/SOURCE.txt and vendor/bamboo-nvim/SOURCE.txt.
 
 ## Families
 
@@ -220,11 +467,17 @@ function describeBodyNudge({ scheme, pack }: BuiltPack): string | undefined {
  * the 606-scheme vendor library this reads from.
  */
 function main(): void {
-  if (CURATED_SCHEMES.length !== EXPECTED_PACK_COUNT) {
-    throw new Error(`expected ${EXPECTED_PACK_COUNT} curated schemes, the table has ${CURATED_SCHEMES.length}`);
+  if (CURATED_SCHEMES.length !== EXPECTED_CURATED_COUNT) {
+    throw new Error(`expected ${EXPECTED_CURATED_COUNT} curated schemes, the table has ${CURATED_SCHEMES.length}`);
+  }
+  if (EXTERNAL_SCHEMES.length !== EXPECTED_EXTERNAL_COUNT) {
+    throw new Error(`expected ${EXPECTED_EXTERNAL_COUNT} external schemes, the table has ${EXTERNAL_SCHEMES.length}`);
   }
 
-  const built = CURATED_SCHEMES.map(buildPackFor);
+  const built = [
+    ...CURATED_SCHEMES.map((entry) => buildPackFor(readVendoredScheme(entry.fileName), entry, ATTRIBUTION)),
+    ...EXTERNAL_SCHEMES.map((entry) => buildPackFor(entry.readScheme(), entry, entry.attribution)),
+  ];
   const packs = built.map((entry) => entry.pack);
 
   const slugs = packs.map((pack) => pack.manifest.slug);

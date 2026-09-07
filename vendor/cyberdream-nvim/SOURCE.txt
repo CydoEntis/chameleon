@@ -1,0 +1,20 @@
+Source:  https://github.com/scottmckendry/cyberdream.nvim
+Commit:  39e1fda12c0704e01029b286a4c7e77e33a0c5cd
+License: MIT (LICENSE in this directory, copied from upstream)
+
+The three .toml files are copied unmodified from that commit's
+extras/alacritty/. They are the theme author's own Alacritty exports, which
+is why this source needs no verification pass of the kind
+vendor/papercolor-theme exists to provide: unlike a third-party port, these
+are published by the theme itself and carry its 16 ANSI slots, background,
+foreground and selection directly.
+
+Read at build time by readAlacrittyScheme in tools/external-scheme-sources.ts.
+Build-time only, like every other vendor/ directory — nothing ships or reads
+these at runtime. To update, vendor a newer pinned commit and update the SHA
+above; do not hand-edit the files.
+
+Alacritty carries no cursor colour unless a theme sets one and none of these
+do, so the cursor is seeded from foreground — see the note in
+external-scheme-sources.ts on why that is a sourced fallback rather than a
+guess.

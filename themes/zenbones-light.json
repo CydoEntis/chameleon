@@ -1,0 +1,61 @@
+{
+  "manifest": {
+    "slug": "zenbones-light",
+    "name": "Zenbones Light",
+    "family": "Zenbones",
+    "appearance": "light",
+    "attribution": {
+      "source": "mbadolato/iTerm2-Color-Schemes",
+      "sourceUrl": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "commit": "752a9c079396cc9939b86e893578ed81e80c140f",
+      "license": "MIT"
+    }
+  },
+  "payloads": {
+    "windows-terminal": {
+      "name": "Zenbones Light",
+      "black": "#a8a5a4",
+      "red": "#a8334c",
+      "green": "#4f6c31",
+      "yellow": "#944927",
+      "blue": "#286486",
+      "purple": "#88507d",
+      "cyan": "#3b8992",
+      "white": "#2c363c",
+      "brightBlack": "#b5a7a0",
+      "brightRed": "#94253e",
+      "brightGreen": "#3f5a22",
+      "brightYellow": "#803d1c",
+      "brightBlue": "#1d5573",
+      "brightPurple": "#7b3b70",
+      "brightCyan": "#2b747c",
+      "brightWhite": "#4f5e68",
+      "background": "#f0edec",
+      "foreground": "#2c363c",
+      "cursorColor": "#2c363c",
+      "selectionBackground": "#0ea8ff"
+    },
+    "oh-my-posh": {
+      "ground": "#f0edec",
+      "body": "#2c363c",
+      "accent": "#286486",
+      "muted": "#91837c",
+      "success": "#4f6c31",
+      "error": "#944927"
+    },
+    "herdr": {
+      "ground": "#f0edec",
+      "body": "#2c363c",
+      "accent": "#205c7e",
+      "muted": "#5a4c45",
+      "success": "#425f24",
+      "error": "#8c411f",
+      "selection_bg": "#0ea8ff"
+    },
+    "statusline": {
+      "context": "#25737c",
+      "fiveHour": "#944927",
+      "sevenDay": "#4f6c31"
+    }
+  }
+}
