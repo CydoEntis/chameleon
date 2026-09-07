@@ -3,7 +3,7 @@ import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, T
 import { repairAnsiSlots, repairCursorColor, type AnsiSlotName } from "./ansi.js";
 import { contrastRatio, mix } from "./color.js";
 import { toPalette, type Appearance } from "./palette.js";
-import { repairFailingRoles } from "./repair.js";
+import { repairFailingRoles, repairForegroundAgainstBackgrounds } from "./repair.js";
 import { assignRolesByContrast } from "./roles.js";
 import { resolveSelectionAndBody } from "./selection.js";
 import {
@@ -78,6 +78,26 @@ export interface ThemePackPayloads {
   readonly "windows-terminal": Scheme;
   readonly "oh-my-posh": Readonly<Record<Role, string>>;
   readonly herdr: Readonly<Record<Role, string>> & { readonly selection_bg: string };
+  readonly statusline: StatuslineMeterHexes;
+}
+
+/**
+ * `chm statusline`'s own three meter colours — context, 5-hour and 7-day
+ * (CHM-89). The six roles have no colour left to spare for three more that
+ * must also stay distinct from one another (accent and body are already
+ * spoken for by the model name and directory segment, success by the git
+ * branch, and muted — the one role left — is what all three meters
+ * collapsed onto before this fix, reading as one undifferentiated colour
+ * across the bulk of the line). Resolved the same way
+ * adapters/herdr.ts's badge tokens are — drawn from the scheme's own base
+ * ANSI slots rather than invented (see resolveStatuslineMeterHexes) — so
+ * they still come from the active pack and still change when the theme
+ * does.
+ */
+export interface StatuslineMeterHexes {
+  readonly context: string;
+  readonly fiveHour: string;
+  readonly sevenDay: string;
 }
 
 export interface ThemePack {
@@ -195,6 +215,54 @@ function assertAnsiSlotsClearFloor(slots: Readonly<Record<AnsiSlotName, string>>
 }
 
 /**
+ * `chm statusline`'s three meter colours, drawn from `windowsTerminalPayload`'s
+ * own repaired cyan, yellow and green ANSI slots — matching the reporter's
+ * own reference implementation's context/5h/7d mapping (CHM-89) — and
+ * repaired a second time against ground at TEXT_MIN_RATIO exactly the way
+ * repairHerdrAccentFamily repairs Herdr's accent family a second time
+ * against panel_bg: a slot cleared only to ANSI_MIN_RATIO is legible enough
+ * to tell apart from ground, not to read as running text, and a meter's own
+ * percentage is read, not skimmed past. Reading from the *repaired* ANSI
+ * slots rather than the raw scheme (the same source resolveHerdrBadgeTokens
+ * uses, via its own `scheme` parameter already carrying repairAnsiSlots'
+ * output) means a slot CHM-32 already had to move off an unreadable
+ * authored value is not started from unreadable a second time here.
+ */
+function resolveStatuslineMeterHexes(windowsTerminalPayload: Scheme, groundHex: string): StatuslineMeterHexes {
+  return {
+    context: repairForegroundAgainstBackgrounds(windowsTerminalPayload.cyan, [groundHex], TEXT_MIN_RATIO) ?? windowsTerminalPayload.cyan,
+    fiveHour: repairForegroundAgainstBackgrounds(windowsTerminalPayload.yellow, [groundHex], TEXT_MIN_RATIO) ?? windowsTerminalPayload.yellow,
+    sevenDay: repairForegroundAgainstBackgrounds(windowsTerminalPayload.green, [groundHex], TEXT_MIN_RATIO) ?? windowsTerminalPayload.green,
+  };
+}
+
+/**
+ * Fails loudly if a resolved meter colour does not clear TEXT_MIN_RATIO
+ * against ground, matches muted, or lands on the same hex as another
+ * meter — the same build-time gate as assertRoleClearsFloor, this time on
+ * CHM-89's own guarantees: a meter is read text, not de-emphasised, and
+ * three meters reading as one colour is the bug this ticket exists to fix.
+ */
+function assertStatuslineMeterHexesClearFloorAndDiffer(meterHexes: StatuslineMeterHexes, groundHex: string, mutedHex: string, schemeName: string): void {
+  for (const [meter, hex] of Object.entries(meterHexes)) {
+    const ratio = contrastRatio(hex, groundHex);
+    if (ratio < TEXT_MIN_RATIO) {
+      throw new Error(
+        `"${schemeName}" statusline meter "${meter}" measures ${ratio.toFixed(2)} against ground, below its floor of ${TEXT_MIN_RATIO}`,
+      );
+    }
+    if (hex === mutedHex) {
+      throw new Error(`"${schemeName}" statusline meter "${meter}" matches muted (${mutedHex}) — meters must never render in muted at their normal state`);
+    }
+  }
+
+  const distinctHexes = new Set(Object.values(meterHexes));
+  if (distinctHexes.size !== Object.keys(meterHexes).length) {
+    throw new Error(`"${schemeName}" statusline meters do not all differ from one another: ${JSON.stringify(meterHexes)}`);
+  }
+}
+
+/**
  * Fails loudly if any pair in CHM-79's own declared inventory (see
  * palette/surfaces.ts) measures under its floor — the general-purpose gate
  * this ticket adds, replacing the pattern every prior contrast ticket
@@ -297,6 +365,13 @@ export function buildThemePack(
     cursorColor: repairedCursorHex,
   };
 
+  // chm statusline's three meter colours (CHM-89) — drawn from this same
+  // repaired scheme, the way resolveHerdrBadgeTokens' badge tokens are, since
+  // the six roles above have no colour left to spare for three more that
+  // must also stay distinct from one another. See resolveStatuslineMeterHexes.
+  const statuslineMeterHexes = resolveStatuslineMeterHexes(windowsTerminalPayload, resolvedPalette.ground.hex);
+  assertStatuslineMeterHexesClearFloorAndDiffer(statuslineMeterHexes, resolvedPalette.ground.hex, resolvedPalette.muted.hex, scheme.name);
+
   // accent, green and red, and the four badge swatches, repaired a second
   // time against panel_bg (CHM-85): only Herdr paints these against it, and
   // moving panel_bg away from ground at all drops at least one of them below
@@ -360,6 +435,7 @@ export function buildThemePack(
       "windows-terminal": windowsTerminalPayload,
       "oh-my-posh": roleHexes,
       herdr: { ...herdrRoleHexes, selection_bg: selection.hex },
+      statusline: statuslineMeterHexes,
     },
   };
 }
@@ -372,6 +448,11 @@ const RoleHexTableSchema = z.object({
   muted: hexColor,
   success: hexColor,
   error: hexColor,
+});
+const StatuslineMeterHexesSchema = z.object({
+  context: hexColor,
+  fiveHour: hexColor,
+  sevenDay: hexColor,
 });
 
 /**
@@ -401,6 +482,7 @@ export const ThemePackSchema = z.object({
     "windows-terminal": SchemeSchema,
     "oh-my-posh": RoleHexTableSchema,
     herdr: RoleHexTableSchema.extend({ selection_bg: hexColor }),
+    statusline: StatuslineMeterHexesSchema,
   }),
 });
 

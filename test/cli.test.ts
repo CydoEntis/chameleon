@@ -227,6 +227,7 @@ function meterBar(wholePercent: number): string {
 describe("buildStatuslineText", () => {
   const catppuccinDark = loadCuratedThemePacks().find((pack) => pack.manifest.slug === "catppuccin-dark")!;
   const catppuccinRoleHexes = catppuccinDark.payloads["oh-my-posh"];
+  const catppuccinMeterHexes = catppuccinDark.payloads.statusline;
 
   const payload: StatuslinePayload = {
     model: { display_name: "Opus" },
@@ -235,14 +236,14 @@ describe("buildStatuslineText", () => {
   };
 
   it("colours each segment from the active pack's own roles, by name", () => {
-    const text = buildStatuslineText(payload, catppuccinRoleHexes, "main");
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, catppuccinMeterHexes, "main");
 
     expect(text).toBe(
       [
         `${sgrColorEscape(38, catppuccinRoleHexes.accent)}Opus${SGR_RESET}`,
         `${sgrColorEscape(38, catppuccinRoleHexes.body)}chameleon${SGR_RESET}`,
         `${sgrColorEscape(38, catppuccinRoleHexes.success)}main${SGR_RESET}`,
-        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}context ${meterBar(43)} 43%${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinMeterHexes.context)}context ${meterBar(43)} 43%${SGR_RESET}`,
       ].join("  ·  "),
     );
   });
@@ -250,30 +251,30 @@ describe("buildStatuslineText", () => {
   it("changes colours when the active pack changes, with no further action", () => {
     const tokyoNightLight = loadCuratedThemePacks().find((pack) => pack.manifest.slug === "tokyo-night-light")!;
 
-    const catppuccinText = buildStatuslineText(payload, catppuccinRoleHexes, "main");
-    const tokyoNightText = buildStatuslineText(payload, tokyoNightLight.payloads["oh-my-posh"], "main");
+    const catppuccinText = buildStatuslineText(payload, catppuccinRoleHexes, catppuccinMeterHexes, "main");
+    const tokyoNightText = buildStatuslineText(payload, tokyoNightLight.payloads["oh-my-posh"], tokyoNightLight.payloads.statusline, "main");
 
     expect(tokyoNightText).not.toBe(catppuccinText);
   });
 
   it("omits the branch segment entirely when there is none", () => {
-    const text = buildStatuslineText(payload, catppuccinRoleHexes, undefined);
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, catppuccinMeterHexes, undefined);
     expect(text).not.toContain("main");
   });
 
   it("omits the context meter entirely when the payload has none yet — null before the first API response, rather than rendering it at zero", () => {
-    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: null } }, catppuccinRoleHexes, undefined);
+    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: null } }, catppuccinRoleHexes, catppuccinMeterHexes, undefined);
     expect(text).not.toContain("context");
     expect(text).not.toContain("0%");
   });
 
   it("falls back to 'Claude Code' for the model name when the payload names none", () => {
-    const text = buildStatuslineText({}, catppuccinRoleHexes, undefined);
+    const text = buildStatuslineText({}, catppuccinRoleHexes, catppuccinMeterHexes, undefined);
     expect(text).toContain("Claude Code");
   });
 
   it("falls back to this process's own working directory when the payload could not be read at all", () => {
-    const text = buildStatuslineText(undefined, catppuccinRoleHexes, undefined);
+    const text = buildStatuslineText(undefined, catppuccinRoleHexes, catppuccinMeterHexes, undefined);
     expect(text).toContain(path.basename(process.cwd()));
   });
 
@@ -281,14 +282,14 @@ describe("buildStatuslineText", () => {
   // recorded as active is the ordinary case for a machine that never ran
   // `chm <theme>` yet, not an error.
   it("prints plain, uncoloured text when no pack has been recorded as active", () => {
-    const text = buildStatuslineText(payload, undefined, "main");
+    const text = buildStatuslineText(payload, undefined, undefined, "main");
 
     expect(text).not.toContain("\x1b[");
     expect(text).toBe(`Opus  ·  chameleon  ·  main  ·  context ${meterBar(43)} 43%`);
   });
 
   it("never contains a Nerd Font glyph — CLAUDE.md's own font-agnostic terminal output rule", () => {
-    const text = buildStatuslineText(payload, catppuccinRoleHexes, "main");
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, catppuccinMeterHexes, "main");
     const codePoints = Array.from(text).map((character) => character.codePointAt(0)!);
     // Nerd Font icons live in Unicode's Private Use Area (U+E000-U+F8FF);
     // nothing this command prints should ever fall inside it.
@@ -304,6 +305,7 @@ describe("buildStatuslineText", () => {
     const text = buildStatuslineText(
       { ...payload, context_window: { used_percentage: 42.6, total_input_tokens: 85200, context_window_size: 200000 } },
       catppuccinRoleHexes,
+      catppuccinMeterHexes,
       "main",
     );
 
@@ -316,6 +318,7 @@ describe("buildStatuslineText", () => {
     const text = buildStatuslineText(
       { ...payload, rate_limits: { five_hour: { used_percentage: 23.5 }, seven_day: { used_percentage: 41.2 } } },
       catppuccinRoleHexes,
+      catppuccinMeterHexes,
       "main",
     );
 
@@ -324,29 +327,39 @@ describe("buildStatuslineText", () => {
         `${sgrColorEscape(38, catppuccinRoleHexes.accent)}Opus${SGR_RESET}`,
         `${sgrColorEscape(38, catppuccinRoleHexes.body)}chameleon${SGR_RESET}`,
         `${sgrColorEscape(38, catppuccinRoleHexes.success)}main${SGR_RESET}`,
-        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}context ${meterBar(43)} 43%${SGR_RESET}`,
-        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}5h ${meterBar(24)} 24%${SGR_RESET}`,
-        `${sgrColorEscape(38, catppuccinRoleHexes.muted)}7d ${meterBar(41)} 41%${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinMeterHexes.context)}context ${meterBar(43)} 43%${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinMeterHexes.fiveHour)}5h ${meterBar(24)} 24%${SGR_RESET}`,
+        `${sgrColorEscape(38, catppuccinMeterHexes.sevenDay)}7d ${meterBar(41)} 41%${SGR_RESET}`,
       ].join("  ·  "),
     );
   });
 
   it("omits the 5-hour meter entirely when that window is absent from the payload, rather than rendering it at zero", () => {
-    const text = buildStatuslineText({ ...payload, rate_limits: { seven_day: { used_percentage: 41.2 } } }, catppuccinRoleHexes, "main");
+    const text = buildStatuslineText(
+      { ...payload, rate_limits: { seven_day: { used_percentage: 41.2 } } },
+      catppuccinRoleHexes,
+      catppuccinMeterHexes,
+      "main",
+    );
 
     expect(text).not.toContain("5h");
     expect(text).toContain("7d");
   });
 
   it("omits the 7-day meter entirely when that window is absent from the payload, rather than rendering it at zero", () => {
-    const text = buildStatuslineText({ ...payload, rate_limits: { five_hour: { used_percentage: 23.5 } } }, catppuccinRoleHexes, "main");
+    const text = buildStatuslineText(
+      { ...payload, rate_limits: { five_hour: { used_percentage: 23.5 } } },
+      catppuccinRoleHexes,
+      catppuccinMeterHexes,
+      "main",
+    );
 
     expect(text).toContain("5h");
     expect(text).not.toContain("7d");
   });
 
   it("omits both rate-limit meters when the payload carries no rate_limits at all — a plan with no rate limits, or before the first API response", () => {
-    const text = buildStatuslineText(payload, catppuccinRoleHexes, "main");
+    const text = buildStatuslineText(payload, catppuccinRoleHexes, catppuccinMeterHexes, "main");
     expect(text).not.toContain("5h");
     expect(text).not.toContain("7d");
   });
@@ -354,13 +367,40 @@ describe("buildStatuslineText", () => {
   // CHM-83's own "keep": a nearly exhausted window must read as urgent
   // rather than blend into the row.
   it("colours a meter in the pack's own error role once it reaches the 90 percent warning threshold", () => {
-    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: 90 } }, catppuccinRoleHexes, "main");
+    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: 90 } }, catppuccinRoleHexes, catppuccinMeterHexes, "main");
     expect(text).toContain(`${sgrColorEscape(38, catppuccinRoleHexes.error)}context ${meterBar(90)} 90%${SGR_RESET}`);
   });
 
-  it("still colours a meter muted just below the 90 percent warning threshold", () => {
-    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: 89 } }, catppuccinRoleHexes, "main");
-    expect(text).toContain(`${sgrColorEscape(38, catppuccinRoleHexes.muted)}context ${meterBar(89)} 89%${SGR_RESET}`);
+  it("still colours a meter in its own dedicated colour, never muted, just below the 90 percent warning threshold", () => {
+    const text = buildStatuslineText({ ...payload, context_window: { used_percentage: 89 } }, catppuccinRoleHexes, catppuccinMeterHexes, "main");
+    expect(text).toContain(`${sgrColorEscape(38, catppuccinMeterHexes.context)}context ${meterBar(89)} 89%${SGR_RESET}`);
+    expect(text).not.toContain(sgrColorEscape(38, catppuccinRoleHexes.muted));
+  });
+
+  // CHM-89's own bug: all three meters shared roleHexes.muted, so the line
+  // read as one undifferentiated colour across its own bulk despite every
+  // value coming from the pack. Real bundled packs, by slug, per
+  // CLAUDE.md's "colour tests use real schemes' real values" — every one of
+  // the 29, not a hand-picked few, since a collision on any single pack
+  // would reproduce the reported bug for whoever has that pack active.
+  it("colours the context, 5-hour and 7-day meters distinctly from one another, for every bundled pack", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const meterHexes = pack.payloads.statusline;
+      const text = buildStatuslineText(
+        { ...payload, rate_limits: { five_hour: { used_percentage: 23.5 }, seven_day: { used_percentage: 41.2 } } },
+        pack.payloads["oh-my-posh"],
+        meterHexes,
+        "main",
+      );
+
+      expect(new Set([meterHexes.context, meterHexes.fiveHour, meterHexes.sevenDay]).size, pack.manifest.slug).toBe(3);
+      expect(text, pack.manifest.slug).toContain(sgrColorEscape(38, meterHexes.context));
+      expect(text, pack.manifest.slug).toContain(sgrColorEscape(38, meterHexes.fiveHour));
+      expect(text, pack.manifest.slug).toContain(sgrColorEscape(38, meterHexes.sevenDay));
+    }
   });
 });
 
