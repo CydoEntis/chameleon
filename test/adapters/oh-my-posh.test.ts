@@ -1876,16 +1876,27 @@ describe("profile-parsing fallback when neither POSH_CONFIG nor POSH_THEME is se
     // literally, and the --config path carries a $env: reference — the two
     // things the first attempt at this fix missed.
     const fakeUserProfile = path.join(stateDir, "home");
-    const targetConfigPath = path.join(fakeUserProfile, ".config", "oh-my-posh", "chips-solarized-light.omp.json");
+    const configUnderProfile = path.join(".config", "oh-my-posh", "chips-solarized-light.omp.json");
+    const targetConfigPath = path.join(fakeUserProfile, configUnderProfile);
     writeTargetConfig(targetConfigPath);
     vi.stubEnv("USERPROFILE", fakeUserProfile);
 
+    // The --config value is joined with the host's own separator rather than
+    // written with literal backslashes. What this test is about is the two
+    // things the reporter's profile did — routing the binary through a
+    // variable, and putting an $env: reference inside the --config path — and
+    // neither depends on which separator that path uses. A hardcoded
+    // backslash made it a Windows-only test by accident: once
+    // $env:USERPROFILE expands, a backslash separates directories on Windows
+    // and is an ordinary filename character everywhere else, so the file was
+    // simply not where the lookup went looking. The exe line keeps its
+    // backslashes, since nothing ever resolves that path.
     const profilePath = path.join(stateDir, "profile.ps1");
     writeFileSync(
       profilePath,
       [
         String.raw`$ohMyPoshExe = "$env:LOCALAPPDATA\Programs\oh-my-posh\bin\oh-my-posh.exe"`,
-        String.raw`& $ohMyPoshExe init pwsh --config "$env:USERPROFILE\.config\oh-my-posh\chips-solarized-light.omp.json" | Invoke-Expression`,
+        `& $ohMyPoshExe init pwsh --config "$env:USERPROFILE${path.sep}${configUnderProfile}" | Invoke-Expression`,
       ].join("\n"),
       "utf8",
     );
