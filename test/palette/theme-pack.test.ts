@@ -59,21 +59,32 @@ describe("buildThemePack", () => {
     expect(contrastRatio(wtPayload.black, scheme.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
   });
 
-  it("resolves a role hex table for oh-my-posh and herdr, agreeing on every role but body and muted — herdr's own selection_bg is extra", () => {
+  it("resolves a role hex table for oh-my-posh and herdr, agreeing on ground, accent and success — herdr's own selection_bg is extra", () => {
     const scheme = readVendoredScheme("Dracula.json");
     const pack = buildThemePack(scheme, "Dracula", ATTRIBUTION);
 
-    // body and muted are herdr-specific: both are repaired a second time
-    // against the selected row's own background (CHM-50's
+    // body and muted are herdr-specific: both are eligible for a second
+    // repair against the selected row's own background (CHM-50's
     // resolveActiveRowAndText), on top of CHM-30's selection-vs-body nudge to
-    // body alone — see ThemePackPayloads' own doc comment.
-    for (const role of ROLES) {
-      if (role === "body" || role === "muted") continue;
+    // body alone — Dracula's own body happens to already clear every floor
+    // unrepaired, but muted does not. error is herdr-specific too (CHM-85):
+    // Dracula's own error measures only 4.53 against ground, and moving
+    // panel_bg away from ground at all — the fix this ticket exists for —
+    // drops that below TEXT_MIN_RATIO, so herdr's own copy is repaired a
+    // second time against panel_bg (see repairHerdrAccentFamily). accent and
+    // success both keep enough headroom over ground for Dracula's own
+    // panel_bg not to matter, so they still agree with oh-my-posh's copy —
+    // see ThemePackPayloads' own doc comment for the general rule.
+    for (const role of ["ground", "accent", "success"] as const) {
       expect(pack.payloads.herdr[role]).toBe(pack.payloads["oh-my-posh"][role]);
+    }
+    for (const role of ["muted", "error"] as const) {
+      expect(pack.payloads.herdr[role]).not.toBe(pack.payloads["oh-my-posh"][role]);
     }
     expect(pack.payloads.herdr.selection_bg).toMatch(/^#[0-9a-f]{6}$/i);
     for (const role of ROLES) {
       expect(pack.payloads["oh-my-posh"][role]).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(pack.payloads.herdr[role]).toMatch(/^#[0-9a-f]{6}$/i);
     }
   });
 
