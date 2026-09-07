@@ -7,7 +7,7 @@ and it does not generate palettes from a base colour.
 
 ## Read this first
 
-**[`.claude/references/code-standards.md`](.claude/references/code-standards.md)** — how code here
+**[`docs/code-standards.md`](docs/code-standards.md)** — how code here
 is shaped: naming, function shape, where logic lives, what gets a constant, what a test is for.
 This file is the rulebook; that one is the depth behind it. Read it before writing code, and work
 its checklist before saying you are done.
