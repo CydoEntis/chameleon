@@ -4,3 +4,8 @@ dist/
 *.tsbuildinfo
 .env
 .DS_Store
+
+# Agent and editor working directories. .claude/ in particular collects local
+# settings and session state; the one file under it that was real contributor
+# documentation now lives in docs/ instead.
+.claude/
