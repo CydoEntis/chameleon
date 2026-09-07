@@ -190,8 +190,13 @@ function lineEndOffsetInclusive(text: string, offset: number): number {
  * neighbour's own indentation and any comment attached to it survive
  * untouched: a naive removal that reformats whatever happens to sit next to
  * the edit is the same class of bug that shipped CHM-3 broken.
+ *
+ * Exported alongside `dedupeConflict`'s own use of it: windows-terminal.ts's
+ * dead-scheme-fork cleanup (CHM-91) also needs to drop one array element in
+ * place, without touching a marked block or dedupe's own "container already
+ * owns this" logic.
  */
-function removeNodeFromContainer(text: string, container: Node, node: Node): string {
+export function removeNodeFromContainer(text: string, container: Node, node: Node): string {
   const siblings = container.children ?? [];
   const index = siblings.indexOf(node);
   const previousSibling = index > 0 ? siblings[index - 1] : undefined;

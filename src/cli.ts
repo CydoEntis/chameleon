@@ -14,6 +14,7 @@ import {
   beginThemePreview,
   buildLayoutSegment,
   createDefaultOhMyPoshAdapter,
+  createWindowsTerminalAdapter,
   currentGitBranch,
   currentLockHolder,
   currentPack,
@@ -30,6 +31,7 @@ import {
   previewThemePackToFileTargets,
   prevPackSlug,
   readOhMyPoshLayout,
+  removeDeadWindowsTerminalSchemeForks,
   removeSegment,
   reorderSegment,
   reseedOhMyPoshOwnedConfig,
@@ -926,6 +928,39 @@ function runReseed(args: readonly string[]): number {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+/**
+ * `chm clean` — CHM-91: the supported way to remove the dead Windows
+ * Terminal scheme forks an earlier version of Chameleon could leave behind.
+ * Before this ticket's fix, applying a pack whose scheme name collided with
+ * one of Windows Terminal's own built-ins (the bundled "One Half Dark" pack
+ * among them) left a "<name> (modified N)" fork in schemes[] on every
+ * single apply — Windows Terminal created the fork, not Chameleon, so
+ * nothing before this ticket ever cleaned it back up. A machine that never
+ * hit the collision has nothing to clean, and this says so rather than
+ * writing a no-op file. Wrapped in the write lock (CHM-56) the same as
+ * every other command that changes a target's config on disk.
+ */
+function runClean(): number {
+  return runWithWriteLock("chm clean", () => {
+    try {
+      if (!createWindowsTerminalAdapter().detect()) {
+        process.stdout.write("chm clean: windows-terminal not found — nothing to clean\n");
+        return 0;
+      }
+      const removedCount = removeDeadWindowsTerminalSchemeForks();
+      process.stdout.write(
+        removedCount === 0
+          ? "chm clean: windows-terminal — nothing to clean\n"
+          : `chm clean: windows-terminal — removed ${removedCount} dead scheme fork${removedCount === 1 ? "" : "s"}\n`,
+      );
+      return 0;
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  });
 }
 
 /** `chm next` — cycles to the next pack in `chm themes` order, wrapping past the end, and applies it. */
@@ -1873,6 +1908,7 @@ chm original           put back everything, exactly as it was before Chameleon's
 chm doctor             what is installed
 chm edit ...           edit the Oh My Posh prompt layout
 chm reseed <path>      seed (or re-seed) the Oh My Posh config Chameleon owns from <path>
+chm clean              remove dead Windows Terminal scheme forks an earlier version left behind
 chm statusline         print one themed line for Claude Code's own status bar
 chm statusline on      have Chameleon manage Claude Code's statusLine, replacing whatever is there now
 chm statusline off     leave Claude Code's statusLine alone on every apply from now on
@@ -1904,6 +1940,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "doctor") return runDoctor();
   if (command === "edit") return runEdit(rest);
   if (command === "reseed") return runReseed(rest);
+  if (command === "clean") return runClean();
   if (command === "statusline") {
     if (rest[0] === "on") return runStatuslineOn();
     if (rest[0] === "off") return runStatuslineOff();
