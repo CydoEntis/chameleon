@@ -2189,6 +2189,143 @@ describe("explicit reseed lifts literal-hex foregrounds into palette keys on the
   });
 });
 
+// CHM-90: a lifted literal key carries no meaning of its own to protect —
+// unlike chips.omp.json's own c-git-ahead, nothing else in the config
+// depends on it staying in any particular hue family — so recolouring it
+// like a named key left it permanently red, or teal, under every pack it
+// was ever applied to. The three segments below land in each of
+// nearestRoleByHue's reachable buckets from a colour alone: "#ff0000" (pure
+// red) in error's own hue band, "#00ff00" (pure green) in success's, and
+// "#333333" (a near-neutral dark grey, chroma 0) below MIN_REPAIRED_CHROMA
+// entirely, in the lightness-only body/muted fallback. Each background is
+// "p:ground" rather than a literal hex, deliberately — unlike
+// literalHexOnlyConfigText's own segments — so repairSegmentForegrounds has
+// a real, resolvable background to check the recoloured foreground against.
+function literalForegroundsOnGroundConfigText(): string {
+  return JSON.stringify({
+    blocks: [
+      {
+        type: "prompt",
+        alignment: "left",
+        segments: [
+          { type: "path", foreground: "#ff0000", background: "p:ground" },
+          { type: "git", foreground: "#00ff00", background: "p:ground" },
+          { type: "text", foreground: "#333333", background: "p:ground" },
+        ],
+      },
+    ],
+  });
+}
+
+describe("a lifted literal key adopts each pack's own colours, never the hue family it was lifted with (CHM-90)", () => {
+  let stateDir: string;
+  let ownedConfigPath: string;
+  let profilePath: string;
+  let sourceConfigPath: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-chm90-"));
+    ownedConfigPath = path.join(stateDir, "chameleon.omp.json");
+    profilePath = path.join(stateDir, "profile.ps1");
+    sourceConfigPath = path.join(stateDir, "literal-hex-only.omp.json");
+    writeFileSync(sourceConfigPath, literalHexOnlyConfigText(), "utf8");
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("snaps a lifted literal key onto the destination pack's own resolved role colour, not a hue-family retint of it", () => {
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+    createOhMyPoshAdapter(ownedConfigPath, profilePath).apply(ZEROX96F_SCHEME);
+
+    const palette = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> }).palette;
+    const roleHexes = resolveRoleHexes(ZEROX96F_SCHEME);
+    // "#ff0000" (pure red, hue 0°) lands in error's own hue band; "#00ff00"
+    // (pure green, hue 120°) lands in success's — see role-mapping.ts's
+    // nearestRoleByHue. A hue-family retint of the colour it was lifted with
+    // (the pre-CHM-90 behaviour) would produce some other, merely
+    // reddish/greenish shade here, never these exact role hexes.
+    expect(palette["literal-ff0000"]).toBe(roleHexes.error);
+    expect(palette["literal-00ff00"]).toBe(roleHexes.success);
+  });
+
+  it("recolours a lifted literal key recognisably differently across at least three real, bundled packs applied in sequence", () => {
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+    const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+    const curatedPacks = loadCuratedThemePacks();
+    const packSlugs = ["everforest-dark", "one-half-dark", "dracula-dark"];
+
+    const literalKeyHexesBySlug = new Map<string, string>();
+    for (const slug of packSlugs) {
+      const pack = curatedPacks.find((candidate) => candidate.manifest.slug === slug);
+      expect(pack, `expected a bundled "${slug}" pack`).toBeDefined();
+      adapter.apply(pack!.payloads["windows-terminal"]);
+      const palette = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> }).palette;
+      literalKeyHexesBySlug.set(slug, palette["literal-ff0000"]!);
+    }
+
+    // Every one of the three packs' own colour for this one, single key —
+    // never two sharing a value, which a hue-family-preserving retint would
+    // happily produce (CHM-90's own bug report: everforest and one-half-dark
+    // rendered the exact same teal).
+    expect(new Set(literalKeyHexesBySlug.values()).size).toBe(packSlugs.length);
+  });
+
+  it("returns to the exact same colour for a pack after switching away and back — no compounding drift", () => {
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+    const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+    const curatedPacks = loadCuratedThemePacks();
+    const packA = curatedPacks.find((pack) => pack.manifest.slug === "everforest-dark")!;
+    const packB = curatedPacks.find((pack) => pack.manifest.slug === "one-half-dark")!;
+    expect(packA).toBeDefined();
+    expect(packB).toBeDefined();
+
+    adapter.apply(packA.payloads["windows-terminal"]);
+    const firstPackAPalette = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> }).palette;
+
+    adapter.apply(packB.payloads["windows-terminal"]);
+    adapter.apply(packA.payloads["windows-terminal"]);
+    const secondPackAPalette = (parseWritten(readFileSync(ownedConfigPath, "utf8")) as { palette: Record<string, string> }).palette;
+
+    // Without CHM-90's own seed-recorded originals, the second "packA" apply
+    // would recolour from packB's own already-recoloured value instead of
+    // the pristine "#ff0000"/"#00ff00" the key was actually lifted from, and
+    // drift a little further from packA's true colours every time.
+    expect(secondPackAPalette["literal-ff0000"]).toBe(firstPackAPalette["literal-ff0000"]);
+    expect(secondPackAPalette["literal-00ff00"]).toBe(firstPackAPalette["literal-00ff00"]);
+  });
+
+  it("clears TEXT_MIN_RATIO between a lifted literal key's own foreground and its own background, across every one of the same three packs", () => {
+    writeFileSync(sourceConfigPath, literalForegroundsOnGroundConfigText(), "utf8");
+    reseedOhMyPoshOwnedConfig(sourceConfigPath, ownedConfigPath);
+    const adapter = createOhMyPoshAdapter(ownedConfigPath, profilePath);
+    const curatedPacks = loadCuratedThemePacks();
+    const packSlugs = ["everforest-dark", "one-half-dark", "dracula-dark"];
+
+    for (const slug of packSlugs) {
+      const pack = curatedPacks.find((candidate) => candidate.manifest.slug === slug);
+      expect(pack, `expected a bundled "${slug}" pack`).toBeDefined();
+      adapter.apply(pack!.payloads["windows-terminal"]);
+
+      const resultText = readFileSync(ownedConfigPath, "utf8");
+      const resultPalette = (parseWritten(resultText) as { palette: Record<string, string> }).palette;
+      const checks = segmentContrastChecks(resultText, resultPalette);
+      expect(checks.length).toBe(3);
+
+      for (const { segmentType, foregroundKeys, backgroundHexes } of checks) {
+        for (const foregroundKey of foregroundKeys) {
+          const foregroundHex = resultPalette[foregroundKey]!;
+          for (const backgroundHex of backgroundHexes) {
+            const contrast = contrastRatio(foregroundHex, backgroundHex);
+            expect(contrast, `${slug} "${segmentType}": ${foregroundKey} (${foregroundHex}) on ${backgroundHex}`).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+          }
+        }
+      }
+    }
+  });
+});
+
 describe("a config that already uses palette keys is unaffected by the literal-hex lift (CHM-74)", () => {
   let stateDir: string;
   let configPath: string;
