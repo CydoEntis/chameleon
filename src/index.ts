@@ -89,7 +89,7 @@ export type { LoadedThemePack, ThemePackOrigin } from "./palette/theme-pack-libr
 export { loadCuratedThemePacks, mergeThemePacksBySlug } from "./palette/theme-pack-library.js";
 
 export type { WindowsTerminalAdapter, WindowsTerminalSettings } from "./adapters/windows-terminal.js";
-export { createWindowsTerminalAdapter, undoWindowsTerminal } from "./adapters/windows-terminal.js";
+export { createWindowsTerminalAdapter, removeDeadWindowsTerminalSchemeForks, undoWindowsTerminal } from "./adapters/windows-terminal.js";
 
 export type {
   Layout,

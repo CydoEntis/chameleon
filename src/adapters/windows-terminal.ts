@@ -12,6 +12,7 @@ import {
   detectLineEnding,
   findPropertyNode,
   parseJsonTree,
+  removeNodeFromContainer,
   requireNode,
   upsertMarkedBlock,
 } from "./marked-json-edit.js";
@@ -25,6 +26,38 @@ const STABLE_PACKAGE_FAMILY_NAME = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
 
 /** Suffix for the pre-apply copy of settings.json that `undoWindowsTerminal` restores from. */
 const BACKUP_FILE_SUFFIX = ".chameleon-backup";
+
+/**
+ * Prefix Chameleon puts on the name of every scheme it writes into
+ * schemes[] and points profiles.defaults.colorScheme at. Windows Terminal
+ * will not let one of its own built-in scheme names be redefined: it
+ * accepts the write, then silently forks the incoming scheme to "<name>
+ * (modified N)", repoints colorScheme at the fork, and rewrites the whole
+ * file through its own serialiser in the process — discarding the
+ * ch:begin/ch:end markers this adapter relies on to find its own block
+ * again. One bundled pack's own scheme name ("One Half Dark") collides with
+ * a Windows Terminal built-in of the same name; nothing about a future
+ * built-in, or a user's own hand-added scheme, guarantees no other bundled
+ * pack ever will. Prefixing every name Chameleon writes makes that
+ * collision impossible rather than merely unlikely today. See CHM-91.
+ */
+const CHAMELEON_SCHEME_NAME_PREFIX = "Chameleon: ";
+
+/** The name Chameleon actually writes to schemes[] and colorScheme for a scheme named `schemeName` — see CHAMELEON_SCHEME_NAME_PREFIX. */
+function windowsTerminalSchemeName(schemeName: string): string {
+  return `${CHAMELEON_SCHEME_NAME_PREFIX}${schemeName}`;
+}
+
+/**
+ * Matches the name Windows Terminal gives a scheme it forks when it will
+ * not let a built-in of the same name be redefined — "One Half Dark
+ * (modified 29)" forked from "One Half Dark" — capturing the name it was
+ * forked from. Only ever produced by Windows Terminal itself, on a
+ * settings.json this adapter wrote to before CHM-91's fix; nothing here
+ * writes a name shaped like this anymore. See
+ * removeDeadWindowsTerminalSchemeForks.
+ */
+const WINDOWS_TERMINAL_SCHEME_FORK_NAME_PATTERN = /^(.+) \(modified(?: \d+)?\)$/;
 
 /** winget's package identifier for Windows Terminal (stable), used to build the one-line install command `ch doctor` offers. */
 export const WINDOWS_TERMINAL_WINGET_PACKAGE_ID = "Microsoft.WindowsTerminal";
@@ -77,12 +110,14 @@ export function selectedFontFace(settings: WindowsTerminalSettings): string | un
 
 /**
  * Whether `settings`'s own colour scheme selection already matches `scheme`
- * — the same field applyWindowsTerminalScheme itself writes via
- * upsertDefaultColorScheme, so a mismatch means this target has drifted from
- * whatever pack `ch` last recorded as active. See CHM-27.
+ * — the same value applyWindowsTerminalScheme itself writes via
+ * upsertDefaultColorScheme (windowsTerminalSchemeName(scheme.name), not
+ * scheme.name itself — see CHAMELEON_SCHEME_NAME_PREFIX), so a mismatch
+ * means this target has drifted from whatever pack `ch` last recorded as
+ * active. See CHM-27.
  */
 export function windowsTerminalMatchesScheme(settings: WindowsTerminalSettings, scheme: Scheme): boolean {
-  return settings.profiles?.defaults?.["colorScheme"] === scheme.name;
+  return settings.profiles?.defaults?.["colorScheme"] === windowsTerminalSchemeName(scheme.name);
 }
 
 export interface WindowsTerminalAdapter {
@@ -270,10 +305,13 @@ function readWindowsTerminalSettings(settingsPath: string): WindowsTerminalSetti
 }
 
 /**
- * Backs up the current settings.json, then upserts `scheme` into schemes[],
- * points profiles.defaults.colorScheme at it, and sets the top-level theme
- * to the scheme's own appearance — all three edits scoped between
- * ch:begin/ch:end, everything else in the file untouched.
+ * Backs up the current settings.json, then upserts `scheme` — under
+ * windowsTerminalSchemeName(scheme.name), never scheme.name itself, so
+ * Windows Terminal never mistakes it for one of its own built-ins and forks
+ * it (CHM-91) — into schemes[], points profiles.defaults.colorScheme at it,
+ * and sets the top-level theme to the scheme's own appearance — all three
+ * edits scoped between ch:begin/ch:end, everything else in the file
+ * untouched.
  */
 function applyWindowsTerminalScheme(settingsPath: string, scheme: Scheme): void {
   if (!existsSync(settingsPath)) {
@@ -284,9 +322,10 @@ function applyWindowsTerminalScheme(settingsPath: string, scheme: Scheme): void 
 
   const originalText = readFileSync(settingsPath, "utf8");
   const appearance = toPalette(scheme).appearance;
+  const namedScheme: Scheme = { ...scheme, name: windowsTerminalSchemeName(scheme.name) };
 
-  const withScheme = upsertSchemesEntry(settingsPath, originalText, scheme);
-  const withColorScheme = upsertDefaultColorScheme(settingsPath, withScheme, scheme.name);
+  const withScheme = upsertSchemesEntry(settingsPath, originalText, namedScheme);
+  const withColorScheme = upsertDefaultColorScheme(settingsPath, withScheme, namedScheme.name);
   const withTheme = upsertTopLevelTheme(settingsPath, withColorScheme, appearance);
 
   writeFileSync(settingsPath, withTheme, "utf8");
@@ -355,4 +394,76 @@ export function undoWindowsTerminal(settingsPath: string | undefined = defaultWi
     throw new Error(`no backup found at ${backupPath} — nothing to undo`);
   }
   copyFileSync(backupPath, resolvedSettingsPath);
+}
+
+/** Every `name` string schemes[] entries actually carry, in document order — entries missing a readable name are silently skipped rather than a reason to fail the whole scan. */
+function schemeEntryNames(schemesNode: Node): string[] {
+  return (schemesNode.children ?? [])
+    .map((entry) => (entry.type === "object" ? findPropertyNode(entry, "name")?.children?.[1]?.value : undefined))
+    .filter((name): name is string => typeof name === "string");
+}
+
+/**
+ * Every schemes[] entry name that is a dead Windows Terminal fork left
+ * behind by CHM-91: shaped like a fork (WINDOWS_TERMINAL_SCHEME_FORK_NAME_PATTERN)
+ * *and* the name it was forked from still exists as another entry in the
+ * same array — which is only ever true of a fork Windows Terminal itself
+ * created, never a scheme a user happened to name with "(modified)" in it,
+ * since that name would not also match anything else present. `activeSchemeName`
+ * — whatever profiles.defaults.colorScheme currently names — is excluded
+ * even when it is shaped like a fork: this function only ever decides what
+ * is dead, and the entry actually selected right now is never that, no
+ * matter how it got there.
+ */
+function deadWindowsTerminalSchemeForkNames(schemesNode: Node, activeSchemeName: unknown): string[] {
+  const entryNames = schemeEntryNames(schemesNode);
+  const entryNameSet = new Set(entryNames);
+  return entryNames.filter((name) => {
+    if (name === activeSchemeName) return false;
+    const forkedFromName = WINDOWS_TERMINAL_SCHEME_FORK_NAME_PATTERN.exec(name)?.[1];
+    return forkedFromName !== undefined && entryNameSet.has(forkedFromName);
+  });
+}
+
+/** Removes the schemes[] entry named exactly `schemeName`, or returns `text` unchanged when no entry carries that name. */
+function removeSchemeEntryByName(settingsPath: string, text: string, schemeName: string): string {
+  const schemesNode = requireNode(settingsPath, parseJsonTree(settingsPath, text), ["schemes"], "array", 'a "schemes" array');
+  const entryNode = findSchemeEntryNode(schemesNode, schemeName);
+  if (!entryNode) return text;
+  return removeNodeFromContainer(text, schemesNode, entryNode);
+}
+
+/**
+ * `chm clean`'s Windows Terminal step: removes every dead scheme fork
+ * CHM-91 left behind — one "<name> (modified N)" entry in schemes[] per
+ * apply of a pack whose scheme name collided with a Windows Terminal
+ * built-in, before this ticket's fix stopped Windows Terminal from ever
+ * creating one. Backs up first, the same as every other write this adapter
+ * makes, and only writes at all when there is something to remove — a
+ * settings.json with no dead forks is left byte-for-byte untouched, not
+ * merely round-tripped. Whichever entry profiles.defaults.colorScheme
+ * currently names is never removed, even if it happens to be shaped like a
+ * fork (see deadWindowsTerminalSchemeForkNames) — this only ever cleans up
+ * what nothing points at anymore. Returns how many entries were removed.
+ */
+export function removeDeadWindowsTerminalSchemeForks(settingsPath: string | undefined = defaultWindowsTerminalSettingsPath()): number {
+  const resolvedSettingsPath = requireSettingsPath(settingsPath);
+  if (!existsSync(resolvedSettingsPath)) {
+    throw new Error(`no Windows Terminal settings.json found at ${resolvedSettingsPath}`);
+  }
+
+  const activeSchemeName = readWindowsTerminalSettings(resolvedSettingsPath).profiles?.defaults?.["colorScheme"];
+  const originalText = readFileSync(resolvedSettingsPath, "utf8");
+  const schemesNode = requireNode(resolvedSettingsPath, parseJsonTree(resolvedSettingsPath, originalText), ["schemes"], "array", 'a "schemes" array');
+  const deadForkNames = deadWindowsTerminalSchemeForkNames(schemesNode, activeSchemeName);
+  if (deadForkNames.length === 0) return 0;
+
+  copyFileSync(resolvedSettingsPath, backupPathFor(resolvedSettingsPath));
+  const updatedText = deadForkNames.reduce(
+    (text, forkName) => removeSchemeEntryByName(resolvedSettingsPath, text, forkName),
+    originalText,
+  );
+  writeFileSync(resolvedSettingsPath, updatedText, "utf8");
+
+  return deadForkNames.length;
 }
