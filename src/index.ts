@@ -4,7 +4,13 @@
  * tested without spawning a process.
  */
 
-import { claudeCodeMatchesAppearance, createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
+import {
+  claudeCodeMatchesAppearance,
+  createClaudeCodeAdapter,
+  describeStatusLine,
+  isClaudeCodeStatusLineEnabled,
+  undoClaudeCode,
+} from "./adapters/claude-code.js";
 import type { Role } from "./constants.js";
 import { checkLiveContrastInventory, type DoctorContrastReport } from "./doctor.js";
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
@@ -117,7 +123,14 @@ export type { HerdrAdapter, HerdrConfig } from "./adapters/herdr.js";
 export { createHerdrAdapter, undoHerdr } from "./adapters/herdr.js";
 
 export type { ClaudeCodeAdapter, ClaudeCodeSettings } from "./adapters/claude-code.js";
-export { createClaudeCodeAdapter, undoClaudeCode } from "./adapters/claude-code.js";
+export {
+  createClaudeCodeAdapter,
+  describeStatusLine,
+  disableClaudeCodeStatusLine,
+  enableClaudeCodeStatusLine,
+  isClaudeCodeStatusLineEnabled,
+  undoClaudeCode,
+} from "./adapters/claude-code.js";
 
 export type { OriginalSnapshot } from "./adapters/original-snapshot.js";
 export { defaultOriginalSnapshotPath, readOriginalSnapshot } from "./adapters/original-snapshot.js";
@@ -164,6 +177,12 @@ export interface DoctorTargetCheck {
   readonly installCommand: string | undefined;
 }
 
+/** `ch doctor`'s own Claude Code statusline row — see DoctorReport's own `claudeCodeStatusLine` doc comment. */
+export interface DoctorClaudeCodeStatusLineCheck {
+  readonly inUseDescription: string;
+  readonly isChameleonEnabled: boolean;
+}
+
 /** `ch doctor`'s Nerd Font row — installed and selected are different questions, see CLAUDE.md. */
 export interface DoctorNerdFontCheck {
   readonly isInstalled: boolean;
@@ -179,6 +198,8 @@ export interface DoctorReport {
   readonly drift: CurrentPackReport | undefined;
   /** Claude Code's own live "theme" value — undefined when it is not installed, or its settings.json cannot be read. See CHM-49's "reports which theme is set." */
   readonly claudeCodeTheme: string | undefined;
+  /** Which statusLine Claude Code is actually configured with right now, and whether Chameleon's own lifecycle choice to manage it is enabled or disabled — undefined when Claude Code is not installed, or its settings.json cannot be read. See CHM-86's "names which statusline is in use and whether Chameleon's is enabled or disabled." */
+  readonly claudeCodeStatusLine: DoctorClaudeCodeStatusLineCheck | undefined;
   /** Which config Chameleon owns for Oh My Posh, and which config it was seeded from — undefined before the very first seed. See CHM-74. */
   readonly ohMyPoshOwnedConfig: OhMyPoshOwnedConfigStatus | undefined;
   /** CHM-79's own gate, run against this machine's real config files rather than a bundled pack — see doctor.ts's checkLiveContrastInventory. */
@@ -251,6 +272,29 @@ function currentClaudeCodeTheme(): string | undefined {
   }
 }
 
+/**
+ * Claude Code's own live statusLine, described plainly, alongside whether
+ * Chameleon's own lifecycle choice to manage it is enabled or disabled —
+ * undefined when Claude Code is not installed or its settings.json cannot be
+ * read, the same "report the fact, never throw" contract currentClaudeCodeTheme
+ * already follows. CHM-86: these are two different facts a user can disagree
+ * about independently — Chameleon's management can be disabled while some
+ * other statusLine (its own last write, or one hand-edited back in) is what
+ * is actually running — so `chm doctor` names both rather than just one.
+ */
+function currentClaudeCodeStatusLine(): DoctorClaudeCodeStatusLineCheck | undefined {
+  try {
+    const claudeCodeAdapter = createClaudeCodeAdapter();
+    if (!claudeCodeAdapter.detect()) return undefined;
+    return {
+      inUseDescription: describeStatusLine(claudeCodeAdapter.read().statusLine),
+      isChameleonEnabled: isClaudeCodeStatusLineEnabled(),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function checkNerdFont(): DoctorNerdFontCheck {
   const isInstalled = detectSafely(detectNerdFontInstalled);
   const selectedFace = currentlySelectedFontFace();
@@ -294,6 +338,7 @@ export function runDoctorChecks(userThemeDir?: string, statePath?: string, previ
     nerdFont: checkNerdFont(),
     drift: currentPack(userThemeDir, statePath, previewStatePath),
     claudeCodeTheme: currentClaudeCodeTheme(),
+    claudeCodeStatusLine: currentClaudeCodeStatusLine(),
     ohMyPoshOwnedConfig: ohMyPoshOwnedConfigStatus(),
     contrast: checkLiveContrastInventory(),
   };

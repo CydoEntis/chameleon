@@ -10,6 +10,7 @@ import {
   buildTerminalResetSequence,
   createSettledFileTargetPreview,
   formatClaudeCodeRestartNote,
+  formatClaudeCodeStatusLineLine,
   formatDriftLine,
   formatLockHeldMessage,
   formatNoteworthyResultLines,
@@ -150,6 +151,29 @@ describe("formatOhMyPoshOwnedConfigLine", () => {
     const line = formatOhMyPoshOwnedConfigLine({ ownedConfigPath: "/home/me/.local/share/chameleon/chameleon.omp.json", seededFromPath: undefined });
     expect(line).toContain("/home/me/.local/share/chameleon/chameleon.omp.json");
     expect(line).toContain("unknown");
+  });
+});
+
+// CHM-86: "chm doctor names which statusline is in use and whether
+// Chameleon's is enabled or disabled" — two independent facts, so the row
+// must name both even when they disagree (Chameleon disabled, but its own
+// last write is still what Claude Code is running).
+describe("formatClaudeCodeStatusLineLine", () => {
+  it("says nothing when Claude Code is not installed or its settings.json cannot be read", () => {
+    expect(formatClaudeCodeStatusLineLine(undefined)).toBeUndefined();
+  });
+
+  it("names Chameleon's own statusline and that it is enabled", () => {
+    const line = formatClaudeCodeStatusLineLine({ inUseDescription: "Chameleon's own (chm statusline)", isChameleonEnabled: true });
+    expect(line).toContain("Chameleon's own (chm statusline)");
+    expect(line).toContain("enabled");
+    expect(line).not.toContain("disabled");
+  });
+
+  it("names a custom statusline and that Chameleon's is disabled", () => {
+    const line = formatClaudeCodeStatusLineLine({ inUseDescription: "a custom command (node ~/.claude/statusline.js)", isChameleonEnabled: false });
+    expect(line).toContain("a custom command (node ~/.claude/statusline.js)");
+    expect(line).toContain("disabled");
   });
 });
 

@@ -17,6 +17,8 @@ import {
   currentLockHolder,
   currentPack,
   didAnyTargetFail,
+  disableClaudeCodeStatusLine,
+  enableClaudeCodeStatusLine,
   findFamilySibling,
   isKnownRole,
   isSegmentType,
@@ -118,6 +120,19 @@ function formatNerdFontLine(nerdFont: DoctorNerdFontCheck): string {
 export function formatClaudeCodeRestartNote(isInstalled: boolean): string | undefined {
   if (!isInstalled) return undefined;
   return "  restart Claude Code to pick up a theme change — it reads its theme once, at startup";
+}
+
+/**
+ * `chm doctor`'s own Claude Code statusline row (CHM-86): which statusLine is
+ * actually configured right now, and whether Chameleon's own choice to
+ * manage it is enabled or disabled — two different facts, since a user can
+ * disable Chameleon's management while some other statusLine (its own last
+ * write, or one hand-edited back in) is still what is running. Undefined
+ * when Claude Code is not installed, or its settings.json cannot be read.
+ */
+export function formatClaudeCodeStatusLineLine(statusLine: DoctorReport["claudeCodeStatusLine"]): string | undefined {
+  if (!statusLine) return undefined;
+  return `  statusline: ${statusLine.inUseDescription} — Chameleon's own is ${statusLine.isChameleonEnabled ? "enabled" : "disabled"}`;
 }
 
 /**
@@ -240,6 +255,10 @@ function runDoctor(): number {
     }
     if (check.target === "claude-code" && check.isInstalled && report.claudeCodeTheme) {
       process.stdout.write(`  theme: ${report.claudeCodeTheme}\n`);
+    }
+    if (check.target === "claude-code" && check.isInstalled) {
+      const statusLineLine = formatClaudeCodeStatusLineLine(report.claudeCodeStatusLine);
+      if (statusLineLine) process.stdout.write(`${statusLineLine}\n`);
     }
     if (check.target === "claude-code") {
       const restartNote = formatClaudeCodeRestartNote(check.isInstalled);
@@ -488,6 +507,40 @@ function runStatusline(): number {
     process.stdout.write(`${path.basename(process.cwd())}\n`);
   }
   return 0;
+}
+
+/**
+ * `chm statusline on` (CHM-86): an explicit request, so it replaces whatever
+ * statusLine is configured right now, immediately — see
+ * enableClaudeCodeStatusLine — rather than waiting for the next apply, and
+ * records the choice so every apply from here on keeps it that way.
+ */
+function runStatuslineOn(): number {
+  try {
+    const notice = enableClaudeCodeStatusLine();
+    process.stdout.write(notice ? `chm statusline: enabled — ${notice}\n` : "chm statusline: enabled\n");
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/**
+ * `chm statusline off` (CHM-86): records that Chameleon should stop managing
+ * the statusLine, so every apply after this — a theme switch included —
+ * leaves the key exactly as it finds it. Never touches settings.json itself;
+ * see disableClaudeCodeStatusLine.
+ */
+function runStatuslineOff(): number {
+  try {
+    disableClaudeCodeStatusLine();
+    process.stdout.write("chm statusline: disabled — future applies will leave your statusLine alone\n");
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
 }
 
 /** The value following `flagName` in `args` — `chm edit`'s own flag values are always a single token, so this is all the parsing this command needs. */
@@ -1807,6 +1860,8 @@ chm doctor             what is installed
 chm edit ...           edit the Oh My Posh prompt layout
 chm reseed <path>      seed (or re-seed) the Oh My Posh config Chameleon owns from <path>
 chm statusline         print one themed line for Claude Code's own status bar
+chm statusline on      have Chameleon manage Claude Code's statusLine, replacing whatever is there now
+chm statusline off     leave Claude Code's statusLine alone on every apply from now on
 
 run \`chm themes\` to browse what you can apply
 `;
@@ -1835,7 +1890,11 @@ async function main(argv: string[]): Promise<number> {
   if (command === "doctor") return runDoctor();
   if (command === "edit") return runEdit(rest);
   if (command === "reseed") return runReseed(rest);
-  if (command === "statusline") return runStatusline();
+  if (command === "statusline") {
+    if (rest[0] === "on") return runStatuslineOn();
+    if (rest[0] === "off") return runStatuslineOff();
+    return runStatusline();
+  }
   if (command === "current") return runCurrent(rest);
   if (command === "undo") return runUndo();
   if (command === "original") return runOriginal();
