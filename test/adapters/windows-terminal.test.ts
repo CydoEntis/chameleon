@@ -85,6 +85,34 @@ const ONE_HALF_DARK_SCHEME: Scheme = parseScheme({
   selectionBackground: "#474e5d",
 });
 
+// "One Half Light" is One Half Dark's built-in sibling — also a Windows
+// Terminal built-in name, used alongside it in the CHM-92 fixtures below to
+// match the reporter's real settings.json, which carried forks of both. Real
+// vendored values — see vendor/iterm2-color-schemes/windows-terminal/"One Half Light".json.
+const ONE_HALF_LIGHT_SCHEME: Scheme = parseScheme({
+  name: "One Half Light",
+  black: "#383a42",
+  red: "#e45649",
+  green: "#50a14f",
+  yellow: "#c18401",
+  blue: "#0184bc",
+  purple: "#a626a4",
+  cyan: "#0997b3",
+  white: "#bababa",
+  brightBlack: "#4f525e",
+  brightRed: "#e06c75",
+  brightGreen: "#98c379",
+  brightYellow: "#d8b36e",
+  brightBlue: "#61afef",
+  brightPurple: "#c678dd",
+  brightCyan: "#56b6c2",
+  brightWhite: "#ffffff",
+  background: "#fafafa",
+  foreground: "#383a42",
+  cursorColor: "#a5b4e5",
+  selectionBackground: "#bfceff",
+});
+
 // "Campbell" is Windows Terminal's own default built-in scheme — real values,
 // matching the fixture's own pre-existing "Campbell" entry below.
 const CAMPBELL_SCHEME: Scheme = parseScheme({
@@ -609,6 +637,13 @@ describe("selectWindowsTerminalFont", () => {
 // CHM-91: the supported way to remove the dead "<name> (modified N)" scheme
 // forks an earlier version of Chameleon could leave behind — see
 // `runClean` in src/cli.ts, which this backs.
+//
+// CHM-92: the reporter's real settings.json carried 52 such forks and `chm
+// clean` found none of them, because the guard required the forked-from name
+// ("One Half Dark") to appear as its own entry in schemes[] — which it never
+// does for a Windows Terminal built-in. Built-ins live in the application,
+// not the file; every fixture below leaves them out of schemes[] on purpose,
+// the shape a real machine actually has.
 describe("removeDeadWindowsTerminalSchemeForks", () => {
   let settingsDir: string;
   let settingsPath: string;
@@ -622,32 +657,29 @@ describe("removeDeadWindowsTerminalSchemeForks", () => {
     rmSync(settingsDir, { recursive: true, force: true });
   });
 
-  /**
-   * A settings.json shaped like CHM-91's own reporter: Windows Terminal's
-   * real, untouched "One Half Dark" built-in, two dead forks it created
-   * applying that pack twice before this ticket's fix, and one genuinely
-   * unrelated scheme. `activeForkName` is whichever fork
-   * profiles.defaults.colorScheme currently names — the one a clean run
-   * must never remove, even though it is shaped exactly like the others.
-   */
-  function writeForkedSettings(activeForkName: string): void {
+  function writeSettings(colorScheme: string, schemes: Array<{ name: string }>): void {
     writeFileSync(
       settingsPath,
-      JSON.stringify(
-        {
-          profiles: { defaults: { colorScheme: activeForkName } },
-          schemes: [
-            ONE_HALF_DARK_SCHEME,
-            { ...ONE_HALF_DARK_SCHEME, name: "One Half Dark (modified)" },
-            { ...ONE_HALF_DARK_SCHEME, name: "One Half Dark (modified 2)" },
-            CAMPBELL_SCHEME,
-          ],
-        },
-        null,
-        2,
-      ),
+      JSON.stringify({ profiles: { defaults: { colorScheme } }, schemes }, null, 2),
       "utf8",
     );
+  }
+
+  /**
+   * A settings.json shaped like CHM-92's own reporter: no "One Half Dark"
+   * entry in schemes[] anywhere — Windows Terminal never writes its own
+   * built-in there — just the dead forks it created applying that pack
+   * repeatedly before CHM-91's fix, plus one genuinely unrelated scheme.
+   * `activeForkName` is whichever fork profiles.defaults.colorScheme
+   * currently names — the one a clean run must never remove, even though it
+   * is shaped exactly like the others.
+   */
+  function writeForkedSettings(activeForkName: string): void {
+    writeSettings(activeForkName, [
+      { ...ONE_HALF_DARK_SCHEME, name: "One Half Dark (modified)" },
+      { ...ONE_HALF_DARK_SCHEME, name: "One Half Dark (modified 2)" },
+      CAMPBELL_SCHEME,
+    ]);
   }
 
   it("removes every dead fork but the one profiles.defaults.colorScheme currently names", () => {
@@ -657,15 +689,69 @@ describe("removeDeadWindowsTerminalSchemeForks", () => {
 
     expect(removedCount).toBe(1);
     const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as { schemes: Array<{ name: string }> };
-    expect(parsed.schemes.map((s) => s.name)).toEqual(["One Half Dark", "One Half Dark (modified 2)", "Campbell"]);
+    expect(parsed.schemes.map((s) => s.name)).toEqual(["One Half Dark (modified 2)", "Campbell"]);
+  });
+
+  it("removes forks of a Windows Terminal built-in even though the built-in itself is absent from schemes[] (CHM-92)", () => {
+    // No "One Half Dark" entry anywhere in schemes[] — the exact shape the
+    // old guard could never match, since it required the built-in to be
+    // present as its own entry before trusting a fork of it was dead.
+    writeSettings("Campbell", [{ ...ONE_HALF_DARK_SCHEME, name: "One Half Dark (modified 7)" }, CAMPBELL_SCHEME]);
+
+    expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(1);
+
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as { schemes: Array<{ name: string }> };
+    expect(parsed.schemes.map((s) => s.name)).toEqual(["Campbell"]);
+  });
+
+  it("removes the reporter's 52 One Half forks from a settings.json matching the real machine (CHM-92)", () => {
+    const darkForkNames = Array.from({ length: 30 }, (_, i) => (i === 0 ? "One Half Dark (modified)" : `One Half Dark (modified ${i + 1})`));
+    const lightForkNames = Array.from({ length: 22 }, (_, i) => (i === 0 ? "One Half Light (modified)" : `One Half Light (modified ${i + 1})`));
+    expect(darkForkNames.length + lightForkNames.length).toBe(52);
+
+    writeSettings("Campbell", [
+      ...darkForkNames.map((name) => ({ ...ONE_HALF_DARK_SCHEME, name })),
+      ...lightForkNames.map((name) => ({ ...ONE_HALF_LIGHT_SCHEME, name })),
+      CAMPBELL_SCHEME,
+    ]);
+
+    expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(52);
+
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as { schemes: Array<{ name: string }> };
+    expect(parsed.schemes.map((s) => s.name)).toEqual(["Campbell"]);
+  });
+
+  it('never removes a scheme a user named "<something> (modified)" whose base is neither a known built-in nor present in schemes[]', () => {
+    writeSettings("Campbell", [{ ...ONE_HALF_DARK_SCHEME, name: "My Custom Theme (modified)" }, CAMPBELL_SCHEME]);
+    const originalText = readFileSync(settingsPath, "utf8");
+
+    expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(0);
+
+    expect(readFileSync(settingsPath, "utf8")).toBe(originalText);
+  });
+
+  it("still removes a fork of a user-defined scheme when the forked-from entry is present in schemes[] — unchanged from before CHM-92", () => {
+    const userScheme = { ...ONE_HALF_DARK_SCHEME, name: "My Custom Theme" };
+    writeSettings("Campbell", [userScheme, { ...userScheme, name: "My Custom Theme (modified)" }, CAMPBELL_SCHEME]);
+
+    expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(1);
+
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as { schemes: Array<{ name: string }> };
+    expect(parsed.schemes.map((s) => s.name)).toEqual(["My Custom Theme", "Campbell"]);
+  });
+
+  it("never removes whatever profiles.defaults.colorScheme currently names, even when it is a fork of a built-in", () => {
+    writeForkedSettings("One Half Dark (modified)");
+
+    const removedCount = removeDeadWindowsTerminalSchemeForks(settingsPath);
+
+    expect(removedCount).toBe(1);
+    const parsed = parseWritten(readFileSync(settingsPath, "utf8")) as { schemes: Array<{ name: string }> };
+    expect(parsed.schemes.map((s) => s.name)).toEqual(["One Half Dark (modified)", "Campbell"]);
   });
 
   it("removes nothing, and leaves the file untouched, when there are no dead forks", () => {
-    writeFileSync(
-      settingsPath,
-      JSON.stringify({ profiles: { defaults: { colorScheme: "Campbell" } }, schemes: [CAMPBELL_SCHEME] }, null, 2),
-      "utf8",
-    );
+    writeSettings("Campbell", [CAMPBELL_SCHEME]);
     const originalText = readFileSync(settingsPath, "utf8");
 
     expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(0);
@@ -674,11 +760,16 @@ describe("removeDeadWindowsTerminalSchemeForks", () => {
     expect(existsSync(`${settingsPath}.chameleon-backup`)).toBe(false);
   });
 
-  it("is idempotent — running it again after a clean finds nothing left to remove", () => {
+  it("is idempotent — running it again after a clean finds nothing left to remove, and writes nothing", () => {
     writeForkedSettings("One Half Dark (modified 2)");
     removeDeadWindowsTerminalSchemeForks(settingsPath);
+    const afterFirstClean = readFileSync(settingsPath, "utf8");
 
     expect(removeDeadWindowsTerminalSchemeForks(settingsPath)).toBe(0);
+
+    // Reporting nothing to remove must mean nothing was written, not just
+    // that the reported count happens to be zero.
+    expect(readFileSync(settingsPath, "utf8")).toBe(afterFirstClean);
   });
 
   it("backs up before writing, and undo restores the removed forks", () => {
