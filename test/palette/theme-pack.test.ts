@@ -262,6 +262,47 @@ describe("buildThemePack", () => {
     }
   });
 
+  // CHM-89: the statusline's context, 5-hour and 7-day meters all rendered
+  // in muted, so a line whose visual weight is three meters showed one
+  // colour across the bulk of it. These three checks are the acceptance
+  // criteria stated directly against the pack, not just against
+  // buildStatuslineText's own formatting — every one of the 29 bundled
+  // packs, not a hand-picked few, since a single failing pack reproduces
+  // the reported bug for whoever has it active.
+  it("gives every bundled pack three statusline meter colours that clear TEXT_MIN_RATIO against ground, for every one of the 29", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const groundHex = pack.payloads["oh-my-posh"].ground;
+      const { context, fiveHour, sevenDay } = pack.payloads.statusline;
+      for (const hex of [context, fiveHour, sevenDay]) {
+        expect(contrastRatio(hex, groundHex), pack.manifest.slug).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+      }
+    }
+  });
+
+  it("never gives a bundled pack a statusline meter equal to its own muted — the CHM-89 bug was all three meters rendering in muted", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const mutedHex = pack.payloads["oh-my-posh"].muted;
+      const { context, fiveHour, sevenDay } = pack.payloads.statusline;
+      expect([context, fiveHour, sevenDay], pack.manifest.slug).not.toContain(mutedHex);
+    }
+  });
+
+  it("gives every bundled pack three statusline meter colours that all differ from one another", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const { context, fiveHour, sevenDay } = pack.payloads.statusline;
+      expect(new Set([context, fiveHour, sevenDay]).size, pack.manifest.slug).toBe(3);
+    }
+  });
+
   it("omits attribution entirely when none is given — a user pack has no upstream to credit", () => {
     const scheme = readVendoredScheme("Dracula.json");
     const pack = buildThemePack(scheme, "Dracula");
