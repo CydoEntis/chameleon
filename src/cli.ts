@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   acquireLock,
   activePackRoleHexes,
+  activePackStatuslineMeterHexes,
   addSegment,
   ANSI_SLOT_NAMES,
   applyThemePack,
@@ -54,6 +55,7 @@ import {
   type Role,
   type Scheme,
   type SegmentType,
+  type StatuslineMeterHexes,
   type Target,
 } from "./index.js";
 
@@ -429,22 +431,25 @@ function buildMeterBar(wholePercent: number): string {
   return METER_FILLED_GLYPH.repeat(filledCount) + METER_EMPTY_GLYPH.repeat(METER_BAR_WIDTH - filledCount);
 }
 
-/** A meter at or above this percentage switches from muted to the pack's own error role — a nearly exhausted window must read as urgent rather than blend into the rest of the row (CHM-83, kept from the reporter's own script). */
+/** A meter at or above this percentage switches from its own meter colour to the pack's own error role — a nearly exhausted window must read as urgent rather than blend into the rest of the row (CHM-83, kept from the reporter's own script). */
 const METER_WARNING_THRESHOLD_PERCENT = 90;
 
 /**
  * One statusline meter — `label`, a filled/empty bar and the whole
  * percentage, deliberately never an absolute token count (CHM-83's own
- * reporter explicitly does not want those). Coloured from the active pack's
- * own muted role, the same de-emphasised colour the old plain percentage
- * segment used, except at or above METER_WARNING_THRESHOLD_PERCENT, where it
- * switches to the pack's own error role — the role Chameleon already reaches
- * for elsewhere on this codebase to flag something urgent (see
- * toPickerEntry's own errorHex), rather than a role invented just for this.
+ * reporter explicitly does not want those). Coloured from `meterHex` — one of
+ * the active pack's own three statusline meter colours (CHM-89's
+ * StatuslineMeterHexes, see buildStatuslineText) — except at or above
+ * METER_WARNING_THRESHOLD_PERCENT, where every meter switches to the same
+ * pack's own error role regardless of which meter it is: the role Chameleon
+ * already reaches for elsewhere on this codebase to flag something urgent
+ * (see toPickerEntry's own errorHex), rather than a role invented just for
+ * this. Before CHM-89, all three meters shared `roleHexes.muted` here, which
+ * is why they used to read as one undifferentiated colour.
  */
-function buildMeterSegment(roleHexes: Readonly<Record<Role, string>> | undefined, label: string, wholePercent: number): string {
+function buildMeterSegment(meterHex: string | undefined, errorHex: string | undefined, label: string, wholePercent: number): string {
   const isAtWarningThreshold = wholePercent >= METER_WARNING_THRESHOLD_PERCENT;
-  const hex = isAtWarningThreshold ? roleHexes?.error : roleHexes?.muted;
+  const hex = isAtWarningThreshold ? errorHex : meterHex;
   return paintStatuslineSegment(hex, `${label} ${buildMeterBar(wholePercent)} ${wholePercent}%`);
 }
 
@@ -454,17 +459,24 @@ function buildMeterSegment(roleHexes: Readonly<Record<Role, string>> | undefined
  * and a meter each for context-window, 5-hour and 7-day usage (CHM-83) —
  * every one of them omitted, never rendered at a false 0%, when the payload
  * does not carry it (see statuslineContextPercent/statuslineRateLimitPercent).
- * Coloured from the active pack's own accent/body/success/muted/error roles
- * (`roleHexes`) so the line can never show a colour the terminal itself is
- * not also showing (CHM-68) — plain text, no escape codes at all, when
- * `roleHexes` is undefined: no pack has ever been applied, or the recorded
- * one could not be loaded. `gitBranch` is the caller's own best-effort read
- * (see adapters/git.ts's currentGitBranch), passed in rather than read here
- * so this stays a pure formatter, testable without a real git repository.
+ * Coloured from the active pack's own accent/body/success/error roles
+ * (`roleHexes`) and its three dedicated statusline meter colours
+ * (`meterHexes` — CHM-89's StatuslineMeterHexes) so the line can never show a
+ * colour the terminal itself is not also showing (CHM-68) — plain text, no
+ * escape codes at all, when both are undefined: no pack has ever been
+ * applied, or the recorded one could not be loaded. Before CHM-89 all three
+ * meters shared `roleHexes.muted`, which read as one undifferentiated colour
+ * across the bulk of the line — `meterHexes` gives each its own, distinct
+ * colour instead, drawn from the pack the same way `roleHexes` is (see
+ * palette/theme-pack.ts's resolveStatuslineMeterHexes). `gitBranch` is the
+ * caller's own best-effort read (see adapters/git.ts's currentGitBranch),
+ * passed in rather than read here so this stays a pure formatter, testable
+ * without a real git repository.
  */
 export function buildStatuslineText(
   payload: StatuslinePayload | undefined,
   roleHexes: Readonly<Record<Role, string>> | undefined,
+  meterHexes: Readonly<StatuslineMeterHexes> | undefined,
   gitBranch: string | undefined,
 ): string {
   const modelName = payload?.model?.display_name ?? "Claude Code";
@@ -474,13 +486,13 @@ export function buildStatuslineText(
   if (gitBranch !== undefined) segments.push(paintStatuslineSegment(roleHexes?.success, gitBranch));
 
   const contextPercent = statuslineContextPercent(payload);
-  if (contextPercent !== undefined) segments.push(buildMeterSegment(roleHexes, "context", contextPercent));
+  if (contextPercent !== undefined) segments.push(buildMeterSegment(meterHexes?.context, roleHexes?.error, "context", contextPercent));
 
   const fiveHourPercent = statuslineRateLimitPercent(payload, "five_hour");
-  if (fiveHourPercent !== undefined) segments.push(buildMeterSegment(roleHexes, "5h", fiveHourPercent));
+  if (fiveHourPercent !== undefined) segments.push(buildMeterSegment(meterHexes?.fiveHour, roleHexes?.error, "5h", fiveHourPercent));
 
   const sevenDayPercent = statuslineRateLimitPercent(payload, "seven_day");
-  if (sevenDayPercent !== undefined) segments.push(buildMeterSegment(roleHexes, "7d", sevenDayPercent));
+  if (sevenDayPercent !== undefined) segments.push(buildMeterSegment(meterHexes?.sevenDay, roleHexes?.error, "7d", sevenDayPercent));
 
   return segments.join(STATUSLINE_SEGMENT_SEPARATOR);
 }
@@ -501,8 +513,9 @@ function runStatusline(): number {
   try {
     const payload = parseStatuslinePayload(readStatuslineStdin());
     const roleHexes = activePackRoleHexes();
+    const meterHexes = activePackStatuslineMeterHexes();
     const gitBranch = currentGitBranch(statuslineDirectory(payload));
-    process.stdout.write(`${buildStatuslineText(payload, roleHexes, gitBranch)}\n`);
+    process.stdout.write(`${buildStatuslineText(payload, roleHexes, meterHexes, gitBranch)}\n`);
   } catch {
     process.stdout.write(`${path.basename(process.cwd())}\n`);
   }

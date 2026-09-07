@@ -6,6 +6,7 @@ import { readActivePackState, writeActivePackState } from "../src/adapters/state
 import { shouldRestoreOriginalSelectionOnExit } from "../src/cli.js";
 import {
   activePackRoleHexes,
+  activePackStatuslineMeterHexes,
   applyThemePack,
   beginThemePreview,
   currentPack,
@@ -635,6 +636,41 @@ describe("activePackRoleHexes", () => {
     writeActivePackState("a-pack-that-got-deleted", statePath);
 
     expect(activePackRoleHexes(userThemeDir, statePath)).toBeUndefined();
+  });
+});
+
+// CHM-89: `chm statusline`'s three meter colours, read from the same
+// recorded-active pack activePackRoleHexes reads — the same "never disagree
+// with the terminal" contract, one behaviour test each rather than a full
+// re-run of every activePackRoleHexes case above.
+describe("activePackStatuslineMeterHexes", () => {
+  it("returns undefined when nothing has ever been applied", () => {
+    expect(activePackStatuslineMeterHexes(userThemeDir, statePath)).toBeUndefined();
+  });
+
+  it("returns the active pack's own three statusline meter colours, matching its own payload exactly", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
+
+    const { packs } = loadAllThemePacks(userThemeDir);
+    const catppuccinDark = packs.find((loaded) => loaded.pack.manifest.slug === "catppuccin-dark");
+
+    expect(activePackStatuslineMeterHexes(userThemeDir, statePath)).toEqual(catppuccinDark?.pack.payloads.statusline);
+  });
+
+  it("changes when the active pack changes, with no further action", () => {
+    applyThemePack("catppuccin-dark", userThemeDir, statePath, previewStatePath);
+    const catppuccinMeterHexes = activePackStatuslineMeterHexes(userThemeDir, statePath);
+
+    applyThemePack("tokyo-night-light", userThemeDir, statePath, previewStatePath);
+    const tokyoNightMeterHexes = activePackStatuslineMeterHexes(userThemeDir, statePath);
+
+    expect(tokyoNightMeterHexes).not.toEqual(catppuccinMeterHexes);
+  });
+
+  it("returns undefined when the recorded pack is no longer in the library", () => {
+    writeActivePackState("a-pack-that-got-deleted", statePath);
+
+    expect(activePackStatuslineMeterHexes(userThemeDir, statePath)).toBeUndefined();
   });
 });
 
