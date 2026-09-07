@@ -15,11 +15,11 @@ import type { Role } from "./constants.js";
 import { checkLiveContrastInventory, type DoctorContrastReport } from "./doctor.js";
 import { detectNerdFontInstalled, isNerdFontFamilyName, nerdFontInstallCommand } from "./adapters/fonts.js";
 import { currentGitBranch } from "./adapters/git.js";
-import { createHerdrAdapter, herdrMatchesRoleHexes, undoHerdr } from "./adapters/herdr.js";
+import { createHerdrAdapter, herdrMatchesScheme, undoHerdr } from "./adapters/herdr.js";
 import {
   createDefaultOhMyPoshAdapter,
   createOhMyPoshAdapter,
-  ohMyPoshMatchesRoleHexes,
+  ohMyPoshMatchesScheme,
   ohMyPoshOwnedConfigStatus,
   OH_MY_POSH_WINGET_PACKAGE_ID,
   undoOhMyPosh,
@@ -732,24 +732,36 @@ export function resyncInterruptedPreview(userThemeDir?: string, statePath?: stri
 
 /**
  * Whether `target`'s own live config already matches `payloads` — the exact
- * fields each adapter's own apply writes, so a mismatch means this target
+ * values each adapter's own apply writes, so a mismatch means this target
  * has drifted from the pack it is being compared against (CHM-27). Only
  * ever called on a target already confirmed detected; see detectPackDrift.
  * `appearance` is the manifest's own, not a per-target payload — Claude Code
  * has no colour of its own to compare, only which of the six shipped themes
  * (see adapters/claude-code.ts) the pack's appearance maps to.
+ *
+ * oh-my-posh and herdr are checked against `payloads["windows-terminal"]` —
+ * the pack's own scheme, the exact argument applyToTarget hands their own
+ * `apply` — rather than against `payloads["oh-my-posh"]`/`payloads.herdr`
+ * themselves (CHM-88). Both of those adapters repair colours out of that
+ * scheme fresh on every apply, live, and a pack's own precomputed payload is
+ * only as correct as the last time its build step ran; comparing against it
+ * directly reported permanent, false drift the moment a repair shipped
+ * without every bundled pack being regenerated. windows-terminal needs no
+ * equivalent change: its own apply writes `payloads["windows-terminal"]`
+ * verbatim, so there is nothing for it to repair live that this comparison
+ * could fall behind.
  */
 function targetMatchesPack(target: Target, payloads: ThemePackPayloads, appearance: Appearance): boolean {
   if (target === "windows-terminal") {
     return windowsTerminalMatchesScheme(createWindowsTerminalAdapter().read(), payloads["windows-terminal"]);
   }
   if (target === "oh-my-posh") {
-    return ohMyPoshMatchesRoleHexes(createDefaultOhMyPoshAdapter().read(), payloads["oh-my-posh"]);
+    return ohMyPoshMatchesScheme(createDefaultOhMyPoshAdapter().read(), payloads["windows-terminal"]);
   }
   if (target === "claude-code") {
     return claudeCodeMatchesAppearance(createClaudeCodeAdapter().read(), appearance);
   }
-  return herdrMatchesRoleHexes(createHerdrAdapter().read(), payloads.herdr);
+  return herdrMatchesScheme(createHerdrAdapter().read(), payloads["windows-terminal"]);
 }
 
 /**

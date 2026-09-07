@@ -15,7 +15,7 @@ import {
   isSegmentType,
   layoutBlocksOnSide,
   moveSegmentBetweenBlocks,
-  ohMyPoshMatchesRoleHexes,
+  ohMyPoshMatchesScheme,
   ohMyPoshOwnedConfigStatus,
   readOhMyPoshLayout,
   removeSegment,
@@ -1550,7 +1550,16 @@ describe("recolouring reflects the destination theme, not the source (CHM-53)", 
 
 // CHM-27: this is the exact comparison `ch current`/`ch doctor` use to
 // notice a target that has drifted from the recorded pack.
-describe("ohMyPoshMatchesRoleHexes", () => {
+//
+// CHM-88: ohMyPoshMatchesScheme takes the pack's own scheme, not a
+// precomputed role table, and calls resolveRoleHexes(scheme) itself — the
+// same call applyOhMyPoshScheme makes — so a check can never fall behind a
+// pack's own stored "oh-my-posh" payload, which is only as fresh as the last
+// time that pack was built. Four bundled packs (ayu-light, everforest-light,
+// solarized-light, tokyo-night-light) already carried a stale payload by the
+// time this ticket was written, with nothing having rebuilt them since the
+// role-resolution pipeline last moved — see the regression test below.
+describe("ohMyPoshMatchesScheme", () => {
   let stateDir: string;
   let configPath: string;
   let profilePath: string;
@@ -1571,20 +1580,42 @@ describe("ohMyPoshMatchesRoleHexes", () => {
     const adapter = createOhMyPoshAdapter(configPath, profilePath);
     adapter.apply(ZEROX96F_SCHEME);
 
-    expect(ohMyPoshMatchesRoleHexes(adapter.read(), resolveRoleHexes(ZEROX96F_SCHEME))).toBe(true);
+    expect(ohMyPoshMatchesScheme(adapter.read(), ZEROX96F_SCHEME)).toBe(true);
   });
 
   it("does not match a scheme other than the one last applied", () => {
     const adapter = createOhMyPoshAdapter(configPath, profilePath);
     adapter.apply(ZEROX96F_SCHEME);
 
-    expect(ohMyPoshMatchesRoleHexes(adapter.read(), resolveRoleHexes(AARDVARK_BLUE_SCHEME))).toBe(false);
+    expect(ohMyPoshMatchesScheme(adapter.read(), AARDVARK_BLUE_SCHEME)).toBe(false);
   });
 
   it("does not match a config that was never themed by Chameleon at all", () => {
     const config = createOhMyPoshAdapter(configPath, profilePath).read();
 
-    expect(ohMyPoshMatchesRoleHexes(config, resolveRoleHexes(ZEROX96F_SCHEME))).toBe(false);
+    expect(ohMyPoshMatchesScheme(config, ZEROX96F_SCHEME)).toBe(false);
+  });
+
+  it("reports no drift for every bundled pack immediately after apply", () => {
+    const packs = loadCuratedThemePacks();
+    expect(packs.length).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const packStateDir = mkdtempSync(path.join(tmpdir(), "chameleon-oh-my-posh-drift-all-packs-"));
+      const packConfigPath = path.join(packStateDir, "theme.omp.json");
+      const packProfilePath = path.join(packStateDir, "Microsoft.PowerShell_profile.ps1");
+      writeFileSync(packConfigPath, LF_CONFIG_FIXTURE, "utf8");
+      writeFileSync(packProfilePath, LF_PROFILE_FIXTURE, "utf8");
+      try {
+        const adapter = createOhMyPoshAdapter(packConfigPath, packProfilePath);
+        const scheme = pack.payloads["windows-terminal"];
+        adapter.apply(scheme);
+
+        expect(ohMyPoshMatchesScheme(adapter.read(), scheme), pack.manifest.slug).toBe(true);
+      } finally {
+        rmSync(packStateDir, { recursive: true, force: true });
+      }
+    }
   });
 });
 
