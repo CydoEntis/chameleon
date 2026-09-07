@@ -1,17 +1,39 @@
 {
   "name": "@cydoentis/chameleon",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "One command retints your whole terminal - Windows Terminal, Oh My Posh and Herdr - from a single palette.",
-  "keywords": ["terminal", "theme", "oh-my-posh", "windows-terminal", "herdr", "colorscheme"],
+  "keywords": [
+    "terminal",
+    "theme",
+    "oh-my-posh",
+    "windows-terminal",
+    "herdr",
+    "colorscheme"
+  ],
   "license": "MIT",
   "author": "CydoEntis",
-  "repository": { "type": "git", "url": "git+https://github.com/CydoEntis/chameleon.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CydoEntis/chameleon.git"
+  },
+  "homepage": "https://github.com/CydoEntis/chameleon#readme",
+  "bugs": {
+    "url": "https://github.com/CydoEntis/chameleon/issues"
+  },
   "type": "module",
-  "engines": { "node": ">=20" },
-  "bin": { "chm": "dist/cli.js", "chameleon": "dist/cli.js" },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "chm": "dist/cli.js",
+    "chameleon": "dist/cli.js"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "themes"],
+  "files": [
+    "dist",
+    "themes"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
