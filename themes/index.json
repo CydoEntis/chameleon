@@ -172,5 +172,23 @@
     "name": "Ayu Dark",
     "family": "Ayu",
     "appearance": "dark"
+  },
+  {
+    "slug": "papercolor-dark",
+    "name": "PaperColor Dark",
+    "family": "PaperColor",
+    "appearance": "dark"
+  },
+  {
+    "slug": "papercolor-light",
+    "name": "PaperColor Light",
+    "family": "PaperColor",
+    "appearance": "light"
+  },
+  {
+    "slug": "tangotango",
+    "name": "TangoTango",
+    "family": "TangoTango",
+    "appearance": "dark"
   }
 ]

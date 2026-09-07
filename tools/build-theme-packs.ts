@@ -5,6 +5,7 @@ import { contrastRatio } from "../src/palette/color.js";
 import { buildThemePack, type PackAttribution, type ThemePack } from "../src/palette/theme-pack.js";
 import type { Appearance } from "../src/palette/palette.js";
 import type { Scheme } from "../src/palette/scheme.js";
+import { readPaperColorScheme, readTangoTangoScheme } from "./external-scheme-sources.js";
 import { readVendoredScheme } from "./vendor-scheme-library.js";
 
 // Resolved from process.cwd(), not import.meta.url — see the comment on
@@ -21,8 +22,24 @@ const ATTRIBUTION: PackAttribution = {
   license: "MIT",
 };
 
-interface CuratedEntry {
-  readonly fileName: string;
+/** Pinned to vendor/papercolor-terminal-app/SOURCE.txt — see that file for why a port supplies these two packs, and what verifies it against upstream. */
+const PAPERCOLOR_ATTRIBUTION: PackAttribution = {
+  source: "tomotargz/papercolor-terminal-app",
+  sourceUrl: "https://github.com/tomotargz/papercolor-terminal-app",
+  commit: "3b7a1c9ecc0642d355a2d73ba899a1ac2d18a0c7",
+  license: "MIT",
+};
+
+/** Pinned to vendor/tangotango/SOURCE.txt — see that file for which four values come from here and which come from the Tango scheme. */
+const TANGOTANGO_ATTRIBUTION: PackAttribution = {
+  source: "juba/color-theme-tangotango",
+  sourceUrl: "https://github.com/juba/color-theme-tangotango",
+  commit: "6202d4a19ac1def1b2596f1906c4524dd7303563",
+  license: "GPL-3.0-or-later",
+};
+
+/** What every pack declares about itself, whatever supplied its colours. */
+interface PackEntry {
   readonly family: string;
   /** The variant this ticket's build must produce — cross-checked against the source scheme's own measured appearance, so a wrong entry here fails the build instead of shipping a mislabeled pack. */
   readonly appearance: Appearance;
@@ -42,6 +59,23 @@ interface CuratedEntry {
    * (CHM-62).
    */
   readonly displayName?: string;
+}
+
+/** A pack built from the vendored iTerm2 collection, named by its file there. */
+interface CuratedEntry extends PackEntry {
+  readonly fileName: string;
+}
+
+/**
+ * A pack built from one of the two sources outside that collection, which
+ * carry their own reader and their own provenance. See
+ * tools/external-scheme-sources.ts for why these exist and what verifies
+ * them; the attribution travels with the entry so no pack can ever be
+ * credited to a collection it did not come from.
+ */
+interface ExternalEntry extends PackEntry {
+  readonly readScheme: () => Scheme;
+  readonly attribution: PackAttribution;
 }
 
 /**
@@ -88,8 +122,39 @@ const CURATED_SCHEMES: readonly CuratedEntry[] = [
   { fileName: "Ayu.json", family: "Ayu", appearance: "dark", slug: "ayu-dark-deep", displayName: "Ayu Dark" },
 ];
 
+/**
+ * The two families absent from the vendored collection, each read from its
+ * own pinned source. PaperColor ships both appearances; TangoTango is
+ * dark-only, and takes an explicit slug for the same reason Jellybeans does
+ * — it has no light sibling to distinguish it from.
+ */
+const EXTERNAL_SCHEMES: readonly ExternalEntry[] = [
+  {
+    readScheme: () => readPaperColorScheme("dark"),
+    family: "PaperColor",
+    appearance: "dark",
+    attribution: PAPERCOLOR_ATTRIBUTION,
+  },
+  {
+    readScheme: () => readPaperColorScheme("light"),
+    family: "PaperColor",
+    appearance: "light",
+    attribution: PAPERCOLOR_ATTRIBUTION,
+  },
+  {
+    readScheme: readTangoTangoScheme,
+    family: "TangoTango",
+    appearance: "dark",
+    slug: "tangotango",
+    attribution: TANGOTANGO_ATTRIBUTION,
+  },
+];
+
 /** The twelve two-appearance families plus Dracula, Monokai, Jellybeans, Shades Of Purple and Ayu Dark (all five dark-only) — see CHM-6's "What" and CHM-62. */
-const EXPECTED_PACK_COUNT = 29;
+const EXPECTED_CURATED_COUNT = 29;
+
+/** PaperColor light + dark and TangoTango, the three built from outside the vendored collection. */
+const EXPECTED_EXTERNAL_COUNT = 3;
 
 /** A built pack alongside the source scheme it was built from — describeAnsiRepairs needs both, to diff shipped against upstream. */
 interface BuiltPack {
@@ -97,14 +162,13 @@ interface BuiltPack {
   readonly pack: ThemePack;
 }
 
-function buildPackFor(entry: CuratedEntry): BuiltPack {
-  const scheme = readVendoredScheme(entry.fileName);
+function buildPackFor(scheme: Scheme, entry: PackEntry, attribution: PackAttribution): BuiltPack {
   const schemeToBuild = entry.displayName !== undefined ? { ...scheme, name: entry.displayName } : scheme;
-  const pack = buildThemePack(schemeToBuild, entry.family, ATTRIBUTION, entry.slug);
+  const pack = buildThemePack(schemeToBuild, entry.family, attribution, entry.slug);
 
   if (pack.manifest.appearance !== entry.appearance) {
     throw new Error(
-      `"${entry.fileName}" measures as ${pack.manifest.appearance}, but the curated table declares it ${entry.appearance}`,
+      `"${scheme.name}" measures as ${pack.manifest.appearance}, but its table entry declares it ${entry.appearance}`,
     );
   }
 
@@ -127,9 +191,20 @@ function buildAttributionDoc(packs: readonly ThemePack[]): string {
   );
   const familyLines = families.map((family) => `- ${family}`).join("\n");
 
+  const externalFamilies = EXTERNAL_SCHEMES.map((entry) => entry.family);
+  const externalLines = EXTERNAL_SCHEMES.filter(
+    (entry, index) => externalFamilies.indexOf(entry.family) === index,
+  )
+    .map(
+      (entry) =>
+        `- **${entry.family}** — [${entry.attribution.source}](${entry.attribution.sourceUrl}) ` +
+        `(${entry.attribution.license}), pinned to commit \`${entry.attribution.commit}\``,
+    )
+    .join("\n");
+
   return `# Attribution
 
-Every pack under themes/ is adapted from a scheme in
+Most packs under themes/ are adapted from a scheme in
 [${ATTRIBUTION.source}](${ATTRIBUTION.sourceUrl}) (${ATTRIBUTION.license}), pinned to
 commit \`${ATTRIBUTION.commit}\`. Copyright in each individual theme belongs to its
 own author; see LICENSE in this directory for the upstream collection's licence.
@@ -138,6 +213,27 @@ Colours here are not byte-for-byte the upstream scheme — Chameleon's contrast
 engine (src/palette/) measures every role against its own floor and repairs
 whatever fails before a pack ships. See CLAUDE.md, "Never ship a colour that
 fails its contrast floor".
+
+## Sources outside that collection
+
+Two families are not in it and come from their own pinned sources. Each pack's
+own manifest carries the attribution it was built from, so nothing here is
+credited to a collection it did not come from.
+
+${externalLines}
+
+The PaperColor packs are decoded from a Terminal.app port rather than from
+NLKNguyen's Vim theme, which has no usable ANSI mapping of its own. The port
+is not taken on trust: every one of its 16 slots is checked against the
+vendored PaperColor.vim's own \`color00\`..\`color15\` at build time. See
+vendor/papercolor-theme/SOURCE.txt and vendor/papercolor-terminal-app/SOURCE.txt.
+
+The TangoTango pack takes its normal 8 ANSI slots and its background,
+foreground, cursor and selection from juba's Emacs theme, which is
+**GPL-3.0-or-later** where Chameleon itself is MIT — those bare colour values
+are the whole of what is used from it. Its bright 8, which the Emacs theme does
+not define, come from "Builtin Tango Dark" in the MIT collection above. See
+vendor/tangotango/SOURCE.txt.
 
 ## Families
 
@@ -220,11 +316,17 @@ function describeBodyNudge({ scheme, pack }: BuiltPack): string | undefined {
  * the 606-scheme vendor library this reads from.
  */
 function main(): void {
-  if (CURATED_SCHEMES.length !== EXPECTED_PACK_COUNT) {
-    throw new Error(`expected ${EXPECTED_PACK_COUNT} curated schemes, the table has ${CURATED_SCHEMES.length}`);
+  if (CURATED_SCHEMES.length !== EXPECTED_CURATED_COUNT) {
+    throw new Error(`expected ${EXPECTED_CURATED_COUNT} curated schemes, the table has ${CURATED_SCHEMES.length}`);
+  }
+  if (EXTERNAL_SCHEMES.length !== EXPECTED_EXTERNAL_COUNT) {
+    throw new Error(`expected ${EXPECTED_EXTERNAL_COUNT} external schemes, the table has ${EXTERNAL_SCHEMES.length}`);
   }
 
-  const built = CURATED_SCHEMES.map(buildPackFor);
+  const built = [
+    ...CURATED_SCHEMES.map((entry) => buildPackFor(readVendoredScheme(entry.fileName), entry, ATTRIBUTION)),
+    ...EXTERNAL_SCHEMES.map((entry) => buildPackFor(entry.readScheme(), entry, entry.attribution)),
+  ];
   const packs = built.map((entry) => entry.pack);
 
   const slugs = packs.map((pack) => pack.manifest.slug);
