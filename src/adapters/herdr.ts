@@ -14,6 +14,7 @@ import {
   resolveActiveRowAndText,
   resolveHerdrBadgeTokens,
   resolvePanelBackground,
+  type HerdrAccentFamily,
 } from "../palette/surfaces.js";
 import type { Scheme } from "../palette/scheme.js";
 import { detectLineEnding } from "./marked-json-edit.js";
@@ -268,14 +269,25 @@ const HERDR_ACCEPTED_CUSTOM_TOKENS: ReadonlySet<string> = new Set([
 
 /**
  * Whether `config`'s own [theme.custom] tokens and [ui] accent already carry
- * every one of `roleHexes`' six role values, under Herdr's own token names —
- * the same keys customTokenValues and upsertUiAccent themselves write on
- * apply, so a mismatch means this target has drifted from whatever pack `ch`
- * last recorded as active. See CHM-27.
+ * every colour `scheme` would actually resolve to under Herdr's own token
+ * names, right now — the same values applyHerdrScheme itself writes (see
+ * resolveHerdrTheme), so a mismatch means this target has drifted from
+ * whatever pack `ch` last recorded as active. See CHM-27.
+ *
+ * This takes `scheme`, not a pack's own precomputed role table, and re-runs
+ * the same repair pipeline apply uses — CHM-88: a bundled pack's stored
+ * colours are only as fresh as the last time its own build step ran, and
+ * this pipeline has grown twice since (CHM-79's ANSI and cursor floors,
+ * CHM-85's panel_bg-aware accent family) without every bundled theme being
+ * regenerated. Comparing against the stored payload meant a machine that had
+ * just been correctly, freshly applied was reported as drifted, forever —
+ * the repair had moved a role off the payload's own value on purpose, and
+ * the payload never caught up.
  */
-export function herdrMatchesRoleHexes(config: HerdrConfig, roleHexes: Readonly<Record<Role, string>>): boolean {
-  const customTokensMatch = ROLES.every((role) => config.theme.custom[ROLE_TO_HERDR_TOKEN[role]] === roleHexes[role]);
-  return customTokensMatch && config.ui.accent === roleHexes.accent;
+export function herdrMatchesScheme(config: HerdrConfig, scheme: Scheme): boolean {
+  const { colorTable } = resolveHerdrTheme(scheme);
+  const customTokensMatch = ROLES.every((role) => config.theme.custom[ROLE_TO_HERDR_TOKEN[role]] === colorTable[role]);
+  return customTokensMatch && config.ui.accent === colorTable.accent;
 }
 
 function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, string>>): void {
@@ -642,86 +654,31 @@ function upsertMarkedTokens(text: string, eol: string, tableName: string, tokenV
 }
 
 /**
- * Every [theme.custom] token value Chameleon writes: the six roles under
- * Herdr's own token names (see ROLE_TO_HERDR_TOKEN), the resolved selection
- * highlight (see structuralTokenValues), plus the structural tokens derived
- * from `scheme` and `colorTable`'s ground/body — see structuralTokenValues.
- * accent, green, red and the four badge swatches are then overridden by
- * repairHerdrAccentFamily's own output (CHM-85): panel_bg is a second
- * background these render against that Windows Terminal and oh-my-posh never
- * do, and moving panel_bg away from ground at all drops at least one of them
- * below its floor for the majority of bundled packs (see that function's own
- * doc comment). Every key is asserted against HERDR_ACCEPTED_CUSTOM_TOKENS
- * before it reaches the config, so a future addition that invents a token
- * fails immediately instead of shipping a key Herdr silently ignores
- * (CHM-21).
- */
-function customTokenValues(
-  scheme: Scheme,
-  colorTable: Readonly<Record<Role, string>>,
-  activeRowBackgroundHex: string,
-  selectionHex: string,
-  panelBackgroundHex: string,
-): Record<string, string> {
-  const accentFamily = repairHerdrAccentFamily(colorTable, resolveHerdrBadgeTokens(scheme), colorTable.ground, panelBackgroundHex);
-  const tokenValues = {
-    ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
-    ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, selectionHex, panelBackgroundHex),
-    ...accentFamily,
-  };
-  assertOnlyAcceptedHerdrTokens(tokenValues);
-  return tokenValues;
-}
-
-/** Upserts every [theme.custom] token Chameleon owns — see customTokenValues. */
-function upsertCustomBlock(
-  text: string,
-  eol: string,
-  scheme: Scheme,
-  colorTable: Readonly<Record<Role, string>>,
-  activeRowBackgroundHex: string,
-  selectionHex: string,
-  panelBackgroundHex: string,
-): string {
-  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(scheme, colorTable, activeRowBackgroundHex, selectionHex, panelBackgroundHex));
-}
-
-/**
- * Upserts [ui]'s own `accent` — the key Herdr's borders and sidebar actually
- * read (see UI_ACCENT_KEY) — to `accentHex`. See upsertMarkedTokens.
- */
-function upsertUiAccent(text: string, eol: string, accentHex: string): string {
-  return upsertMarkedTokens(text, eol, "ui", { [UI_ACCENT_KEY]: accentHex });
-}
-
-/**
- * Backs up config.toml, then sets [theme].name to a real Herdr built-in for
- * `slug`, upserts every [theme.custom] token Chameleon owns (see
- * customTokenValues) under Herdr's own token names, and upserts [ui]'s own
- * `accent` to match — accent is the only colour key under [ui]; see CHM-23.
- * Every other [ui] setting, its comments included, is left untouched.
+ * Everything applyHerdrScheme resolves from `scheme` before it writes a
+ * single line: the six-role table under Herdr's own token names — ground and
+ * body/muted swapped for their active-row-repaired copies (CHM-50),
+ * accent/success/error swapped for their panel_bg-repaired copies (CHM-85) —
+ * alongside the full accent family (including the four badge swatches) and
+ * the three structural surfaces those repairs and structuralTokenValues both
+ * need. `colorTable` is exactly what ends up under ROLE_TO_HERDR_TOKEN's own
+ * names once written.
  *
- * The selection highlight — and, on the rare pack where ground and body
- * leave no room for a visible one, body itself — is resolved once here via
- * resolveSelectionAndBody (CHM-30). panel_bg is resolved next via
- * resolvePanelBackground (CHM-85), since Herdr paints it as the automatic
- * selection highlight's own fallback and it must clear the same kind of
- * visibility floor selection_bg does. The active row's own background and
- * its text/subtext0 tokens are then resolved together via
- * resolveActiveRowAndText (CHM-50), against both selection_bg and panel_bg.
- * All three are the exact pipeline buildThemePack runs at build time, so a
- * pack's live apply can never disagree with its own shipped payload.
+ * This is the one place that pipeline exists. applyHerdrScheme calls it to
+ * know what to write; herdrMatchesScheme calls it to know what a live config
+ * should already show — so a check can never compare against a value apply
+ * itself would not also produce (CHM-88), the way comparing against a pack's
+ * own precomputed payload could once this pipeline changed and the pack was
+ * never rebuilt.
  */
-function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
-  const resolvedConfigPath = requireConfigPath(configPath);
-  if (!existsSync(resolvedConfigPath)) {
-    throw new Error(`no Herdr config found at ${resolvedConfigPath}`);
-  }
+interface ResolvedHerdrTheme {
+  readonly colorTable: Readonly<Record<Role, string>>;
+  readonly accentFamily: HerdrAccentFamily;
+  readonly activeRowBackgroundHex: string;
+  readonly selectionHex: string;
+  readonly panelBackgroundHex: string;
+}
 
-  copyFileSync(resolvedConfigPath, backupPathFor(resolvedConfigPath));
-
-  const originalText = readFileSync(resolvedConfigPath, "utf8");
-  const eol = detectLineEnding(originalText);
+function resolveHerdrTheme(scheme: Scheme): ResolvedHerdrTheme {
   const resolvedRoleHexes = resolveRoleHexes(scheme);
   const { selection, body } = resolveSelectionAndBody(
     scheme.selectionBackground,
@@ -743,12 +700,92 @@ function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: 
     [selection.hex, panelBackground.hex],
     ACTIVE_ROW_IDEAL_FRACTION,
   );
-  const colorTable = { ...resolvedRoleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
-  const themeName = herdrThemeNameFor(slug, colorTable.ground);
+  const rowRepairedColorTable = { ...resolvedRoleHexes, body: rowAndText.textHex, muted: rowAndText.subtextHex };
+  const accentFamily = repairHerdrAccentFamily(rowRepairedColorTable, resolveHerdrBadgeTokens(scheme), rowRepairedColorTable.ground, panelBackground.hex);
+  const colorTable = { ...rowRepairedColorTable, accent: accentFamily.accent, success: accentFamily.green, error: accentFamily.red };
+
+  return {
+    colorTable,
+    accentFamily,
+    activeRowBackgroundHex: rowAndText.activeRowBackgroundHex,
+    selectionHex: selection.hex,
+    panelBackgroundHex: panelBackground.hex,
+  };
+}
+
+/**
+ * Every [theme.custom] token value Chameleon writes: the six roles under
+ * Herdr's own token names (see ROLE_TO_HERDR_TOKEN), the resolved selection
+ * highlight (see structuralTokenValues), plus the structural tokens derived
+ * from `resolvedTheme`'s own ground/body — see structuralTokenValues.
+ * accent, green, red and the four badge swatches are `resolvedTheme`'s own
+ * accentFamily (CHM-85): panel_bg is a second background these render
+ * against that Windows Terminal and oh-my-posh never do, and moving panel_bg
+ * away from ground at all drops at least one of them below its floor for the
+ * majority of bundled packs (see repairHerdrAccentFamily's own doc comment).
+ * Every key is asserted against HERDR_ACCEPTED_CUSTOM_TOKENS before it
+ * reaches the config, so a future addition that invents a token fails
+ * immediately instead of shipping a key Herdr silently ignores (CHM-21).
+ */
+function customTokenValues(resolvedTheme: ResolvedHerdrTheme): Record<string, string> {
+  const { colorTable, accentFamily, activeRowBackgroundHex, selectionHex, panelBackgroundHex } = resolvedTheme;
+  const tokenValues = {
+    ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
+    ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, selectionHex, panelBackgroundHex),
+    ...accentFamily,
+  };
+  assertOnlyAcceptedHerdrTokens(tokenValues);
+  return tokenValues;
+}
+
+/** Upserts every [theme.custom] token Chameleon owns — see customTokenValues. */
+function upsertCustomBlock(text: string, eol: string, resolvedTheme: ResolvedHerdrTheme): string {
+  return upsertMarkedTokens(text, eol, "theme.custom", customTokenValues(resolvedTheme));
+}
+
+/**
+ * Upserts [ui]'s own `accent` — the key Herdr's borders and sidebar actually
+ * read (see UI_ACCENT_KEY) — to `accentHex`. See upsertMarkedTokens.
+ */
+function upsertUiAccent(text: string, eol: string, accentHex: string): string {
+  return upsertMarkedTokens(text, eol, "ui", { [UI_ACCENT_KEY]: accentHex });
+}
+
+/**
+ * Backs up config.toml, then sets [theme].name to a real Herdr built-in for
+ * `slug`, upserts every [theme.custom] token Chameleon owns (see
+ * customTokenValues) under Herdr's own token names, and upserts [ui]'s own
+ * `accent` to match — accent is the only colour key under [ui]; see CHM-23.
+ * Every other [ui] setting, its comments included, is left untouched.
+ *
+ * The selection highlight — and, on the rare pack where ground and body
+ * leave no room for a visible one, body itself — is resolved via
+ * resolveSelectionAndBody (CHM-30). panel_bg is resolved next via
+ * resolvePanelBackground (CHM-85), since Herdr paints it as the automatic
+ * selection highlight's own fallback and it must clear the same kind of
+ * visibility floor selection_bg does. The active row's own background and
+ * its text/subtext0 tokens are then resolved together via
+ * resolveActiveRowAndText (CHM-50), against both selection_bg and panel_bg.
+ * All three run inside resolveHerdrTheme, the exact pipeline herdrMatchesScheme
+ * also runs (CHM-88), so a pack's live apply can never disagree with what a
+ * check of it expects.
+ */
+function applyHerdrScheme(configPath: string | undefined, scheme: Scheme, slug: string): void {
+  const resolvedConfigPath = requireConfigPath(configPath);
+  if (!existsSync(resolvedConfigPath)) {
+    throw new Error(`no Herdr config found at ${resolvedConfigPath}`);
+  }
+
+  copyFileSync(resolvedConfigPath, backupPathFor(resolvedConfigPath));
+
+  const originalText = readFileSync(resolvedConfigPath, "utf8");
+  const eol = detectLineEnding(originalText);
+  const resolvedTheme = resolveHerdrTheme(scheme);
+  const themeName = herdrThemeNameFor(slug, resolvedTheme.colorTable.ground);
 
   const withName = upsertThemeName(originalText, eol, themeName);
-  const withCustom = upsertCustomBlock(withName, eol, scheme, colorTable, rowAndText.activeRowBackgroundHex, selection.hex, panelBackground.hex);
-  const withUiAccent = upsertUiAccent(withCustom, eol, colorTable.accent);
+  const withCustom = upsertCustomBlock(withName, eol, resolvedTheme);
+  const withUiAccent = upsertUiAccent(withCustom, eol, resolvedTheme.colorTable.accent);
 
   writeFileSync(resolvedConfigPath, withUiAccent, "utf8");
 }

@@ -70,12 +70,23 @@ const OhMyPoshConfigSchema = z
 export type OhMyPoshConfig = z.infer<typeof OhMyPoshConfigSchema>;
 
 /**
- * Whether `config`'s own palette table already carries every one of
- * `roleHexes`' six role values — the same keys recoloredPaletteTable itself
- * writes on apply, so a missing or mismatched key means this target has
- * drifted from whatever pack `ch` last recorded as active. See CHM-27.
+ * Whether `config`'s own palette table already carries every one of the six
+ * role values `scheme` resolves to right now — the same
+ * `resolveRoleHexes(scheme)` call recoloredPaletteTable itself makes on
+ * apply, so a missing or mismatched key means this target has drifted from
+ * whatever pack `ch` last recorded as active. See CHM-27.
+ *
+ * This takes `scheme`, not a pack's own precomputed role table: CHM-88 found
+ * four bundled packs (ayu-light, everforest-light, solarized-light,
+ * tokyo-night-light) whose stored "oh-my-posh" payload no longer matched a
+ * fresh `resolveRoleHexes(scheme)` — the role-resolution pipeline had moved
+ * on since those packs were last built, and nothing rebuilt them. Comparing
+ * against that stale payload reported drift on a machine that had just been
+ * correctly, freshly applied. See adapters/herdr.ts's herdrMatchesScheme,
+ * which hit the same gap for the same reason.
  */
-export function ohMyPoshMatchesRoleHexes(config: OhMyPoshConfig, roleHexes: Readonly<Record<Role, string>>): boolean {
+export function ohMyPoshMatchesScheme(config: OhMyPoshConfig, scheme: Scheme): boolean {
+  const roleHexes = resolveRoleHexes(scheme);
   return ROLES.every((role) => config.palette?.[role] === roleHexes[role]);
 }
 

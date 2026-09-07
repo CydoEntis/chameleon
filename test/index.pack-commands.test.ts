@@ -46,8 +46,8 @@ const undoOhMyPoshMock = vi.fn();
 const undoHerdrMock = vi.fn();
 const undoClaudeCodeMock = vi.fn();
 const windowsTerminalMatchesSchemeMock = vi.fn();
-const ohMyPoshMatchesRoleHexesMock = vi.fn();
-const herdrMatchesRoleHexesMock = vi.fn();
+const ohMyPoshMatchesSchemeMock = vi.fn();
+const herdrMatchesSchemeMock = vi.fn();
 const claudeCodeMatchesAppearanceMock = vi.fn();
 
 vi.mock("../src/adapters/windows-terminal.js", () => ({
@@ -60,13 +60,13 @@ vi.mock("../src/adapters/windows-terminal.js", () => ({
 vi.mock("../src/adapters/oh-my-posh.js", () => ({
   createDefaultOhMyPoshAdapter: () => ohMyPoshAdapter,
   createOhMyPoshAdapter: () => ohMyPoshAdapter,
-  ohMyPoshMatchesRoleHexes: (...args: unknown[]) => ohMyPoshMatchesRoleHexesMock(...args),
+  ohMyPoshMatchesScheme: (...args: unknown[]) => ohMyPoshMatchesSchemeMock(...args),
   OH_MY_POSH_WINGET_PACKAGE_ID: "JanDeDobbeleer.OhMyPosh",
   undoOhMyPosh: () => undoOhMyPoshMock(),
 }));
 vi.mock("../src/adapters/herdr.js", () => ({
   createHerdrAdapter: () => herdrAdapter,
-  herdrMatchesRoleHexes: (...args: unknown[]) => herdrMatchesRoleHexesMock(...args),
+  herdrMatchesScheme: (...args: unknown[]) => herdrMatchesSchemeMock(...args),
   undoHerdr: () => undoHerdrMock(),
 }));
 vi.mock("../src/adapters/claude-code.js", () => ({
@@ -128,8 +128,8 @@ beforeEach(() => {
   undoHerdrMock.mockReset();
   undoClaudeCodeMock.mockReset();
   windowsTerminalMatchesSchemeMock.mockReset().mockReturnValue(true);
-  ohMyPoshMatchesRoleHexesMock.mockReset().mockReturnValue(true);
-  herdrMatchesRoleHexesMock.mockReset().mockReturnValue(true);
+  ohMyPoshMatchesSchemeMock.mockReset().mockReturnValue(true);
+  herdrMatchesSchemeMock.mockReset().mockReturnValue(true);
   claudeCodeMatchesAppearanceMock.mockReset().mockReturnValue(true);
   captureOriginalSnapshotIfMissingMock.mockReset();
   readOriginalSnapshotMock.mockReset();
@@ -575,7 +575,7 @@ describe("currentPack", () => {
   // surface that as drift on the succeeding target, not report a clean slug.
   it("reports drift on a target whose live config no longer matches the recorded pack", () => {
     writeActivePackState("catppuccin-dark", statePath);
-    ohMyPoshMatchesRoleHexesMock.mockReturnValue(false);
+    ohMyPoshMatchesSchemeMock.mockReturnValue(false);
 
     expect(currentPack(userThemeDir, statePath, previewStatePath)).toEqual({
       slug: "catppuccin-dark",
@@ -592,7 +592,7 @@ describe("currentPack", () => {
   // formatDriftLine/runCurrent) must be able to tell the two apart.
   it("reports previewInFlight when CHM-55's marker is on record, alongside whatever drift that preview caused", () => {
     writeActivePackState("catppuccin-dark", statePath);
-    ohMyPoshMatchesRoleHexesMock.mockReturnValue(false);
+    ohMyPoshMatchesSchemeMock.mockReturnValue(false);
     beginThemePreview("catppuccin-dark", previewStatePath);
 
     expect(currentPack(userThemeDir, statePath, previewStatePath)).toEqual({
@@ -749,7 +749,7 @@ describe("detectPackDrift", () => {
 
   it("never reports a target that is not installed as drift, even if it would otherwise disagree", () => {
     herdrAdapter.detect.mockReturnValue(false);
-    herdrMatchesRoleHexesMock.mockReturnValue(false);
+    herdrMatchesSchemeMock.mockReturnValue(false);
 
     expect(detectPackDrift("catppuccin-dark", userThemeDir)).toEqual([]);
   });
