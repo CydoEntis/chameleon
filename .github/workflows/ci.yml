@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch supersedes the first rather than queuing
+# behind it — the older run's result is never the one anyone wants.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Chameleon edits real config files, and the code paths that find them
+    # differ per OS: %APPDATA% against XDG, PowerShell profiles against
+    # ~/.zshrc, Windows Terminal existing at all. Running the suite on both a
+    # Windows and a Linux host is what keeps that half honest — the simulated
+    # runs below cover the branches, but only a real host proves the path
+    # handling underneath them.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # tsconfig.json covers src/ only; tools/ is what generates themes/, and
+      # a break there is invisible until someone regenerates.
+      - name: Typecheck the build tooling
+        run: npx tsc -p tsconfig.tools.json --noEmit
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  simulated-platforms:
+    # CHM-25/CHM-35: the suite also runs as though it were on the two hosts
+    # not in the matrix above, so a platform branch cannot regress unnoticed
+    # just because nobody owns that machine. See test/setup/platform-override.ts.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux, darwin]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:${{ matrix.platform }}
+
+  themes-are-current:
+    # themes/ is generated and committed, so it can silently fall behind the
+    # engine that produces it — which is exactly what happened when the Herdr
+    # surface repair changed and the packs were never rebuilt, shipping 24
+    # packs that did not match the code. Regenerating and diffing is what
+    # makes that impossible to merge again.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run generate:themes
+      - name: themes/ must match what generate:themes produces
+        run: git diff --exit-code -- themes/
