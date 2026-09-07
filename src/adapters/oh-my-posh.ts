@@ -6,7 +6,7 @@ import { parse as parseJsonc, type Node } from "jsonc-parser";
 import { z } from "zod";
 import { isKnownRole, ROLES, TEXT_MIN_RATIO, type Role } from "../constants.js";
 import { repairForegroundAgainstBackgrounds, resolveRoleHexes } from "../palette/repair.js";
-import { recoloredHexFor } from "../palette/role-mapping.js";
+import { recoloredHexFor, recoloredLiteralHexFor } from "../palette/role-mapping.js";
 import type { Scheme } from "../palette/scheme.js";
 import {
   buildPropertyBlockContent,
@@ -312,38 +312,56 @@ function upsertPaletteTable(configPath: string, text: string, paletteTable: Reco
 }
 
 /**
- * Recolours every key the config's existing palette already carries to the
- * new theme, and adds whichever of Chameleon's own six roles it does not
- * carry yet — never removing a key. See CHM-31: a real prompt defines its
- * own semantic keys and its segments reference those keys by name, not by
- * Chameleon's role names, so replacing the table with just the six roles
- * deleted every key the prompt actually used and left it colourless.
- *
- * A key Chameleon itself generated on a previous apply (see
- * isGeneratedOverrideKey) is dropped here rather than carried forward and
- * recoloured — repairSegmentForegrounds regenerates whichever of these this
- * apply still needs, from the true source key's own fresh colour, under the
- * same stable name. Carrying the old one forward instead is CHM-43's own
- * bug: a generated key recoloured like an ordinary source key, then
- * re-suffixed if it still failed, compounds one generation of "-legible" per
- * apply.
- *
- * A key that is already one of Chameleon's own roles (from a layout `ch
- * edit` built, or a previous apply) is recoloured by that same role, never
+ * The colour one key of an existing palette becomes on this apply. A key
+ * that is already one of Chameleon's own roles (from a layout `ch edit`
+ * built, or a previous apply) is recoloured by that same role, never
  * reclassified by its current colour — its name already says exactly what
- * it is. Every other key is recoloured by recoloredHexFor, which re-expresses
- * it in `targetScheme`'s own colour space rather than snapping it onto one of
- * six roles — see CHM-37: that snap once collapsed 46 of a real 47-key
- * prompt palette onto three or four colours, leaving its segments illegible.
- * `targetScheme` is what CHM-53 adds: recoloredHexFor needs the destination's
- * own base ANSI colours, not just its six resolved roles, to draw a foreign
- * key's new hue from — see role-mapping.ts's nearestHueFamilyHue.
+ * it is. A key CHM-74's literal-hex lift minted (see isLiteralLiftedKey) is
+ * recoloured by recoloredLiteralHexFor — a full snap onto one of
+ * `targetScheme`'s own resolved roles, never a hue-family retint, since a
+ * literal key carries no relationship to any other key worth protecting —
+ * see CHM-90. Every other key — a theme author's own semantic name, such as
+ * chips.omp.json's c-git-ahead — is recoloured by recoloredHexFor, which
+ * re-expresses it in `targetScheme`'s own colour space rather than snapping
+ * it onto one of six roles — see CHM-37: that snap once collapsed 46 of a
+ * real 47-key prompt palette onto three or four colours, leaving its
+ * segments illegible. `targetScheme` is what CHM-53 adds: recoloredHexFor
+ * needs the destination's own base ANSI colours, not just its six resolved
+ * roles, to draw a foreign key's new hue from — see role-mapping.ts's
+ * nearestHueFamilyHue.
+ */
+function recoloredForeignHex(key: string, hex: string, resolvedRoleHexes: Record<Role, string>, targetScheme: Scheme): string {
+  if (isKnownRole(key)) return resolvedRoleHexes[key];
+  if (isLiteralLiftedKey(key)) return recoloredLiteralHexFor(hex, resolvedRoleHexes);
+  return recoloredHexFor(key, hex, resolvedRoleHexes, targetScheme);
+}
+
+/**
+ * Recolours every key `existingPalette` carries to the new theme, and adds
+ * whichever of Chameleon's own six roles it does not carry yet — never
+ * removing a key. See CHM-31: a real prompt defines its own semantic keys
+ * and its segments reference those keys by name, not by Chameleon's role
+ * names, so replacing the table with just the six roles deleted every key
+ * the prompt actually used and left it colourless. See recoloredForeignHex
+ * for what each individual key becomes.
+ *
+ * `existingPalette` is never the config's own current, on-disk palette
+ * carried straight through — see recolorConfigInto's own
+ * originalForeignPalette, which reconciles it against every key's true
+ * original hex first (CHM-90). Recolouring the live, already-recoloured
+ * value here instead is the bug that ticket reports: a key drifting a
+ * little further from where it started every time the user switches packs,
+ * because each apply would otherwise recolour from whatever pack applied
+ * last, not from the one the key was actually authored under. A key
+ * Chameleon itself generated on a previous apply (see isGeneratedOverrideKey)
+ * is expected to already be absent from `existingPalette` by the time it
+ * reaches here — recolorConfigInto strips those before calling this, since
+ * the same generated-key-free value both recolours this apply and becomes
+ * next apply's own recorded original.
  */
 function recoloredPaletteTable(existingPalette: Record<string, string> | undefined, resolvedRoleHexes: Record<Role, string>, targetScheme: Scheme): Record<string, string> {
   const recoloredExisting = Object.fromEntries(
-    Object.entries(existingPalette ?? {})
-      .filter(([key]) => !isGeneratedOverrideKey(key))
-      .map(([key, hex]) => [key, isKnownRole(key) ? resolvedRoleHexes[key] : recoloredHexFor(key, hex, resolvedRoleHexes, targetScheme)]),
+    Object.entries(existingPalette ?? {}).map(([key, hex]) => [key, recoloredForeignHex(key, hex, resolvedRoleHexes, targetScheme)]),
   );
   const missingRoles = ROLES.filter((role) => !(role in recoloredExisting));
   const additions = Object.fromEntries(missingRoles.map((role) => [role, resolvedRoleHexes[role]]));
@@ -503,6 +521,11 @@ const LITERAL_COLOR_PALETTE_KEY_PREFIX = "literal-";
 
 function literalColorPaletteKeyFor(hex: string): string {
   return `${LITERAL_COLOR_PALETTE_KEY_PREFIX}${hex.slice(1).toLowerCase()}`;
+}
+
+/** Whether `key` is one this file's own literal-hex lift minted (see literalColorPaletteKeyFor), rather than one a theme author or `ch edit` wrote. Recoloured differently — see recoloredForeignHex and role-mapping.ts's recoloredLiteralHexFor — because a lifted key carries no relationship to any other key worth protecting the way a real semantic key does (CHM-90). */
+function isLiteralLiftedKey(key: string): boolean {
+  return key.startsWith(LITERAL_COLOR_PALETTE_KEY_PREFIX);
 }
 
 /** What lifting every segment's own literal-hex foreground into a palette key produced: the blocks with each one repointed at its lifted key, the palette entries those keys need, and the segment type of every segment whose foreground could not be lifted — see liftLiteralForegroundsToPalette. */
@@ -1271,17 +1294,41 @@ function seedStatePathFor(ownedConfigPath: string): string {
   return `${ownedConfigPath}${SEED_STATE_FILE_SUFFIX}`;
 }
 
+/**
+ * Every foreign palette key's own true original hex — CHM-90's fix for a
+ * key recolouring from whatever pack applied last rather than from the one
+ * it was actually authored under (see recolorConfigInto's own
+ * originalForeignPalette). Defaults to {} for a seed-state file written
+ * before this ticket, and starts at {} on every fresh seed or reseed (see
+ * writeOhMyPoshSeedState) — either way there is nothing recorded yet, and
+ * recolorConfigInto treats a key missing here exactly like one this file
+ * never existed for: today's live value is adopted as its original,
+ * starting now. recordOriginalPaletteHexes is what fills this in, once per
+ * apply, after every key that apply touched.
+ */
 const OhMyPoshSeedStateSchema = z.object({
   seededFromPath: z.string().min(1),
   seededAtMs: z.number(),
+  originalPaletteHexes: z.record(z.string(), z.string()).default({}),
 });
 
 export type OhMyPoshSeedState = z.infer<typeof OhMyPoshSeedStateSchema>;
 
-/** Records which config `ownedConfigPath` was just seeded from, timestamped now — see ohMyPoshOwnedConfigStatus, `chm doctor`'s own read of this. */
-function writeOhMyPoshSeedState(ownedConfigPath: string, seededFromPath: string): void {
-  const state: OhMyPoshSeedState = { seededFromPath, seededAtMs: Date.now() };
+function writeSeedStateFile(ownedConfigPath: string, state: OhMyPoshSeedState): void {
   writeFileSync(seedStatePathFor(ownedConfigPath), JSON.stringify(state, null, 2), "utf8");
+}
+
+/**
+ * Records which config `ownedConfigPath` was just seeded from, timestamped
+ * now — see ohMyPoshOwnedConfigStatus, `chm doctor`'s own read of this.
+ * originalPaletteHexes always starts back at {}, even on a reseed that
+ * overwrites a config Chameleon had already recorded originals for: those
+ * originals belong to whatever `ownedConfigPath` used to hold, not to the
+ * config this seed just replaced it with. recordOriginalPaletteHexes fills
+ * it in fresh on the very next apply.
+ */
+function writeOhMyPoshSeedState(ownedConfigPath: string, seededFromPath: string): void {
+  writeSeedStateFile(ownedConfigPath, { seededFromPath, seededAtMs: Date.now(), originalPaletteHexes: {} });
 }
 
 /**
@@ -1301,6 +1348,24 @@ export function readOhMyPoshSeedState(ownedConfigPath: string = defaultOwnedConf
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Persists `originalPaletteHexes` into `ownedConfigPath`'s own seed-state
+ * file, keeping that file's own seededFromPath/seededAtMs exactly as they
+ * were — recolorConfigInto's own way of fulfilling CHM-90's "the seed
+ * record stores the original colours so every recolour starts from them
+ * rather than the previous output." A no-op when no seed-state file exists
+ * for this config at all: a config Chameleon never seeded through
+ * ensureOhMyPoshOwnedConfigSeeded or reseedOhMyPoshOwnedConfig — every real
+ * apply's own entry point — has nowhere yet to record an original into, and
+ * recolorConfigInto already falls back to that one apply's own live palette
+ * instead (see its own doc comment).
+ */
+function recordOriginalPaletteHexes(ownedConfigPath: string, originalPaletteHexes: Readonly<Record<string, string>>): void {
+  const existingState = readOhMyPoshSeedState(ownedConfigPath);
+  if (existingState === undefined) return;
+  writeSeedStateFile(ownedConfigPath, { ...existingState, originalPaletteHexes: { ...originalPaletteHexes } });
 }
 
 /**
@@ -1332,6 +1397,44 @@ function combinedNotice(first: string | undefined, second: string | undefined): 
 }
 
 /**
+ * Every key `currentForeignPalette` — the config's own live palette plus
+ * whatever this apply's own literal-hex lift just minted — should be
+ * recoloured from on this apply. A key already recorded in
+ * `knownOriginalHexes` (see recordOriginalPaletteHexes) keeps that recorded
+ * value forever, never the one a previous, different pack's apply already
+ * recoloured it to — this is CHM-90's own fix for the compounding its bug
+ * report describes: without it, a key recolours from whatever pack applied
+ * last, not from the one it was actually authored under, and drifts a
+ * little further every time the user switches packs. A key seen for the
+ * very first time — including every key in a config never seeded through
+ * ensureOhMyPoshOwnedConfigSeeded/reseedOhMyPoshOwnedConfig, since
+ * `knownOriginalHexes` has nowhere to have come from for one of those —
+ * adopts today's live value as its original, the same as every apply before
+ * this ticket.
+ */
+function originalForeignPalette(
+  currentForeignPalette: Readonly<Record<string, string>>,
+  knownOriginalHexes: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return { ...currentForeignPalette, ...knownOriginalHexes };
+}
+
+/**
+ * `palette` with every key CHM-43's own segment-foreground repair generated
+ * on a previous apply removed — see isGeneratedOverrideKey. Filtered once,
+ * here, rather than inside recoloredPaletteTable: the same generated-key-free
+ * value both recolours this apply (recoloredPaletteTable never reclassifies
+ * one of these as an ordinary source key) and becomes the original this
+ * apply records for next time (recordOriginalPaletteHexes) — recording a
+ * generated key as if it were an original would persist a stale repair
+ * forever, in the one place CHM-43 already goes out of its way to prevent
+ * exactly that.
+ */
+function withoutGeneratedOverrideKeys(palette: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(palette).filter(([key]) => !isGeneratedOverrideKey(key)));
+}
+
+/**
  * Recolors `configPath`'s own content for `scheme` — lifting any literal-hex
  * foreground into a palette key of its own first (see
  * liftLiteralForegroundsToPalette and CHM-74), then swapping the palette
@@ -1352,7 +1455,11 @@ function recolorConfigInto(configPath: string, profilePath: string, shell: Shell
   const originalBlocks = sourceConfig.blocks ?? [];
 
   const foregroundLift = liftLiteralForegroundsToPalette(originalBlocks);
-  const paletteTable = recoloredPaletteTable({ ...sourceConfig.palette, ...foregroundLift.paletteAdditions }, resolveRoleHexes(scheme), scheme);
+  const currentForeignPalette = withoutGeneratedOverrideKeys({ ...sourceConfig.palette, ...foregroundLift.paletteAdditions });
+  const knownOriginalHexes = readOhMyPoshSeedState(configPath)?.originalPaletteHexes ?? {};
+  const originalPalette = originalForeignPalette(currentForeignPalette, knownOriginalHexes);
+
+  const paletteTable = recoloredPaletteTable(originalPalette, resolveRoleHexes(scheme), scheme);
 
   // Segment repair reads the lifted blocks and the recoloured table above,
   // never the config's own original palette or blocks — a segment must be
@@ -1374,6 +1481,7 @@ function recolorConfigInto(configPath: string, profilePath: string, shell: Shell
   }
   assertNoDanglingPaletteReferences(configPath, updatedConfigText, finalPaletteTable);
   writeFileSync(configPath, updatedConfigText, "utf8");
+  recordOriginalPaletteHexes(configPath, originalPalette);
 
   const initLineNotice = upsertInitLine(shell, profilePath, configPath);
   return combinedNotice(initLineNotice, unliftableForegroundsNotice(foregroundLift.unliftableSegmentTypes));
