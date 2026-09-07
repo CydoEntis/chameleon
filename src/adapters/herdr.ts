@@ -11,6 +11,7 @@ import {
   OVERLAY_0_FRACTION,
   repairHerdrAccentFamily,
   repairOverlay0,
+  repairSurface0,
   resolveActiveRowAndText,
   resolveHerdrBadgeTokens,
   resolvePanelBackground,
@@ -309,11 +310,20 @@ function assertOnlyAcceptedHerdrTokens(tokenValues: Readonly<Record<string, stri
  * showed overlay0 painting both the sidebar's own section headers and every
  * agent row's subtitle line — read text, not a ramp step — while surface_dim
  * painted only the separator rule and surface0, surface1 and overlay1
- * appeared nowhere in the sidebar at all. Only overlay0 is therefore
+ * appeared nowhere in the sidebar at all. Only overlay0 was therefore
  * repaired, in surfaceScale below, rather than taken from the plain ramp —
  * see repairOverlay0 in palette/surfaces.ts.
  *
- * `SURFACE_0_FRACTION` is the one exception among the four plain ones — it is
+ * That last clause held only for the sidebar, which is all CHM-78 looked
+ * at. surface0 also paints the tab strip — it is the inactive tab's own
+ * chip — and Herdr draws one fixed dark tab number on every chip, a
+ * colour no token here controls. Left on the plain ramp it shipped at
+ * 1.70:1 against panel_bg, with a tab number on it no one could read, so
+ * it is repaired too: see repairSurface0 in palette/surfaces.ts, which
+ * floors it by lightness against the accent family Herdr paints the
+ * active chip with rather than by a contrast pair.
+ *
+ * `SURFACE_0_FRACTION` is the one exception among these fractions — it is
  * also active_row_bg's own ideal fraction (see ACTIVE_ROW_IDEAL_FRACTION),
  * since a selected row is meant to read as this same raised tone, not a
  * colour of its own, so it is sourced from palette/surfaces.ts rather than
@@ -335,10 +345,10 @@ const OVERLAY_1_FRACTION = 5 / 6;
  * subtitle line renders on an ordinary sidebar row (`groundHex`), a selected
  * one and panel_bg alike, so its repair has to answer to all three.
  */
-function surfaceScale(groundHex: string, bodyHex: string, activeRowBackgroundHex: string, panelBackgroundHex: string): Record<string, string> {
+function surfaceScale(groundHex: string, bodyHex: string, accentHex: string, activeRowBackgroundHex: string, panelBackgroundHex: string): Record<string, string> {
   return {
     surface_dim: mix(groundHex, bodyHex, SURFACE_DIM_FRACTION),
-    surface0: mix(groundHex, bodyHex, SURFACE_0_FRACTION),
+    surface0: repairSurface0(mix(groundHex, bodyHex, SURFACE_0_FRACTION), groundHex, bodyHex, accentHex),
     surface1: mix(groundHex, bodyHex, SURFACE_1_FRACTION),
     overlay0: repairOverlay0(mix(groundHex, bodyHex, OVERLAY_0_FRACTION), groundHex, activeRowBackgroundHex, panelBackgroundHex),
     overlay1: mix(groundHex, bodyHex, OVERLAY_1_FRACTION),
@@ -373,12 +383,12 @@ function surfaceScale(groundHex: string, bodyHex: string, activeRowBackgroundHex
  * meant to stand out from. See palette/surfaces.ts's own doc comment for the
  * reported bug this fixes.
  */
-function structuralTokenValues(groundHex: string, activeRowBackgroundHex: string, bodyHex: string, selectionHex: string, panelBackgroundHex: string): Record<string, string> {
+function structuralTokenValues(groundHex: string, activeRowBackgroundHex: string, bodyHex: string, accentHex: string, selectionHex: string, panelBackgroundHex: string): Record<string, string> {
   return {
     panel_bg: panelBackgroundHex,
     active_row_bg: activeRowBackgroundHex,
     selection_bg: selectionHex,
-    ...surfaceScale(groundHex, bodyHex, activeRowBackgroundHex, panelBackgroundHex),
+    ...surfaceScale(groundHex, bodyHex, accentHex, activeRowBackgroundHex, panelBackgroundHex),
   };
 }
 
@@ -731,7 +741,7 @@ function customTokenValues(resolvedTheme: ResolvedHerdrTheme): Record<string, st
   const { colorTable, accentFamily, activeRowBackgroundHex, selectionHex, panelBackgroundHex } = resolvedTheme;
   const tokenValues = {
     ...Object.fromEntries(ROLES.map((role) => [ROLE_TO_HERDR_TOKEN[role], colorTable[role]])),
-    ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, selectionHex, panelBackgroundHex),
+    ...structuralTokenValues(colorTable.ground, activeRowBackgroundHex, colorTable.body, accentFamily.accent, selectionHex, panelBackgroundHex),
     ...accentFamily,
   };
   assertOnlyAcceptedHerdrTokens(tokenValues);
