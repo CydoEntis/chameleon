@@ -8,11 +8,11 @@ import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 // The twelve families in CHM-6, each light and dark, plus Dracula, Monokai,
 // Jellybeans, Shades Of Purple and Ayu Dark (all dark only, the last three
 // added by CHM-62) — see CLAUDE.md's "What".
-const EXPECTED_PACK_COUNT = 62;
+const EXPECTED_PACK_COUNT = 63;
 const EXPECTED_DARK_ONLY_FAMILIES = [
   "Dracula", "Monokai", "Jellybeans", "Shades Of Purple", "TangoTango",
   "Aura", "Challenger Deep", "Cobalt2", "Doom One", "Embark", "Everblush",
-  "Iceberg", "Modus Vivendi", "Moonfly", "Snazzy", "Sonokai", "Synthwave",
+  "Iceberg", "Modus Vivendi", "Moonfly", "Snazzy", "Sonokai", "Synthwave", "Turtles",
   "Terafox", "Vesper",
 ];
 
@@ -22,10 +22,14 @@ const EXPECTED_DARK_ONLY_FAMILIES = [
  * and vendor/tangotango/SOURCE.txt. Named here so a pack silently changing
  * licence — or a second non-MIT source arriving unannounced — fails.
  */
-const NON_MIT_LICENCES_BY_FAMILY: Readonly<Record<string, string>> = { TangoTango: "GPL-3.0-or-later" };
+const NON_MIT_LICENCES_BY_FAMILY: Readonly<Record<string, string>> = {
+  TangoTango: "GPL-3.0-or-later",
+  // Not a licence but the honest absence of one — see vendor/turtles/SOURCE.txt.
+  Turtles: "no licence declared upstream",
+};
 
 describe("loadCuratedThemePacks", () => {
-  it("loads exactly the curated 62 — the front row, not the full ~600-scheme library", () => {
+  it("loads exactly the curated 63 — the front row, not the full ~600-scheme library", () => {
     const packs = loadCuratedThemePacks();
     expect(packs.length).toBe(EXPECTED_PACK_COUNT);
   });

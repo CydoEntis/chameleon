@@ -7,7 +7,7 @@ import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 /**
- * The only one of the 62 bundled packs whose own authored
+ * The only one of the 63 bundled packs whose own authored
  * `selectionBackground` already clears every one of resolveSelectionAndBody's
  * floors — contrast and chroma alike — untouched: chooseSelectionHue never
  * runs for it, so neither CHM-70's chroma nor its hue-distance guarantee
@@ -157,7 +157,7 @@ describe("buildThemePack", () => {
     // The real 29 committed under themes/, minus the one exception whose own
     // authored candidate was kept untouched — see PACKS_KEPT_AS_AUTHORED.
     const packs = loadCuratedThemePacks().filter((pack) => !PACKS_KEPT_AS_AUTHORED.has(pack.manifest.slug));
-    expect(packs.length).toBe(61);
+    expect(packs.length).toBe(62);
 
     for (const pack of packs) {
       expect(chromaOf(pack.payloads.herdr.selection_bg), pack.manifest.slug).toBeGreaterThan(SELECTION_MAX_CHROMA);
@@ -165,7 +165,7 @@ describe("buildThemePack", () => {
   });
 
   it("keeps a repaired selection's hue distinct from ground's own by at least SELECTION_HUE_MIN_DISTANCE_DEGREES, whenever it used accent's own hue rather than the fallback (CHM-70)", () => {
-    // Same 61, same exemption as the chroma test above. A shipped selection
+    // Same 62, same exemption as the chroma test above. A shipped selection
     // hue within a degree of accent's own means chooseSelectionHue used
     // accent directly (see hueTintedAtLuminance, which preserves hue exactly
     // — only luminance and chroma move); anything else means the fallback to
@@ -173,7 +173,7 @@ describe("buildThemePack", () => {
     // not to itself clear the same distance.
     const HUE_ROUNDING_TOLERANCE_DEGREES = 1;
     const packs = loadCuratedThemePacks().filter((pack) => !PACKS_KEPT_AS_AUTHORED.has(pack.manifest.slug));
-    expect(packs.length).toBe(61);
+    expect(packs.length).toBe(62);
 
     for (const pack of packs) {
       const groundHue = toHsl(pack.payloads.herdr.ground).hue;
@@ -338,9 +338,9 @@ describe("Windows Terminal's own foreground clears body-on-selection (CHM-33)", 
   // that same resolved body into this payload's `foreground` too, so the two
   // targets can never disagree about what body is, the same way they already
   // could not disagree about what selection is (CHM-30).
-  it("clears body-on-selection for every one of the 62 bundled packs, measured the way the terminal itself paints it — foreground on selectionBackground", () => {
+  it("clears body-on-selection for every one of the 63 bundled packs, measured the way the terminal itself paints it — foreground on selectionBackground", () => {
     const packs = loadCuratedThemePacks();
-    expect(packs.length).toBe(62);
+    expect(packs.length).toBe(63);
 
     for (const pack of packs) {
       const { foreground, selectionBackground } = pack.payloads["windows-terminal"];

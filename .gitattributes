@@ -48,3 +48,6 @@ vendor/tangotango/tangotango-theme.el text eol=lf
 # commit like every other vendored source here.
 vendor/cyberdream-nvim/*.toml text eol=lf
 vendor/bamboo-nvim/*.toml text eol=lf
+
+# The Turtles author's own iTerm2 export, copied unmodified from a pinned commit.
+vendor/turtles/turtles.itermcolors text eol=lf

@@ -1132,7 +1132,7 @@ describe("herdr adapter — overlay0 vs sidebar and active row (CHM-78)", () => 
 // highlight in the exact colour of the pane it was meant to stand out
 // from — Monokai Classic's own ground and old panel_bg, both #272822,
 // measured 1.00. These tests pin the fix directly, against real written
-// output, for every one of the 62 bundled packs.
+// output, for every one of the 63 bundled packs.
 describe("herdr adapter — panel_bg (CHM-85)", () => {
   function panelBackgroundTokensFor(slug: string): { sidebarBg: string; panelBg: string } {
     const packs = loadCuratedThemePacks();
@@ -1158,7 +1158,7 @@ describe("herdr adapter — panel_bg (CHM-85)", () => {
 
   it("is never written identical to sidebar_bg, and clears PANEL_MIN_VISIBLE_RATIO against it, for every bundled pack", () => {
     const packs = loadCuratedThemePacks();
-    expect(packs.length).toBe(62);
+    expect(packs.length).toBe(63);
 
     for (const pack of packs) {
       const { sidebarBg, panelBg } = panelBackgroundTokensFor(pack.manifest.slug);
@@ -1235,7 +1235,7 @@ describe("herdr adapter — panel_bg (CHM-85)", () => {
 
 // CHM-79: the declared contrast inventory (see palette/surfaces.ts's
 // herdrContrastPairs), run against what this adapter actually writes to
-// config.toml for every one of the 62 bundled packs — not a re-derivation,
+// config.toml for every one of the 63 bundled packs — not a re-derivation,
 // the real [theme.custom] table an applied pack leaves behind, the same way
 // overlay0TokensFor above proves CHM-78's own fix against real output rather
 // than a recomputed copy of it.
@@ -1256,9 +1256,9 @@ describe("herdr adapter — CHM-79's declared contrast inventory, every bundled 
     }
   }
 
-  it("clears every declared pair for every one of the 62 bundled packs — the gate this ticket adds, run against real written output", () => {
+  it("clears every declared pair for every one of the 63 bundled packs — the gate this ticket adds, run against real written output", () => {
     const packs = loadCuratedThemePacks();
-    expect(packs.length).toBe(62);
+    expect(packs.length).toBe(63);
 
     for (const pack of packs) {
       const tokens = allCustomTokensFor(pack.manifest.slug);

@@ -1,0 +1,25 @@
+Source:  https://github.com/kxzk/Turtles
+Commit:  eb228e49f98e8631bcbc84b8fe090e37a87fb3cf
+License: NONE DECLARED UPSTREAM — see below
+
+turtles.itermcolors is copied unmodified from that commit's iterm2/. It is
+the theme author's own iTerm2 export, so its 16 ANSI slots are authoritative
+and correctly named, and unlike every other source outside the iTerm2
+collection it also carries a real cursor and selection colour — nothing about
+this scheme is seeded or derived.
+
+LICENCE, read this before depending on it:
+
+This repository declares no licence. It has no LICENSE file, and the badge in
+its README is a copy-paste placeholder pointing at an unrelated repository
+(mashape/apistatus), so it declares nothing despite appearing to. Every other
+vendored source here names a real licence; this one is the exception, and it
+is recorded as such rather than papered over.
+
+It is vendored on the reading that bare colour values are facts rather than
+creative expression — the same reasoning that made taking four values from
+TangoTango's GPL-3.0 file low-risk — and on the owner's explicit decision to
+include it. If upstream later declares a licence, update this file. If that
+licence turns out to be incompatible, this is the one pack that has to go.
+
+Read at build time by readItermColorsScheme in tools/external-scheme-sources.ts.

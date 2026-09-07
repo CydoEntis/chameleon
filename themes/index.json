@@ -370,5 +370,11 @@
     "name": "Bamboo Multiplex",
     "family": "Bamboo",
     "appearance": "dark"
+  },
+  {
+    "slug": "turtles",
+    "name": "Turtles",
+    "family": "Turtles",
+    "appearance": "dark"
   }
 ]

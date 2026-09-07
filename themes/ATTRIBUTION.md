@@ -12,7 +12,7 @@ fails its contrast floor".
 
 ## Sources outside that collection
 
-Four families are not in it and come from their own pinned sources. Each pack's
+Five families are not in it and come from their own pinned sources. Each pack's
 own manifest carries the attribution it was built from, so nothing here is
 credited to a collection it did not come from.
 
@@ -20,6 +20,7 @@ credited to a collection it did not come from.
 - **TangoTango** — [juba/color-theme-tangotango](https://github.com/juba/color-theme-tangotango) (GPL-3.0-or-later), pinned to commit `6202d4a19ac1def1b2596f1906c4524dd7303563`
 - **Cyberdream** — [scottmckendry/cyberdream.nvim](https://github.com/scottmckendry/cyberdream.nvim) (MIT), pinned to commit `39e1fda12c0704e01029b286a4c7e77e33a0c5cd`
 - **Bamboo** — [ribru17/bamboo.nvim](https://github.com/ribru17/bamboo.nvim) (MIT), pinned to commit `1309bc88bffcf1bedc3e84e7fa9004de93da774a`
+- **Turtles** — [kxzk/Turtles](https://github.com/kxzk/Turtles) (no licence declared upstream), pinned to commit `eb228e49f98e8631bcbc84b8fe090e37a87fb3cf`
 
 The PaperColor packs are decoded from a Terminal.app port rather than from
 NLKNguyen's Vim theme, which has no usable ANSI mapping of its own. The port
@@ -82,5 +83,6 @@ See vendor/cyberdream-nvim/SOURCE.txt and vendor/bamboo-nvim/SOURCE.txt.
 - TangoTango
 - Terafox
 - Tokyo Night
+- Turtles
 - Vesper
 - Zenbones
