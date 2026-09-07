@@ -787,21 +787,43 @@ const JELLYBEANS = { ground: "#121212", body: "#dedede", accent: "#e1c0fa" };
 
 describe("repairSurface0", () => {
   // Herdr paints the inactive tab chip with surface0 and the active one with
-  // the accent family, then draws the same fixed dark tab number on both —
-  // a colour that is Herdr's own, not any token Chameleon writes (probing
+  // the accent family, then draws the same fixed dark tab number on both — a
+  // colour that is Herdr's own, not any token Chameleon writes (probing
   // sidebar_bg, active_row_bg, panel_bg and surface_dim left the number
-  // unchanged). So the chip is floored by lightness against the active chip
-  // rather than by a contrast pair against a foreground Chameleon can name.
-  it("raises the plain ramp value to the active tab chip's own lightness — the reported unreadable inactive tab", () => {
+  // unchanged). CHM-84 concluded from that there was no foreground to hold
+  // the chip against, and floored it by lightness alone.
+  //
+  // That probe only ever looked at the tab strip. surface0 also fills the
+  // button, input and selected-row surfaces of Herdr's dialogs, whose labels
+  // are drawn in `text` — so the pair exists, and flooring by lightness alone
+  // drove surface0 onto `text` exactly (1.00:1) for four bundled packs. These
+  // tests pin both halves: the chip still rises toward the accent, but never
+  // past the point where text can be read on it.
+  it("raises the plain ramp value toward the active tab chip's own lightness — the reported unreadable inactive tab", () => {
     const candidateHex = mix(JELLYBEANS.ground, JELLYBEANS.body, ACTIVE_ROW_IDEAL_FRACTION);
     expect(relativeLuminance(candidateHex)).toBeLessThan(relativeLuminance(JELLYBEANS.accent));
 
     const repaired = repairSurface0(candidateHex, JELLYBEANS.ground, JELLYBEANS.body, JELLYBEANS.accent);
 
-    expect(relativeLuminance(repaired)).toBeGreaterThanOrEqual(relativeLuminance(JELLYBEANS.accent));
+    expect(relativeLuminance(repaired)).toBeGreaterThan(relativeLuminance(candidateHex));
   });
 
-  it("leaves a candidate that already reaches the active chip's lightness untouched", () => {
-    expect(repairSurface0(JELLYBEANS.body, JELLYBEANS.ground, JELLYBEANS.body, JELLYBEANS.accent)).toBe(JELLYBEANS.body);
+  it("stops short of the accent's lightness when text could not be read there", () => {
+    const candidateHex = mix(JELLYBEANS.ground, JELLYBEANS.body, ACTIVE_ROW_IDEAL_FRACTION);
+
+    const repaired = repairSurface0(candidateHex, JELLYBEANS.ground, JELLYBEANS.body, JELLYBEANS.accent);
+
+    expect(contrastRatio(JELLYBEANS.body, repaired)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+  });
+
+  it("never returns body itself, which is what made the dialogs blank", () => {
+    // The regression directly: CHM-84 clamped at body for a pack whose accent
+    // is lighter than its body, which is surface0 and text landing on the same
+    // colour — every button, input and selected row in a dialog drawn as an
+    // unlabelled slab.
+    const repaired = repairSurface0(JELLYBEANS.body, JELLYBEANS.ground, JELLYBEANS.body, JELLYBEANS.accent);
+
+    expect(repaired).not.toBe(JELLYBEANS.body);
+    expect(contrastRatio(JELLYBEANS.body, repaired)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
   });
 });

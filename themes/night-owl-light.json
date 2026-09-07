@@ -48,8 +48,8 @@
       "body": "#403f53",
       "accent": "#37364a",
       "muted": "#565d5d",
-      "success": "#00835e",
-      "error": "#d3423e",
+      "success": "#006e4f",
+      "error": "#b82723",
       "selection_bg": "#ada8ff"
     },
     "statusline": {
