@@ -190,6 +190,23 @@ export const SELECTION_HUE_MIN_DISTANCE_DEGREES = 20;
 export const ACTIVE_ROW_MIN_VISIBLE_RATIO = 1.25;
 
 /**
+ * The lowest panel_bg-vs-ground contrast that still reads as a distinct
+ * surface at all. CHM-85: Herdr's own selection_palette_background
+ * (src/ui/panes.rs) paints panel_bg as the automatic selection highlight's
+ * own fallback whenever it cannot read the host terminal's background over
+ * OSC 11 — which Windows Terminal does not reliably answer — so a panel_bg
+ * indistinguishable from ground is not a dull selection, it is no visible
+ * selection at all. Monokai Classic's own ground and its old panel_bg (both
+ * written as #272822) measured exactly 1.00 — the reported bug. Set to the
+ * same value as ACTIVE_ROW_MIN_VISIBLE_RATIO for the same reason those two
+ * floors independently arrived at it (see that constant's own doc comment):
+ * this is the threshold below which a background reads as identical to the
+ * one it sits next to, not a coincidence shared between panel_bg and the
+ * active row's own, unrelated, band-vs-glyph reasoning.
+ */
+export const PANEL_MIN_VISIBLE_RATIO = 1.25;
+
+/**
  * Minimum chroma (see chromaOf in palette/color.ts) a repaired colour must
  * clear before it still counts as its role's colour rather than a tinted
  * grey. Set below Fairyfloss's error candidate's own native chroma (0.24,
