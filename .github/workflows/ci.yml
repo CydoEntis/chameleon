@@ -68,6 +68,26 @@ jobs:
       - run: npm ci
       - run: npm run test:${{ matrix.platform }}
 
+  dist-is-current:
+    # dist/ is committed because this package installs from git, not from the
+    # registry: npm clones the repository and runs the bin straight out of it.
+    # Building at install time instead needs TypeScript, which is a
+    # devDependency npm does not always install for a git dependency — a first
+    # user hit exactly that, with "'tsc' is not recognized". Committing the
+    # build removes the step that could fail, and this job is what stops it
+    # drifting from the source it was built from.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: dist/ must match what the current source builds to
+        run: git diff --exit-code -- dist/
+
   themes-are-current:
     # themes/ is generated and committed, so it can silently fall behind the
     # engine that produces it — which is exactly what happened when the Herdr
