@@ -21,6 +21,31 @@ update, run the same command again. To remove it, `npm uninstall -g
 @cydoentis/chameleon`; run `chm original` first if you want your own colours
 back.
 
+### If PowerShell refuses to run npm
+
+```
+npm : File C:\Program Files\nodejs\npm.ps1 cannot be loaded because running
+scripts is disabled on this system.
+```
+
+That is Windows blocking npm itself rather than anything to do with
+Chameleon — every global npm install fails the same way until it is dealt
+with. Either run the batch shim, which the policy does not cover:
+
+```powershell
+npm.cmd install -g CydoEntis/chameleon
+```
+
+or lift the restriction once, for your own account only:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+`CurrentUser` needs no administrator rights, and `RemoteSigned` still refuses
+unsigned scripts downloaded from the internet — it only allows local ones like
+npm's own shim. That fixes npm for good, not just for this package.
+
 ## Requirements
 
 - **Node.js 20 or newer.** Nothing else.
