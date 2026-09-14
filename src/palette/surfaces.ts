@@ -66,8 +66,9 @@
  */
 
 import { ACTIVE_ROW_MIN_VISIBLE_RATIO, ANSI_MIN_RATIO, MUTED_MIN_RATIO, PANEL_MIN_VISIBLE_RATIO, RATIO_CLEARANCE_MARGIN, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../constants.js";
-import { ANSI_SLOT_NAMES } from "./ansi.js";
+import { ANSI_SLOT_NAMES, CLAUDE_CODE_MESSAGE_SLOTS } from "./ansi.js";
 import { chromaOf, contrastRatio, fromHueChromaMatch, mix, relativeLuminance, toHsl } from "./color.js";
+import { toPalette } from "./palette.js";
 import { matchValueForLuminance, repairForegroundAgainstBackgrounds, targetLuminanceFor } from "./repair.js";
 import type { Scheme } from "./scheme.js";
 
@@ -728,7 +729,9 @@ function assertEverySchemeFieldAccountedFor(scheme: Scheme): void {
  * Every (foreground, background) pair Windows Terminal actually renders, for
  * `scheme` — CHM-79's own declared inventory for this target: the 16 ANSI
  * slots and the cursor on background, foreground on background, and
- * foreground on the selection highlight.
+ * foreground on the selection highlight — plus the one pair Claude Code
+ * paints from two ANSI slots at once, a user's own message, which is text
+ * and owes TEXT_MIN_RATIO (see ansi.ts's CLAUDE_CODE_MESSAGE_SLOTS).
  *
  * The 16 ANSI slots and cursorColor are visibility pairs, not text: an
  * application picks one ANSI colour at a time and must be able to tell it
@@ -752,8 +755,18 @@ export function windowsTerminalContrastPairs(scheme: Scheme): ContrastPair[] {
     kind: "visibility",
   }));
 
+  const messageSlots = CLAUDE_CODE_MESSAGE_SLOTS[toPalette(scheme).appearance];
+  const claudeCodeMessagePair: ContrastPair = {
+    label: `windows-terminal ${messageSlots.text} on ${messageSlots.messageBackground} (Claude Code user message)`,
+    foregroundHex: scheme[messageSlots.text],
+    backgroundHex: scheme[messageSlots.messageBackground],
+    minRatio: TEXT_MIN_RATIO,
+    kind: "text",
+  };
+
   return [
     ...ansiPairs,
+    claudeCodeMessagePair,
     { label: "windows-terminal cursorColor on background", foregroundHex: scheme.cursorColor, backgroundHex: scheme.background, minRatio: ANSI_MIN_RATIO, kind: "visibility" },
     { label: "windows-terminal foreground on background", foregroundHex: scheme.foreground, backgroundHex: scheme.background, minRatio: TEXT_MIN_RATIO, kind: "text" },
     { label: "windows-terminal foreground on selectionBackground", foregroundHex: scheme.foreground, backgroundHex: scheme.selectionBackground, minRatio: TEXT_MIN_RATIO, kind: "text" },

@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "TokyoNight Day",
-      "black": "#9c9ca0",
+      "black": "#000000",
       "red": "#f52a65",
       "green": "#587539",
       "yellow": "#8c6c3e",

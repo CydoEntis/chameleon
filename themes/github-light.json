@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "GitHub Light Default",
-      "black": "#24292f",
+      "black": "#000000",
       "red": "#cf222e",
       "green": "#116329",
       "yellow": "#4d2d00",

@@ -14,14 +14,14 @@
   "payloads": {
     "windows-terminal": {
       "name": "Gruvbox Light",
-      "black": "#b3a97f",
+      "black": "#000000",
       "red": "#cc241d",
       "green": "#98971a",
       "yellow": "#d79921",
       "blue": "#458588",
       "purple": "#b16286",
       "cyan": "#689d6a",
-      "white": "#7c6f64",
+      "white": "#83766b",
       "brightBlack": "#928374",
       "brightRed": "#9d0006",
       "brightGreen": "#79740e",

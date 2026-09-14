@@ -124,8 +124,13 @@ function chromaAllowingRatio(hue, groundHex, isLighterThanGround, targetRatio, c
  * fixed-saturation lightness line to the first colour that cleared: that
  * line runs straight through white or black, because HSL saturation stays
  * put while chroma collapses as lightness nears either pole.
+ *
+ * Exported for palette/ansi.ts, which needs this same hue-true search
+ * measured against another ANSI slot rather than ground — Claude Code paints
+ * a user's own message in one slot on top of another (see
+ * repairClaudeCodeMessagePair).
  */
-function repairAtHue(hue, ceilingChroma, groundHex, idealTargetRatio, minAcceptableRatio, isLighterThanGround) {
+export function repairAtHue(hue, ceilingChroma, groundHex, idealTargetRatio, minAcceptableRatio, isLighterThanGround) {
     const ceilingRange = reachableRatioRange(hue, ceilingChroma, groundHex, isLighterThanGround);
     if (isRatioReachable(idealTargetRatio, ceilingRange)) {
         return colourAtRatio(hue, ceilingChroma, groundHex, idealTargetRatio, isLighterThanGround);

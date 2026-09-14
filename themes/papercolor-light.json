@@ -14,14 +14,14 @@
   "payloads": {
     "windows-terminal": {
       "name": "PaperColor Light",
-      "black": "#a6a6a6",
+      "black": "#000000",
       "red": "#af0000",
       "green": "#008700",
       "yellow": "#5f8700",
       "blue": "#0087af",
       "purple": "#878787",
       "cyan": "#005f87",
-      "white": "#444444",
+      "white": "#777777",
       "brightBlack": "#a6a6a6",
       "brightRed": "#d70000",
       "brightGreen": "#d70087",
