@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ANSI_MIN_RATIO, MUTED_MIN_RATIO, ROLES, SELECTION_HUE_MIN_DISTANCE_DEGREES, SELECTION_MAX_CHROMA, SELECTION_MIN_RESOLVED_CHROMA, SELECTION_MIN_VISIBLE_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
-import { ANSI_SLOT_NAMES } from "../../src/palette/ansi.js";
+import { ANSI_SLOT_NAMES, CLAUDE_CODE_MESSAGE_SLOTS } from "../../src/palette/ansi.js";
 import { chromaOf, contrastRatio, fromHsl, hueDistanceDegrees, toHsl } from "../../src/palette/color.js";
 import { loadCuratedThemePacks } from "../../src/palette/theme-pack-library.js";
 import { buildThemePack, parseThemePack, parseUserPackManifest } from "../../src/palette/theme-pack.js";
@@ -459,6 +459,17 @@ describe("ANSI slot repair (CHM-32)", () => {
     const shippedBlack = pack.payloads["windows-terminal"].black;
     expect(shippedBlack).not.toBe(originalScheme.black);
     expect(contrastRatio(shippedBlack, pack.payloads["windows-terminal"].background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
+  });
+
+  it("clears TEXT_MIN_RATIO for the pair Claude Code paints a user's own message in, in every bundled pack", () => {
+    // Before this gate, 45 of the 63 shipped packs fell short here —
+    // papercolor-dark at 1.80, jellybeans at 1.88.
+    for (const pack of loadCuratedThemePacks()) {
+      const scheme = pack.payloads["windows-terminal"];
+      const messageSlots = CLAUDE_CODE_MESSAGE_SLOTS[pack.manifest.appearance];
+      const messageRatio = contrastRatio(scheme[messageSlots.text], scheme[messageSlots.messageBackground]);
+      expect(messageRatio, pack.manifest.slug).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    }
   });
 });
 

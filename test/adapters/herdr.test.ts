@@ -948,7 +948,11 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CH
   // three columns for the large majority of bundled packs — and CHM-80
   // changes rowVsSidebar and subtextOnRow again, for all 29, by retuning
   // ACTIVE_ROW_MIN_VISIBLE_RATIO and taking the smallest lift that clears
-  // it rather than the largest subtext0 happened to tolerate.
+  // it rather than the largest subtext0 happened to tolerate. everforest-dark's
+  // and jellybeans' subtextOnRow moved again once Claude Code's user message
+  // had to read on brightBlack: both packs' brightBlack had to move for it
+  // (jellybeans' from #bdbdbd to #737373), and this adapter resolves muted
+  // from the repaired scheme, so subtext0 follows.
   const NAMED_FIXTURES = [
     { slug: "ayu-dark-deep", rowVsSidebar: 1.3223, textOnRow: 7.7704, subtextOnRow: 5.1916 },
     { slug: "ayu-dark", rowVsSidebar: 1.3174, textOnRow: 7.1769, subtextOnRow: 4.8389 },
@@ -956,13 +960,13 @@ describe("herdr adapter — active row vs sidebar, text and subtext0 (CHM-50, CH
     { slug: "catppuccin-dark", rowVsSidebar: 1.3181, textOnRow: 8.6044, subtextOnRow: 5.609 },
     { slug: "catppuccin-light", rowVsSidebar: 1.3206, textOnRow: 5.3475, subtextOnRow: 4.6702 },
     { slug: "dracula-dark", rowVsSidebar: 1.3186, textOnRow: 10.1316, subtextOnRow: 6.7937 },
-    { slug: "everforest-dark", rowVsSidebar: 1.3196, textOnRow: 6.5306, subtextOnRow: 4.9075 },
+    { slug: "everforest-dark", rowVsSidebar: 1.3196, textOnRow: 6.5306, subtextOnRow: 4.7406 },
     { slug: "everforest-light", rowVsSidebar: 1.314, textOnRow: 4.6645, subtextOnRow: 4.4495 },
     { slug: "github-dark", rowVsSidebar: 1.3268, textOnRow: 12.0711, subtextOnRow: 8.0924 },
     { slug: "github-light", rowVsSidebar: 2.0357, textOnRow: 7.7601, subtextOnRow: 5.0919 },
     { slug: "gruvbox-dark", rowVsSidebar: 1.3135, textOnRow: 8.1817, subtextOnRow: 5.3725 },
     { slug: "gruvbox-light", rowVsSidebar: 1.3203, textOnRow: 7.7408, subtextOnRow: 5.0923 },
-    { slug: "jellybeans", rowVsSidebar: 1.3231, textOnRow: 10.5243, subtextOnRow: 7.5364 },
+    { slug: "jellybeans", rowVsSidebar: 1.3231, textOnRow: 10.5243, subtextOnRow: 5.8852 },
     { slug: "kanagawa-dark", rowVsSidebar: 1.3186, textOnRow: 8.5417, subtextOnRow: 5.6926 },
     { slug: "kanagawa-light", rowVsSidebar: 1.3145, textOnRow: 4.7056, subtextOnRow: 4.538 },
     { slug: "monokai-dark", rowVsSidebar: 1.313, textOnRow: 11.1859, subtextOnRow: 7.4873 },

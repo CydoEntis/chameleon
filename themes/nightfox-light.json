@@ -14,7 +14,7 @@
   "payloads": {
     "windows-terminal": {
       "name": "Dawnfox",
-      "black": "#575279",
+      "black": "#3e3960",
       "red": "#b4637a",
       "green": "#618774",
       "yellow": "#ea9d34",

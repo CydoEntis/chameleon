@@ -53,6 +53,31 @@ export declare function targetLuminanceFor(referenceHex: string, targetRatio: nu
  * nudge — see resolveSelectionAndBody.
  */
 export declare function matchValueForLuminance(hue: number, chroma: number, targetLuminance: number): number;
+interface ChromaRepair {
+    readonly hex: string;
+    readonly chroma: number;
+}
+/**
+ * Finds the nearest colour, at a fixed hue, that clears `minAcceptableRatio`
+ * while holding as much of `ceilingChroma` — the candidate's own chroma —
+ * as it can. Reaches for `idealTargetRatio` first; if the full ceiling
+ * cannot reach it — too little contrast headroom left, or (a muted pulling
+ * back below body) too much — aims at the floor itself instead of at
+ * whichever end of the ceiling's own range is nearest (which could just
+ * reproduce the candidate's already-taken point, or overshoot back past
+ * body from the other side); only when the floor itself is out of reach at
+ * full chroma does it give any chroma up, and then only as much as the
+ * floor actually demands. This is the fix for a repair that used to walk a
+ * fixed-saturation lightness line to the first colour that cleared: that
+ * line runs straight through white or black, because HSL saturation stays
+ * put while chroma collapses as lightness nears either pole.
+ *
+ * Exported for palette/ansi.ts, which needs this same hue-true search
+ * measured against another ANSI slot rather than ground — Claude Code paints
+ * a user's own message in one slot on top of another (see
+ * repairClaudeCodeMessagePair).
+ */
+export declare function repairAtHue(hue: number, ceilingChroma: number, groundHex: string, idealTargetRatio: number, minAcceptableRatio: number, isLighterThanGround: boolean): ChromaRepair;
 /**
  * Repairs one role against a single floor. Also repairs a role that
  * already clears its floor but landed on a colour an earlier role already
@@ -116,3 +141,4 @@ export declare function repairForegroundAgainstBackgrounds(foregroundHex: string
  * exactly this shape, so it is computed once here rather than twice.
  */
 export declare function resolveRoleHexes(scheme: Scheme): Record<Role, string>;
+export {};
