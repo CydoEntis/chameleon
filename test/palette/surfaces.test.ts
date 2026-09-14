@@ -8,7 +8,7 @@ import {
   SELECTION_MIN_VISIBLE_RATIO,
   TEXT_MIN_RATIO,
 } from "../../src/constants.js";
-import { repairCursorColor } from "../../src/palette/ansi.js";
+import { repairAnsiSlots, repairCursorColor } from "../../src/palette/ansi.js";
 import { contrastRatio, mix, relativeLuminance } from "../../src/palette/color.js";
 import { resolveRoleHexes } from "../../src/palette/repair.js";
 import { resolveSelectionAndBody } from "../../src/palette/selection.js";
@@ -30,6 +30,7 @@ import {
   windowsTerminalContrastPairs,
   type HerdrTokenSet,
 } from "../../src/palette/surfaces.js";
+import { readPaperColorScheme } from "../../tools/external-scheme-sources.js";
 import { listVendoredSchemeFileNames, readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 // Real vendored/bundled values (mbadolato/iTerm2-Color-Schemes, via
@@ -501,6 +502,26 @@ describe("windowsTerminalContrastPairs", () => {
       expect(pair.minRatio).toBe(ANSI_MIN_RATIO);
       expect(pair.kind).toBe("visibility");
     }
+  });
+
+  it("flags PaperColor Dark's unrepaired brightWhite on brightBlack as Claude Code's user message, and clears once repaired (fixture: 1.80)", () => {
+    const messageLabel = "windows-terminal brightWhite on brightBlack (Claude Code user message)";
+    const scheme = readPaperColorScheme("dark");
+
+    const failuresBefore = checkContrastPairs(windowsTerminalContrastPairs(scheme));
+    expect(failuresBefore.some((failure) => failure.pair.label === messageLabel)).toBe(true);
+
+    const repairedScheme = { ...scheme, ...repairAnsiSlots(scheme).slots };
+    const failuresAfter = checkContrastPairs(windowsTerminalContrastPairs(repairedScheme));
+    expect(failuresAfter.some((failure) => failure.pair.label === messageLabel)).toBe(false);
+  });
+
+  it("holds a light scheme's black on white — the pair light-ansi paints — to TEXT_MIN_RATIO", () => {
+    const pairs = windowsTerminalContrastPairs(readVendoredScheme("Everforest Light Med.json"));
+
+    const messagePair = pairs.find((pair) => pair.label === "windows-terminal black on white (Claude Code user message)");
+    expect(messagePair?.minRatio).toBe(TEXT_MIN_RATIO);
+    expect(messagePair?.kind).toBe("text");
   });
 });
 

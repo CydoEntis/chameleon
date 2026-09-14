@@ -14,14 +14,14 @@
   "payloads": {
     "windows-terminal": {
       "name": "Rose Pine Dawn",
-      "black": "#b2a9a1",
+      "black": "#000000",
       "red": "#b4637a",
       "green": "#286983",
       "yellow": "#ea9d34",
       "blue": "#56949f",
       "purple": "#907aa9",
       "cyan": "#d7827e",
-      "white": "#575279",
+      "white": "#78739a",
       "brightBlack": "#9893a5",
       "brightRed": "#b4637a",
       "brightGreen": "#286983",
