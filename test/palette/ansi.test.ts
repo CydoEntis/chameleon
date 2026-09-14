@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ANSI_MIN_RATIO } from "../../src/constants.js";
+import { ANSI_MIN_RATIO, TEXT_MIN_RATIO } from "../../src/constants.js";
 import { ANSI_SLOT_NAMES, repairAnsiSlots } from "../../src/palette/ansi.js";
 import { contrastRatio, toHsl } from "../../src/palette/color.js";
+import { readPaperColorScheme } from "../../tools/external-scheme-sources.js";
 import { readVendoredScheme } from "../../tools/vendor-scheme-library.js";
 
 // Real vendored schemes' real values only — see code-standards.md, "Colour
@@ -108,5 +109,45 @@ describe("repairAnsiSlots", () => {
         expect(contrastRatio(report.slots[slotName], scheme.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
       }
     }
+  });
+});
+
+// Claude Code's dark-ansi theme paints a user's own message in brightWhite on
+// brightBlack, and light-ansi in black on white — two slots measured against
+// each other, which the per-slot floor above never does.
+describe("repairAnsiSlots — Claude Code's user message", () => {
+  it("lightens PaperColor Dark's teal brightWhite until it reads on brightBlack, holding its hue and leaving brightBlack alone (fixture: 1.80)", () => {
+    const scheme = readPaperColorScheme("dark");
+    expect(contrastRatio(scheme.brightWhite, scheme.brightBlack)).toBeCloseTo(1.8, 2);
+
+    const report = repairAnsiSlots(scheme);
+    expect(contrastRatio(report.slots.brightWhite, report.slots.brightBlack)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(report.slots.brightBlack).toBe(scheme.brightBlack);
+    expect(report.repairedSlots).toContain("brightWhite");
+
+    const hueBefore = toHsl(scheme.brightWhite).hue;
+    const hueAfter = toHsl(report.slots.brightWhite).hue;
+    expect(Math.abs(hueBefore - hueAfter)).toBeLessThanOrEqual(HUE_TOLERANCE_DEGREES);
+  });
+
+  it("moves Seoulbones Dark's brightBlack too, since even white cannot read on it once it clears its own floor against a mid-grey ground (fixture: 2.00)", () => {
+    const scheme = readVendoredScheme("Seoulbones Dark.json");
+    expect(contrastRatio(scheme.brightWhite, scheme.brightBlack)).toBeCloseTo(2, 2);
+
+    const report = repairAnsiSlots(scheme);
+    expect(contrastRatio(report.slots.brightWhite, report.slots.brightBlack)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(report.slots.brightWhite, scheme.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
+    expect(contrastRatio(report.slots.brightBlack, scheme.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
+    expect(report.repairedSlots).toEqual(expect.arrayContaining(["brightWhite", "brightBlack"]));
+  });
+
+  it("darkens Everforest Light Med's black until it reads on white, the pair light-ansi paints (fixture: 1.76)", () => {
+    const scheme = readVendoredScheme("Everforest Light Med.json");
+    expect(contrastRatio(scheme.black, scheme.white)).toBeCloseTo(1.76, 2);
+
+    const report = repairAnsiSlots(scheme);
+    expect(contrastRatio(report.slots.black, report.slots.white)).toBeGreaterThanOrEqual(TEXT_MIN_RATIO);
+    expect(contrastRatio(report.slots.black, scheme.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
+    expect(contrastRatio(report.slots.white, scheme.background)).toBeGreaterThanOrEqual(ANSI_MIN_RATIO);
   });
 });

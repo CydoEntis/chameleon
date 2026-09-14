@@ -407,7 +407,9 @@ export declare function checkContrastPairs(pairs: readonly ContrastPair[]): read
  * Every (foreground, background) pair Windows Terminal actually renders, for
  * `scheme` — CHM-79's own declared inventory for this target: the 16 ANSI
  * slots and the cursor on background, foreground on background, and
- * foreground on the selection highlight.
+ * foreground on the selection highlight — plus the one pair Claude Code
+ * paints from two ANSI slots at once, a user's own message, which is text
+ * and owes TEXT_MIN_RATIO (see ansi.ts's CLAUDE_CODE_MESSAGE_SLOTS).
  *
  * The 16 ANSI slots and cursorColor are visibility pairs, not text: an
  * application picks one ANSI colour at a time and must be able to tell it

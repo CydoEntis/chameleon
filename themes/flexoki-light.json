@@ -14,14 +14,14 @@
   "payloads": {
     "windows-terminal": {
       "name": "Flexoki Light",
-      "black": "#100f0f",
+      "black": "#000000",
       "red": "#af3029",
       "green": "#66800b",
       "yellow": "#ad8301",
       "blue": "#205ea6",
       "purple": "#a02f6f",
       "cyan": "#24837b",
-      "white": "#6f6e69",
+      "white": "#797873",
       "brightBlack": "#b3b1a8",
       "brightRed": "#d14d41",
       "brightGreen": "#879a39",

@@ -14,14 +14,14 @@
   "payloads": {
     "windows-terminal": {
       "name": "Kanagawa Lotus",
-      "black": "#1f1f28",
+      "black": "#000000",
       "red": "#c84053",
       "green": "#6f894e",
       "yellow": "#77713f",
       "blue": "#4d699b",
       "purple": "#b35b79",
       "cyan": "#597b75",
-      "white": "#545464",
+      "white": "#777787",
       "brightBlack": "#8a8980",
       "brightRed": "#d7474b",
       "brightGreen": "#6e915f",
