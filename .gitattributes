@@ -51,3 +51,9 @@ vendor/bamboo-nvim/*.toml text eol=lf
 
 # The Turtles author's own iTerm2 export, copied unmodified from a pinned commit.
 vendor/turtles/turtles.itermcolors text eol=lf
+
+# The README's logo and demo recording. `npm install -g` fetches GitHub's
+# tarball of this repository, and GitHub builds that tarball with git
+# archive, which honours export-ignore — so megabytes of video and GIF that
+# only the README shows never download onto an installing user's machine.
+docs/media export-ignore
