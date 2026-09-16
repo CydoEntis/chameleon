@@ -1,9 +1,17 @@
-# Chameleon
+<h1 align="center">
+  <img src="docs/media/logo.png" alt="Chameleon" width="360">
+</h1>
 
 One command retints your whole terminal — Windows Terminal's colours, your
 Oh My Posh prompt, Herdr's UI, and Claude Code's own theme — from a single
 palette. Everything reloads live except Claude Code, which needs a restart and
 says so.
+
+<p align="center">
+  <img src="docs/media/chameleon-demo.gif" alt="chm themes stepping through all 63 bundled themes, retinting the whole terminal as it goes" width="800">
+  <br>
+  <sub><code>chm themes</code> stepping through all 63 bundled themes · <a href="docs/media/chameleon-demo.mp4">sharper MP4</a></sub>
+</p>
 
 ```sh
 npm install -g https://github.com/CydoEntis/chameleon/tarball/main
