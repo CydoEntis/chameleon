@@ -56,4 +56,4 @@ vendor/turtles/turtles.itermcolors text eol=lf
 # tarball of this repository, and GitHub builds that tarball with git
 # archive, which honours export-ignore — so megabytes of video and GIF that
 # only the README shows never download onto an installing user's machine.
-docs/media/** export-ignore
+docs/media export-ignore
